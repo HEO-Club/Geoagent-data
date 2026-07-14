@@ -1,0 +1,57 @@
+# 环境变量和密钥
+.env
+.env.*
+!.env.example
+
+# Python 虚拟环境
+.venv/
+venv/
+env/
+
+# Python 缓存和构建结果
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# 本地数据：保留目录，不提交内容
+data/raw_videos/*
+data/transcripts/*
+data/intermediate/*
+data/output/*
+
+!data/raw_videos/.gitkeep
+!data/transcripts/.gitkeep
+!data/intermediate/.gitkeep
+!data/output/.gitkeep
+
+# 媒体文件
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+*.wav
+*.mp3
+
+# 运行缓存和日志
+.cache/
+cache/
+logs/
+*.log
+
+# IDE 本地配置
+.vscode/
+.idea/
+
+# 系统文件
+.DS_Store
+Thumbs.db

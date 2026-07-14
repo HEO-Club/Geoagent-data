@@ -1,0 +1,15 @@
+# LLM + 结构化输出（本阶段）
+google-genai
+anthropic
+openai
+instructor
+pydantic>=2
+pydantic-settings
+python-dotenv
+
+# 工程与测试（本阶段）
+tenacity
+pytest
+pytest-asyncio
+ruff
+mypy
