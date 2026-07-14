@@ -1,4 +1,4 @@
-# LLM + 结构化输出（本阶段）
+# LLM + 结构化输出
 google-genai
 anthropic
 openai
@@ -7,8 +7,24 @@ pydantic>=2
 pydantic-settings
 python-dotenv
 
-# 工程与测试（本阶段）
+# Tools（外部 SDK；测试中 mock，禁止真实付费调用）
+tavily-python
+google-search-results
+googlemaps
+geopy
+paddleocr
+pillow
+opencv-python
+astral
+pysolar
+
+# 工程与测试
 tenacity
+diskcache
+filelock
+editdistance
+duckdb
+langfuse
 pytest
 pytest-asyncio
 ruff
