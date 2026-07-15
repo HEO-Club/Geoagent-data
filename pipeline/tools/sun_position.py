@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import re
-from typing import Any, Optional
+from typing import Any
 
 
 def _parse_local_time(value: str | None) -> float | None:

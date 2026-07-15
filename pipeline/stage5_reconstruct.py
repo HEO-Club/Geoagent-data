@@ -18,7 +18,6 @@ from pipeline.schemas import (
     LocationHypothesis,
     NormalizedStep,
     ObservationExecutionResult,
-    ObservationSource,
     RevisionContext,
     RevisionSource,
     SubmitAnswerResult,
