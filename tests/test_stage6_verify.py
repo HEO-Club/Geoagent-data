@@ -256,6 +256,55 @@ def test_verifier_pass_when_candidate_near(mock_judge: MagicMock) -> None:
     assert report.distance_error_km < 1.0
 
 
+def test_verifier_allows_candidate_coords_near_gt_in_thought(
+    mock_judge: MagicMock,
+) -> None:
+    """Agent3 引用 fine_handoff 坐标不应因碰巧靠近 GT 被判泄漏。"""
+    cand = _submit(lat=48.86, lng=2.29)
+    traj = _traj(
+        AgentRole.VERIFIER,
+        fine_handoff=cand,
+        verifier_output=VerificationResult(
+            verdict="pass",
+            failed_checks=[],
+            suggested_recheck="none",
+            return_to_agent=None,
+        ),
+        thoughts=["核对候选 48.86, 2.29 与图像是否自洽。"],
+    )
+    report = verify_and_score(
+        traj,
+        GT,
+        reverse_geocode=lambda _c: ("France", "Île-de-France"),
+    )
+    assert report.leakage_detected is False
+    assert report.passed is True
+
+
+def test_coarse_accepts_chinese_country_alias(mock_judge: MagicMock) -> None:
+    """possible_countries 写「中国」应对上 GT 反向编码的 China。"""
+    traj = _traj(
+        AgentRole.COARSE,
+        coarse_output=_hyp(countries=["中国"]),
+        thoughts=["东亚宏观特征，缩小到中国境内省份级别。"],
+    )
+    # 覆盖默认 France regions，避免无关 soft
+    traj.coarse_output = LocationHypothesis(
+        possible_countries=["中国"],
+        possible_regions=["河南省", "许昌市"],
+        reasoning_summary="宏观气候与文字线索指向中国中部。",
+        confidence=0.6,
+        key_clues_remaining=["具体城市"],
+    )
+    report = verify_and_score(
+        traj,
+        (34.95, 113.52),
+        reverse_geocode=lambda _c: ("China", "Henan"),
+    )
+    assert report.passed is True
+    assert not any("possible_countries" in r for r in report.hard_fail_reasons)
+
+
 def test_judge_prompt_excludes_groundtruth_as_answer(mock_judge: MagicMock) -> None:
     traj = _traj(
         AgentRole.COARSE,

@@ -205,7 +205,7 @@ def execute_action(
             cache_hit=False,
         )
 
-    model_name = settings.GEMINI_MODEL if tool.tier == ToolTier.DRAFT else None
+    model_name = settings.LLM_MODEL if tool.tier == ToolTier.DRAFT else None
     prompt_version = PROMPT_VERSION if tool.tier == ToolTier.DRAFT else None
     key = _cache_key(
         tool=tool,

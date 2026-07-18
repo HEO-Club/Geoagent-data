@@ -10,6 +10,7 @@ from pipeline.stage0_preprocess import (
     locate_answer_timestamp,
     preprocess,
     segment_by_agent_role,
+    select_post_answer_evidence_windows,
 )
 
 
@@ -61,15 +62,35 @@ class TestSegmentByAgentRole:
     def test_three_segments_respect_answer_boundary(self) -> None:
         transcript = _sample_transcript()
         answer_ts = locate_answer_timestamp(transcript)
-        segments = segment_by_agent_role(transcript, answer_ts)
+        windows = select_post_answer_evidence_windows(transcript, answer_ts)
+        segments = segment_by_agent_role(
+            transcript, answer_ts, post_answer_evidence_windows=windows
+        )
         assert len(segments) == 3
         by_role = {s.agent_role: s for s in segments}
 
         assert by_role[AgentRole.COARSE].end_time <= by_role[AgentRole.FINE].start_time
         assert by_role[AgentRole.FINE].end_time == pytest.approx(answer_ts)
-        # VERIFIER 不得包含宣布答案句本身
+        # VERIFIER 仅覆盖筛选后的验证证据窗，不得包含宣布答案句本身
         assert by_role[AgentRole.VERIFIER].start_time >= 32.0
+        assert by_role[AgentRole.VERIFIER].end_time == pytest.approx(38.0)
         assert by_role[AgentRole.COARSE].end_time == pytest.approx(12.0)
+
+    def test_verifier_zero_length_without_evidence(self) -> None:
+        transcript = [
+            _seg(0.0, 5.0, "宏观上看像南欧。"),
+            _seg(5.0, 10.0, "打开地图搜一下。"),
+            _seg(10.0, 12.0, "答案就是罗马。"),
+            _seg(12.0, 40.0, "顺便讲讲罗马千年历史与下课。"),
+        ]
+        windows = select_post_answer_evidence_windows(transcript, 10.0)
+        assert windows == []
+        segments = segment_by_agent_role(
+            transcript, 10.0, post_answer_evidence_windows=windows
+        )
+        ver = next(s for s in segments if s.agent_role == AgentRole.VERIFIER)
+        assert ver.start_time == pytest.approx(ver.end_time)
+        assert ver.start_time == pytest.approx(12.0)
 
     def test_midpoint_fallback_without_fine_cue(self) -> None:
         transcript = [
@@ -77,12 +98,27 @@ class TestSegmentByAgentRole:
             _seg(5.0, 10.0, "继续观察屋顶。"),
             _seg(10.0, 12.0, "答案就是罗马。"),
         ]
-        segments = segment_by_agent_role(transcript, 10.0)
+        segments = segment_by_agent_role(transcript, 10.0, post_answer_evidence_windows=[])
         coarse = next(s for s in segments if s.agent_role == AgentRole.COARSE)
         fine = next(s for s in segments if s.agent_role == AgentRole.FINE)
         assert coarse.end_time == pytest.approx(5.0)
         assert fine.start_time == pytest.approx(5.0)
         assert fine.end_time == pytest.approx(10.0)
+
+
+class TestPostAnswerEvidenceWindows:
+    def test_keeps_verify_cue_drops_filler(self) -> None:
+        transcript = [
+            _seg(0.0, 5.0, "打开地图搜一下。"),
+            _seg(20.0, 22.0, "答案就是巴黎。"),
+            _seg(22.0, 25.0, "再验证一下坐标和图像是否吻合。"),
+            _seg(25.0, 80.0, "接下来科普埃菲尔铁塔的百年历史。"),
+            _seg(80.0, 82.0, "下课。"),
+        ]
+        windows = select_post_answer_evidence_windows(transcript, 20.0)
+        assert len(windows) == 1
+        assert windows[0][0] == pytest.approx(22.0)
+        assert windows[0][1] == pytest.approx(25.0)
 
 
 class TestDetectRevisionSegments:
@@ -114,6 +150,8 @@ class TestPreprocess:
         assert result.answer_timestamp == pytest.approx(28.0)
         assert len(result.agent_segments) == 3
         assert result.revision_segments == []
+        assert result.post_answer_evidence_windows
+        assert result.post_answer_evidence_windows[0][0] == pytest.approx(32.0)
         # 不得依赖 groundtruth（仅校验输出结构；groundtruth 未进入逻辑）
         dumped = result.model_dump()
         assert "groundtruth" not in dumped

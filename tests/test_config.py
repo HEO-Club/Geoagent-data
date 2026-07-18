@@ -18,6 +18,8 @@ def test_default_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("APP_ENV", raising=False)
     monkeypatch.delenv("ALLOW_REAL_API", raising=False)
     monkeypatch.delenv("GEMINI_MODEL", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
     monkeypatch.delenv("MAX_REVISION_ROUNDS", raising=False)
     monkeypatch.delenv("DISTANCE_ERROR_THRESHOLD_KM", raising=False)
     # 避免读取仓库 .env 干扰：用空 env 覆盖
@@ -27,17 +29,21 @@ def test_default_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     assert s.DRAFT_TOOL_MAX_RETRY == 3
     assert s.MAX_REVISION_ROUNDS == 2
     assert s.DISTANCE_ERROR_THRESHOLD_KM == 25.0
+    assert s.LLM_PROVIDER == "qwen"
+    assert s.LLM_MODEL == "qwen3.7-plus"
     assert s.GEMINI_MODEL == "gemini-2.0-flash"
     assert s.TOOL_REGISTRY_PATH == "tool_registry.json"
+    assert s.NOMINATIM_USER_AGENT.startswith("geoagent-dataset/")
+    assert s.NOMINATIM_TIMEOUT_SEC == 10.0
 
 
 def test_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ALLOW_REAL_API", "true")
-    monkeypatch.setenv("GEMINI_MODEL", "gemini-test-model")
+    monkeypatch.setenv("LLM_MODEL", "qwen3-vl-plus")
     monkeypatch.setenv("MAX_CONCURRENT_VIDEOS", "4")
     s = Settings(_env_file=None)
     assert s.ALLOW_REAL_API is True
-    assert s.GEMINI_MODEL == "gemini-test-model"
+    assert s.LLM_MODEL == "qwen3-vl-plus"
     assert s.MAX_CONCURRENT_VIDEOS == 4
 
 

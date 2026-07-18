@@ -69,6 +69,9 @@
 - 输出：`VerificationResult`（写入 `Trajectory.verifier_output`）
 - handoff：`fine_handoff` 必填；`coarse_handoff` 可选
 - `map_query` 用法示例：可用候选坐标作为 `params.latlng`（可同时带 `query` 消歧）；核对 Observation 的 `resolved_latlng` / `formatted_address` / `place_type` 是否与图像线索自洽。
+- **主轨迹来源（方案 A）**：VERIFIER 的 TAO **以 `fine_handoff` + 原图 + 验证 Tool 执行结果为中心程序化组装**（至少一步 `map_query` 核对候选坐标），再由 LLM 改写 Thought / 产出 `VerificationResult`。
+- **不是**默认把「答案宣布后到片尾」的整段旁白当作 Agent3 轨迹；片尾宣布句、历史科普、致谢/下课等无验证动作内容必须丢弃。
+- 答案后视频仅作**可选补充证据**（见 1.6 / `post_answer_evidence_windows`）：仅保留含真实验证话术或可工具化验证操作的短窗；若无可选证据，仍必须合成上述主验证链。
 
 ### 1.5 四条数据质量铁律
 
@@ -89,8 +92,10 @@
 **时间规则：**
 
 - COARSE 和 FINE 默认只使用 `answer_timestamp` **之前**的证据。
-- VERIFIER 可以使用答案宣布 **之后**的验证片段。
+- VERIFIER **主链**不依赖答案后时间窗；其 Action/Observation 来自对 `fine_handoff` 的验证 Tool 执行（及可选的筛选后视频证据）。
+- 答案宣布 **之后**的字幕/画面仅可进入 `post_answer_evidence_windows`（筛选后的可选证据），**不得**无筛选地整段划为 VERIFIER。
 - 博主直接宣布答案的语句 **不能**作为验证证据。
+- 答案后的纯叙事/科普/片尾（无验证话术、无屏上验证操作）**必须丢弃**，不得写入 Agent3 训练轨迹。
 
 ## 2. 系统总体架构
 
@@ -103,8 +108,8 @@
 └─ 轨迹 / 数据集 Schema（chat messages + role，服务 loss masking）
 
 【主流水线】(每条视频依次经过；顺序固定)
-stage0  解析带时间戳文字稿，定位答案时间戳，划分三个 Agent 与返工时间区间
-        → PreprocessResult
+stage0  解析带时间戳文字稿，定位答案时间戳；划分 COARSE/FINE；筛选可选答案后验证证据窗；返工区间
+        → PreprocessResult（含 post_answer_evidence_windows）
 stage1  按 Agent 时间区间抽帧（不按 Move），生成 TimedScreenAction
 stage2  按时间重叠与语义边界生成 Move（TranscriptSegment ⟂ TimedScreenAction）
 stage3  Move → NormalizedStep（匹配 / 组合 / 创建 Draft / fallback / thought_only）
@@ -522,7 +527,14 @@ class AgentTimeSegment(BaseModel):
 class PreprocessResult(BaseModel):
     answer_timestamp: float
     agent_segments: list[AgentTimeSegment]
+    # 仍含 COARSE / FINE / VERIFIER 三段以便编排层遍历：
+    # - COARSE/FINE：答案前视频证据窗
+    # - VERIFIER：若 post_answer_evidence_windows 非空，取其并集；否则为零长度占位
+    #   （start_time == end_time），表示无视频侧验证证据可采
     revision_segments: list[tuple[float, float]]
+    post_answer_evidence_windows: list[tuple[float, float]] = []
+    # 答案宣布句结束之后、经筛选的可选验证证据短窗（可多段）。
+    # 不得把「答案后→片尾」未筛选整段写入本字段。
 
 class TimedScreenAction(BaseModel):
     start_time: float
@@ -799,11 +811,23 @@ def locate_answer_timestamp(transcript: list[TranscriptSegment]) -> float: ...
 def segment_by_agent_role(
     transcript: list[TranscriptSegment],
     answer_timestamp: float,
+    post_answer_evidence_windows: Optional[list[tuple[float, float]]] = None,
 ) -> list[AgentTimeSegment]:
     """
-    识别三个阶段时间区间。
-    COARSE/FINE 默认落在 answer_timestamp 之前；
-    VERIFIER 可落在宣布答案之后的验证片段。
+    划分 COARSE / FINE / VERIFIER 时间区间。
+    COARSE/FINE 落在 answer_timestamp 之前。
+    VERIFIER：若提供非空 post_answer_evidence_windows，取其时间并集；
+    否则为零长度占位（无视频验证证据可采，主链改由 stage5 合成）。
+    """
+
+def select_post_answer_evidence_windows(
+    transcript: list[TranscriptSegment],
+    answer_timestamp: float,
+) -> list[tuple[float, float]]:
+    """
+    在宣布答案句结束之后筛选可选验证证据短窗。
+    仅保留含验证话术（如验证/核对/对照/是否吻合）的片段；合并相邻窗。
+    排除宣布句本身；不得默认吞掉答案后全部字幕。
     """
 
 def detect_revision_segments(
@@ -940,7 +964,8 @@ def reconstruct_single_trajectory(
     禁止将 groundtruth / 真值地名 / 反向地理编码地址写入 prompt。
     Agent1 → 填写 coarse_output=LocationHypothesis
     Agent2 → 最后一步 submit_answer，填写 fine_output=SubmitAnswerResult
-    Agent3 → 填写 verifier_output=VerificationResult；把 fine_handoff 当候选验证
+    Agent3 → 填写 verifier_output=VerificationResult；把 fine_handoff 当候选验证。
+              若传入 steps/observations 无法展开出 Action，则内部先合成验证脚手架。
     terminal 步 observation 与 observation_source 均为 None
     """
 
@@ -954,6 +979,9 @@ def reconstruct_all_trajectories(
     为三 Agent 重构主轨迹并传递交接物：
     Agent1.coarse_output → Agent2.coarse_handoff
     Agent2.fine_output → Agent3.fine_handoff
+    Agent3：若视频侧无任何可展开 Action，则基于 fine_handoff 合成验证脚手架
+    （至少 execute map_query 核对候选 latlng），再改写 Thought / 产出 verifier_output。
+    禁止使用 groundtruth。
     """
 
 def reconstruct_revision_trajectories(
@@ -1138,6 +1166,8 @@ mypy
 - `map_query` Observation：success / empty / error 三条 status 条件规则的正反例。
 - Draft 创建流程测试。
 - stage3→stage7 小样本（mock）测试 role / terminal / handoff；Agent2/Agent3 使用 `map_query` 时读取 `resolved_latlng`。
+- stage0：`post_answer_evidence_windows` 仅含验证话术短窗，不得默认等于答案后→片尾；无证据时 VERIFIER 区间为零长度。
+- stage5：VERIFIER 在无视频 Action 时必须能基于 `fine_handoff` 合成 `map_query` 验证链并产出 `verifier_output`（mock execute_action）。
 - promote_tool：备份、重跑 stage4–7、失败回滚；涉及 Observation 字段重命名时不得只做键替换。
 - 并发：registry 文件锁与 JSONL 分片合并。
 

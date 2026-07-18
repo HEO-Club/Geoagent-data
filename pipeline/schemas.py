@@ -425,6 +425,9 @@ class PreprocessResult(BaseModel):
     answer_timestamp: float
     agent_segments: list[AgentTimeSegment]
     revision_segments: list[tuple[float, float]]
+    post_answer_evidence_windows: list[tuple[float, float]] = Field(
+        default_factory=list
+    )
 
 
 class TimedScreenAction(BaseModel):

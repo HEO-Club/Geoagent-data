@@ -25,4 +25,20 @@ def test_load_and_index_by_name() -> None:
     assert AgentRole.FINE in registry["map_query"].allowed_agents
     assert AgentRole.VERIFIER in registry["map_query"].allowed_agents
     assert registry["sun_position_calc"].allowed_agents == [AgentRole.COARSE]
-    assert all(t.tier is ToolTier.DRAFT for t in registry.values())
+    # 已显式升档的 production seeds；其余仍为 draft
+    expected_production = {
+        "sun_position_calc": "pipeline.tools.sun_position.execute",
+        "map_query": "pipeline.tools.map_query.execute",
+        "web_search": "pipeline.tools.web_search.execute",
+        "reverse_image_search": "pipeline.tools.reverse_image_search.execute",
+        "ocr": "pipeline.tools.ocr.execute",
+        "zoom_inspect": "pipeline.tools.zoom_inspect.execute",
+    }
+    for name, ref in expected_production.items():
+        assert registry[name].tier is ToolTier.PRODUCTION
+        assert registry[name].executor_ref == ref
+    assert all(
+        t.tier is ToolTier.DRAFT
+        for name, t in registry.items()
+        if name not in expected_production
+    )

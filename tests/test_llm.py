@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -43,8 +44,9 @@ def test_call_text_blocked_when_real_api_disabled(
 
 def test_call_structured_uses_mocked_client(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ALLOW_REAL_API", "true")
-    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
-    monkeypatch.setenv("GEMINI_MODEL", "gemini-mock")
+    monkeypatch.setenv("LLM_PROVIDER", "qwen")
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_MODEL", "qwen-vl-plus")
     clear_settings_cache()
 
     mock_client = MagicMock()
@@ -57,13 +59,14 @@ def test_call_structured_uses_mocked_client(monkeypatch: pytest.MonkeyPatch) -> 
     result = call_structured("prompt", _DummyOut, model=None)
     assert result.label == "ok"
     kwargs = mock_client.chat.completions.create.call_args.kwargs
-    assert kwargs["model"] == "gemini-mock"
+    assert kwargs["model"] == "qwen-vl-plus"
     assert kwargs["response_model"] is _DummyOut
 
 
 def test_call_text_uses_mocked_client(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ALLOW_REAL_API", "true")
-    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_PROVIDER", "qwen")
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "test-key")
     clear_settings_cache()
 
     class _TextResponse(BaseModel):
@@ -76,4 +79,51 @@ def test_call_text_uses_mocked_client(monkeypatch: pytest.MonkeyPatch) -> None:
         "pipeline.llm._build_instructor_client",
         lambda _s: mock_client,
     )
-    assert call_text("q", model="gemini-mock") == "judged"
+    assert call_text("q", model="qwen-vl-plus") == "judged"
+
+
+def test_qwen_multimodal_embeds_image_data_url(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("ALLOW_REAL_API", "true")
+    monkeypatch.setenv("LLM_PROVIDER", "qwen")
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_MODEL", "qwen-vl-plus")
+    clear_settings_cache()
+
+    img = tmp_path / "a.png"
+    from io import BytesIO
+
+    from PIL import Image
+
+    buf = BytesIO()
+    Image.new("RGB", (1, 1), color=(200, 100, 50)).save(buf, format="PNG")
+    img.write_bytes(buf.getvalue())
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = _DummyOut(label="vision")
+    monkeypatch.setattr(
+        "pipeline.llm._build_instructor_client",
+        lambda _s: mock_client,
+    )
+
+    call_structured("describe", _DummyOut, images=[str(img)])
+    content = mock_client.chat.completions.create.call_args.kwargs["messages"][0][
+        "content"
+    ]
+    assert isinstance(content, list)
+    assert content[0]["type"] == "text"
+    assert content[1]["type"] == "image_url"
+    assert content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+
+
+def test_unsupported_provider_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ALLOW_REAL_API", "true")
+    monkeypatch.setenv("LLM_PROVIDER", "unknown-x")
+    monkeypatch.setenv("LLM_MODEL", "x")
+    clear_settings_cache()
+    with pytest.raises(ValueError, match="不支持的 LLM_PROVIDER"):
+        from pipeline.llm import _build_instructor_client
+        from pipeline.config import get_settings
+
+        _build_instructor_client(get_settings())

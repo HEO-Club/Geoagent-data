@@ -47,6 +47,16 @@ def _promote_local(registry_path: Path, name: str, ref: str) -> None:
     registry_path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _demote_local(registry_path: Path, name: str) -> None:
+    """测试用：将 tool 临时标为 draft 以覆盖 VLM 合成路径。"""
+    items = json.loads(registry_path.read_text(encoding="utf-8"))
+    for item in items:
+        if item["name"] == name:
+            item["tier"] = "draft"
+            item["executor_ref"] = None
+    registry_path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def _move(*, screen_action: str | None = "搜索", role: AgentRole = AgentRole.COARSE) -> Move:
     return Move(
         start_time=0.0,
@@ -105,23 +115,21 @@ def test_expands_composed_actions(
             return {
                 "status": "success",
                 "error_message": None,
-                "results": [
-                    {"title": "A", "snippet": "B", "url": "https://example.com/a"},
-                    {"title": "C", "snippet": "D", "url": "https://example.com/c"},
-                ],
+                "description": "arched stone window on facade",
             }
 
     monkeypatch.setattr(
         "pipeline.tools.base.call_structured",
         lambda *a, **k: _Obs(),
     )
+    _demote_local(env_registry, "zoom_inspect")
 
     steps = [
         _step(
             [
                 Action(
-                    tool="web_search",
-                    params={"query": "spire", "purpose": "broad_discovery"},
+                    tool="zoom_inspect",
+                    params={"bbox": [0.1, 0.2, 0.3, 0.4]},
                 ),
                 Action(
                     tool="sun_position_calc",
@@ -186,7 +194,7 @@ def test_draft_retry_exhausted_returns_error(
 
     class _BadObs:
         def model_dump(self, mode: str = "json") -> dict[str, Any]:
-            return {"status": "success", "error_message": None}  # 缺 results 等字段
+            return {"status": "success", "error_message": None}  # 缺 description
 
     def fake_structured(*args: Any, **kwargs: Any) -> Any:
         _ = args, kwargs
@@ -194,8 +202,9 @@ def test_draft_retry_exhausted_returns_error(
         return _BadObs()
 
     monkeypatch.setattr("pipeline.tools.base.call_structured", fake_structured)
+    _demote_local(env_registry, "zoom_inspect")
     result = execute_action(
-        Action(tool="web_search", params={"query": "spire", "purpose": "broad_discovery"}),
+        Action(tool="zoom_inspect", params={"bbox": [0.1, 0.2, 0.3, 0.4]}),
         str(img),
         AgentRole.COARSE,
         registry_path=str(env_registry),
@@ -225,7 +234,7 @@ def test_draft_retry_succeeds_on_second_attempt(
             return {
                 "status": "empty",
                 "error_message": None,
-                "results": None,
+                "description": "",
             }
 
     def fake_structured(*args: Any, **kwargs: Any) -> Any:
@@ -234,8 +243,9 @@ def test_draft_retry_succeeds_on_second_attempt(
         return _Bad() if calls["n"] == 1 else _Good()
 
     monkeypatch.setattr("pipeline.tools.base.call_structured", fake_structured)
+    _demote_local(env_registry, "zoom_inspect")
     result = execute_action(
-        Action(tool="web_search", params={"query": "spire", "purpose": "broad_discovery"}),
+        Action(tool="zoom_inspect", params={"bbox": [0.1, 0.2, 0.3, 0.4]}),
         str(img),
         AgentRole.COARSE,
         registry_path=str(env_registry),
@@ -245,7 +255,7 @@ def test_draft_retry_succeeds_on_second_attempt(
     assert result.status == "empty"
     assert result.source is ObservationSource.VLM_SYNTHESIZED
     assert result.observation is not None
-    assert result.observation["results"] is None
+    assert result.observation["description"] == ""
 
 
 def test_production_error_not_cached(

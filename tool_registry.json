@@ -2,14 +2,16 @@
   {
     "name": "web_search",
     "description": "按用途检索网页，用于地理线索的广泛发现、精确查找或验证。",
-    "tier": "draft",
+    "tier": "production",
     "params": [
       {
         "name": "query",
         "type": "string",
         "required": true,
         "description": "检索查询语句，如[red brick church spire Europe]",
-        "example": "red brick church spire Europe"
+        "example": "red brick church spire Europe",
+        "default": null,
+        "enum_values": null
       },
       {
         "name": "top_k",
@@ -17,7 +19,8 @@
         "required": false,
         "description": "返回结果条数上限，如[3]",
         "example": 3,
-        "default": 3
+        "default": 3,
+        "enum_values": null
       },
       {
         "name": "purpose",
@@ -25,7 +28,12 @@
         "required": true,
         "description": "检索用途约束，如[broad_discovery]",
         "example": "broad_discovery",
-        "enum_values": ["broad_discovery", "precise_lookup", "verification"]
+        "default": null,
+        "enum_values": [
+          "broad_discovery",
+          "precise_lookup",
+          "verification"
+        ]
       }
     ],
     "observation_fields": [
@@ -33,13 +41,15 @@
         "name": "status",
         "type": "string",
         "nullable": false,
-        "description": "执行状态，取值 success/empty/error"
+        "description": "执行状态，取值 success/empty/error",
+        "item_fields": null
       },
       {
         "name": "error_message",
         "type": "string",
         "nullable": true,
-        "description": "status=error 时填写错误信息，否则为 null"
+        "description": "status=error 时填写错误信息，否则为 null",
+        "item_fields": null
       },
       {
         "name": "results",
@@ -51,26 +61,33 @@
             "name": "title",
             "type": "string",
             "nullable": false,
-            "description": "结果标题文本，如[Example Page Title]"
+            "description": "结果标题文本，如[Example Page Title]",
+            "item_fields": null
           },
           {
             "name": "snippet",
             "type": "string",
             "nullable": false,
-            "description": "结果摘要片段，如[short page summary]"
+            "description": "结果摘要片段，如[short page summary]",
+            "item_fields": null
           },
           {
             "name": "url",
             "type": "string",
             "nullable": false,
-            "description": "结果链接地址，如[https://example.com]"
+            "description": "结果链接地址，如[https://example.com]",
+            "item_fields": null
           }
         ]
       }
     ],
-    "allowed_agents": ["coarse_locator", "fine_locator", "verifier"],
+    "allowed_agents": [
+      "coarse_locator",
+      "fine_locator",
+      "verifier"
+    ],
     "is_terminal": false,
-    "executor_ref": null,
+    "executor_ref": "pipeline.tools.web_search.execute",
     "created_at": "2026-07-13T00:00:00Z",
     "source_video_timestamp": null,
     "source_narration": null,
@@ -79,15 +96,21 @@
   {
     "name": "reverse_image_search",
     "description": "以图搜图匹配相似网页，用于精定位候选地点发现。",
-    "tier": "draft",
+    "tier": "production",
     "params": [
       {
         "name": "bbox",
         "type": "bbox",
         "required": false,
         "description": "可选裁剪框 [x,y,w,h]，如[0.1,0.2,0.3,0.4]",
-        "example": [0.1, 0.2, 0.3, 0.4],
-        "default": null
+        "example": [
+          0.1,
+          0.2,
+          0.3,
+          0.4
+        ],
+        "default": null,
+        "enum_values": null
       }
     ],
     "observation_fields": [
@@ -95,13 +118,15 @@
         "name": "status",
         "type": "string",
         "nullable": false,
-        "description": "执行状态，取值 success/empty/error"
+        "description": "执行状态，取值 success/empty/error",
+        "item_fields": null
       },
       {
         "name": "error_message",
         "type": "string",
         "nullable": true,
-        "description": "status=error 时填写错误信息，否则为 null"
+        "description": "status=error 时填写错误信息，否则为 null",
+        "item_fields": null
       },
       {
         "name": "matches",
@@ -113,26 +138,31 @@
             "name": "title",
             "type": "string",
             "nullable": false,
-            "description": "匹配页标题文本，如[Landmark Photo]"
+            "description": "匹配页标题文本，如[Landmark Photo]",
+            "item_fields": null
           },
           {
             "name": "snippet",
             "type": "string",
             "nullable": false,
-            "description": "匹配页摘要片段，如[short match summary]"
+            "description": "匹配页摘要片段，如[short match summary]",
+            "item_fields": null
           },
           {
             "name": "url",
             "type": "string",
             "nullable": false,
-            "description": "匹配页链接地址，如[https://example.com]"
+            "description": "匹配页链接地址，如[https://example.com]",
+            "item_fields": null
           }
         ]
       }
     ],
-    "allowed_agents": ["fine_locator"],
+    "allowed_agents": [
+      "fine_locator"
+    ],
     "is_terminal": false,
-    "executor_ref": null,
+    "executor_ref": "pipeline.tools.reverse_image_search.execute",
     "created_at": "2026-07-13T00:00:00Z",
     "source_video_timestamp": null,
     "source_narration": null,
@@ -141,7 +171,7 @@
   {
     "name": "map_query",
     "description": "按地名或坐标查询地图地点信息，用于精定位与验证。",
-    "tier": "draft",
+    "tier": "production",
     "params": [
       {
         "name": "query",
@@ -149,15 +179,20 @@
         "required": false,
         "description": "地名或地址查询文本，如[Eiffel Tower]",
         "example": "Eiffel Tower",
-        "default": null
+        "default": null,
+        "enum_values": null
       },
       {
         "name": "latlng",
         "type": "latlng",
         "required": false,
         "description": "查询坐标 (lat,lng)，如[48.86,2.29]",
-        "example": [48.86, 2.29],
-        "default": null
+        "example": [
+          48.86,
+          2.29
+        ],
+        "default": null,
+        "enum_values": null
       }
     ],
     "observation_fields": [
@@ -165,36 +200,44 @@
         "name": "status",
         "type": "string",
         "nullable": false,
-        "description": "执行状态，取值 success/empty/error"
+        "description": "执行状态，取值 success/empty/error",
+        "item_fields": null
       },
       {
         "name": "error_message",
         "type": "string",
         "nullable": true,
-        "description": "status=error 时填写错误信息，否则为 null"
+        "description": "status=error 时填写错误信息，否则为 null",
+        "item_fields": null
       },
       {
         "name": "formatted_address",
         "type": "string",
         "nullable": true,
-        "description": "规范化地址字符串；查无结果时为 null"
+        "description": "规范化地址字符串；查无结果时为 null",
+        "item_fields": null
       },
       {
         "name": "resolved_latlng",
         "type": "latlng",
         "nullable": true,
-        "description": "解析后的标准坐标 (lat,lng)；查无时为 null"
+        "description": "解析后的标准坐标 (lat,lng)；查无时为 null",
+        "item_fields": null
       },
       {
         "name": "place_type",
         "type": "string",
         "nullable": true,
-        "description": "地点类型标签；无法判定时为 null"
+        "description": "地点类型标签；无法判定时为 null",
+        "item_fields": null
       }
     ],
-    "allowed_agents": ["fine_locator", "verifier"],
+    "allowed_agents": [
+      "fine_locator",
+      "verifier"
+    ],
     "is_terminal": false,
-    "executor_ref": null,
+    "executor_ref": "pipeline.tools.map_query.execute",
     "created_at": "2026-07-13T00:00:00Z",
     "source_video_timestamp": null,
     "source_narration": null,
@@ -203,15 +246,21 @@
   {
     "name": "ocr",
     "description": "识别图像或局部区域中的文字，用于提取路牌店招等线索。",
-    "tier": "draft",
+    "tier": "production",
     "params": [
       {
         "name": "bbox",
         "type": "bbox",
         "required": false,
         "description": "可选识别区域 [x,y,w,h]，如[0.2,0.3,0.4,0.2]",
-        "example": [0.2, 0.3, 0.4, 0.2],
-        "default": null
+        "example": [
+          0.2,
+          0.3,
+          0.4,
+          0.2
+        ],
+        "default": null,
+        "enum_values": null
       }
     ],
     "observation_fields": [
@@ -219,24 +268,30 @@
         "name": "status",
         "type": "string",
         "nullable": false,
-        "description": "执行状态，取值 success/empty/error"
+        "description": "执行状态，取值 success/empty/error",
+        "item_fields": null
       },
       {
         "name": "error_message",
         "type": "string",
         "nullable": true,
-        "description": "status=error 时填写错误信息，否则为 null"
+        "description": "status=error 时填写错误信息，否则为 null",
+        "item_fields": null
       },
       {
         "name": "texts",
         "type": "string_list",
         "nullable": false,
-        "description": "识别出的文字列表，无文字时为空列表"
+        "description": "识别出的文字列表，无文字时为空列表",
+        "item_fields": null
       }
     ],
-    "allowed_agents": ["coarse_locator", "fine_locator"],
+    "allowed_agents": [
+      "coarse_locator",
+      "fine_locator"
+    ],
     "is_terminal": false,
-    "executor_ref": null,
+    "executor_ref": "pipeline.tools.ocr.execute",
     "created_at": "2026-07-13T00:00:00Z",
     "source_video_timestamp": null,
     "source_narration": null,
@@ -245,14 +300,21 @@
   {
     "name": "zoom_inspect",
     "description": "放大查看指定图像区域，描述局部视觉细节与线索。",
-    "tier": "draft",
+    "tier": "production",
     "params": [
       {
         "name": "bbox",
         "type": "bbox",
         "required": true,
         "description": "必填检查区域 [x,y,w,h]，如[0.4,0.1,0.2,0.3]",
-        "example": [0.4, 0.1, 0.2, 0.3]
+        "example": [
+          0.4,
+          0.1,
+          0.2,
+          0.3
+        ],
+        "default": null,
+        "enum_values": null
       }
     ],
     "observation_fields": [
@@ -260,24 +322,30 @@
         "name": "status",
         "type": "string",
         "nullable": false,
-        "description": "执行状态，取值 success/empty/error"
+        "description": "执行状态，取值 success/empty/error",
+        "item_fields": null
       },
       {
         "name": "error_message",
         "type": "string",
         "nullable": true,
-        "description": "status=error 时填写错误信息，否则为 null"
+        "description": "status=error 时填写错误信息，否则为 null",
+        "item_fields": null
       },
       {
         "name": "description",
         "type": "string",
         "nullable": false,
-        "description": "局部区域视觉细节的文字描述"
+        "description": "局部区域视觉细节的文字描述",
+        "item_fields": null
       }
     ],
-    "allowed_agents": ["coarse_locator", "fine_locator"],
+    "allowed_agents": [
+      "coarse_locator",
+      "fine_locator"
+    ],
     "is_terminal": false,
-    "executor_ref": null,
+    "executor_ref": "pipeline.tools.zoom_inspect.execute",
     "created_at": "2026-07-13T00:00:00Z",
     "source_video_timestamp": null,
     "source_narration": null,
@@ -286,7 +354,7 @@
   {
     "name": "sun_position_calc",
     "description": "根据阴影方向与估计地方时推算可能纬度范围。",
-    "tier": "draft",
+    "tier": "production",
     "params": [
       {
         "name": "shadow_direction_deg",
@@ -294,7 +362,8 @@
         "required": false,
         "description": "阴影方位角（度），如[135.0]",
         "example": 135.0,
-        "default": null
+        "default": null,
+        "enum_values": null
       },
       {
         "name": "estimated_local_time",
@@ -302,7 +371,8 @@
         "required": false,
         "description": "估计地方时字符串，如[14:30]",
         "example": "14:30",
-        "default": null
+        "default": null,
+        "enum_values": null
       }
     ],
     "observation_fields": [
@@ -310,30 +380,36 @@
         "name": "status",
         "type": "string",
         "nullable": false,
-        "description": "执行状态，取值 success/empty/error"
+        "description": "执行状态，取值 success/empty/error",
+        "item_fields": null
       },
       {
         "name": "error_message",
         "type": "string",
         "nullable": true,
-        "description": "status=error 时填写错误信息，否则为 null"
+        "description": "status=error 时填写错误信息，否则为 null",
+        "item_fields": null
       },
       {
         "name": "possible_latitude_range",
         "type": "lat_range",
         "nullable": true,
-        "description": "可能纬度区间 (min,max)；无法估计时为 null"
+        "description": "可能纬度区间 (min,max)；无法估计时为 null",
+        "item_fields": null
       },
       {
         "name": "note",
         "type": "string",
         "nullable": true,
-        "description": "补充说明文本；无额外说明时为 null"
+        "description": "补充说明文本；无额外说明时为 null",
+        "item_fields": null
       }
     ],
-    "allowed_agents": ["coarse_locator"],
+    "allowed_agents": [
+      "coarse_locator"
+    ],
     "is_terminal": false,
-    "executor_ref": null,
+    "executor_ref": "pipeline.tools.sun_position.execute",
     "created_at": "2026-07-13T00:00:00Z",
     "source_video_timestamp": null,
     "source_narration": null,
@@ -349,39 +425,51 @@
         "type": "float",
         "required": true,
         "description": "最终纬度，如[48.8584]",
-        "example": 48.8584
+        "example": 48.8584,
+        "default": null,
+        "enum_values": null
       },
       {
         "name": "longitude",
         "type": "float",
         "required": true,
         "description": "最终经度，如[2.2945]",
-        "example": 2.2945
+        "example": 2.2945,
+        "default": null,
+        "enum_values": null
       },
       {
         "name": "location_name",
         "type": "string",
         "required": true,
         "description": "最终地点名称，如[Eiffel Tower, Paris]",
-        "example": "Eiffel Tower, Paris"
+        "example": "Eiffel Tower, Paris",
+        "default": null,
+        "enum_values": null
       },
       {
         "name": "confidence",
         "type": "float",
         "required": true,
         "description": "答案置信度 0~1，如[0.85]",
-        "example": 0.85
+        "example": 0.85,
+        "default": null,
+        "enum_values": null
       },
       {
         "name": "reasoning",
         "type": "string",
         "required": true,
         "description": "提交答案的简要推理依据说明",
-        "example": "Landmark geometry and map cross-check agree."
+        "example": "Landmark geometry and map cross-check agree.",
+        "default": null,
+        "enum_values": null
       }
     ],
     "observation_fields": [],
-    "allowed_agents": ["fine_locator"],
+    "allowed_agents": [
+      "fine_locator"
+    ],
     "is_terminal": true,
     "executor_ref": null,
     "created_at": "2026-07-13T00:00:00Z",

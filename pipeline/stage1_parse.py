@@ -26,6 +26,22 @@ class _ScreenActionBatch(BaseModel):
     actions: list[_ScreenActionItem] = Field(default_factory=list)
 
 
+def _sample_keyframes_for_vlm(keyframes: list[str], max_frames: int) -> list[str]:
+    """均匀抽样关键帧供 VLM；保留首尾。"""
+    if max_frames <= 0 or len(keyframes) <= max_frames:
+        return list(keyframes)
+    if max_frames == 1:
+        return [keyframes[len(keyframes) // 2]]
+    last = len(keyframes) - 1
+    indexes = sorted(
+        {
+            int(round(i * last / (max_frames - 1)))
+            for i in range(max_frames)
+        }
+    )
+    return [keyframes[i] for i in indexes]
+
+
 def extract_keyframes(
     video_path: str,
     time_range: tuple[float, float],
@@ -133,6 +149,11 @@ def detect_screen_actions(
     if end < start:
         raise ValueError(f"非法 time_range: {time_range}")
 
+    settings = get_settings()
+    vlm_frames = _sample_keyframes_for_vlm(
+        keyframes, int(settings.STAGE1_VLM_MAX_FRAMES)
+    )
+
     prompt = (
         "你是地理定位讲解视频的屏幕操作标注器。"
         "根据给定关键帧与旁白上下文，识别博主在屏幕上的有意义操作"
@@ -142,13 +163,14 @@ def detect_screen_actions(
         "description（简洁中文或中英混合）、visible_clues（可见线索列表，可空）。"
         f"\n时间区间: [{start:.3f}, {end:.3f})"
         f"\n旁白上下文:\n{narration_context}\n"
+        f"\n说明: 关键帧已从区间内均匀抽样 {len(vlm_frames)}/{len(keyframes)} 张。"
         "只输出结构化字段，不要编造视频中未出现的操作。"
     )
 
     batch = call_structured(
         prompt,
         _ScreenActionBatch,
-        images=keyframes,
+        images=vlm_frames,
     )
     if not isinstance(batch, _ScreenActionBatch):
         batch = _ScreenActionBatch.model_validate(batch)

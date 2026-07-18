@@ -12,6 +12,7 @@ from pipeline.config import clear_settings_cache
 from pipeline.stage1_parse import (
     _ScreenActionBatch,
     _ScreenActionItem,
+    _sample_keyframes_for_vlm,
     detect_screen_actions,
     extract_keyframes,
 )
@@ -65,6 +66,19 @@ class TestExtractKeyframes:
         monkeypatch.setitem(__import__("sys").modules, "cv2", cv2)
         with pytest.raises(FileNotFoundError, match="无法打开"):
             extract_keyframes("missing.mp4", (0.0, 1.0))
+
+
+class TestSampleKeyframes:
+    def test_keeps_all_when_under_limit(self) -> None:
+        frames = [f"f{i}.jpg" for i in range(5)]
+        assert _sample_keyframes_for_vlm(frames, 12) == frames
+
+    def test_samples_evenly_including_ends(self) -> None:
+        frames = [f"f{i}.jpg" for i in range(100)]
+        sampled = _sample_keyframes_for_vlm(frames, 5)
+        assert len(sampled) == 5
+        assert sampled[0] == "f0.jpg"
+        assert sampled[-1] == "f99.jpg"
 
 
 class TestDetectScreenActions:

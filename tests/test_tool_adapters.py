@@ -59,6 +59,67 @@ def test_map_query_mocked_resolved_latlng() -> None:
         map_query.set_client(None)
 
 
+def test_map_query_nominatim_obs_helpers() -> None:
+    """Nominatim raw → Observation 字段映射（不访问网络）。"""
+
+    class _Loc:
+        def __init__(self) -> None:
+            self.latitude = 48.8584
+            self.longitude = 2.2945
+            self.address = "Eiffel Tower, Paris"
+            self.raw = {
+                "display_name": "Eiffel Tower, Paris",
+                "class": "tourism",
+                "type": "attraction",
+            }
+
+    obs = map_query._obs_from_location(_Loc())
+    assert obs["status"] == "success"
+    assert obs["resolved_latlng"] == [48.8584, 2.2945]
+    assert obs["place_type"] == "attraction"
+    assert "latlng" not in obs
+    validate_observation(REGISTRY["map_query"], obs)
+    assert map_query._obs_from_location(None)["status"] == "empty"
+
+
+def test_map_query_amap_geocode_parse() -> None:
+    """高德地理编码响应 → Observation（不访问网络）。"""
+    payload = {
+        "status": "1",
+        "geocodes": [
+            {
+                "formatted_address": "河南省郑州市黄河文化公园",
+                "location": "113.517007,34.947582",
+                "level": "兴趣点",
+            }
+        ],
+    }
+    obs = map_query._obs_from_amap_geocode(payload)
+    assert obs["status"] == "success"
+    assert obs["resolved_latlng"] == [34.947582, 113.517007]
+    assert obs["formatted_address"] == "河南省郑州市黄河文化公园"
+    assert "latlng" not in obs
+    validate_observation(REGISTRY["map_query"], obs)
+
+
+def test_map_query_amap_regeo_parse_then_fill_latlng() -> None:
+    payload = {
+        "status": "1",
+        "regeocode": {
+            "formatted_address": "河南省郑州市惠济区",
+            "addressComponent": {
+                "country": "中国",
+                "province": "河南省",
+                "district": "惠济区",
+            },
+        },
+    }
+    obs = map_query._obs_from_amap_regeo(payload)
+    obs["resolved_latlng"] = [34.95, 113.52]
+    assert obs["status"] == "success"
+    validate_observation(REGISTRY["map_query"], obs)
+
+
 def test_reverse_image_search_mocked() -> None:
     class _C:
         def search(self, image_path: str, bbox: list[float] | None) -> list[dict[str, str]]:
@@ -80,6 +141,33 @@ def test_ocr_mocked() -> None:
     ocr.set_engine(_E())
     try:
         obs = ocr.execute({}, "img.jpg")
+        assert obs["status"] == "success"
+        validate_observation(REGISTRY["ocr"], obs)
+    finally:
+        ocr.set_engine(None)
+
+
+def test_ocr_extract_texts_from_paddle_v3_result() -> None:
+    """不访问网络：覆盖 PaddleOCR 3.x OCRResult 风格解析。"""
+
+    class _Item(dict):
+        @property
+        def json(self) -> dict[str, Any]:
+            return {"res": {"rec_texts": ["HELLO", "GEO"]}}
+
+    texts = ocr._extract_texts([_Item(rec_texts=["HELLO", "GEO"])])
+    assert texts == ["HELLO", "GEO"]
+    assert ocr._extract_texts(None) == []
+
+    class _Empty:
+        def run(self, image_path: str, bbox: list[float] | None) -> list[str]:
+            return []
+
+    ocr.set_engine(_Empty())
+    try:
+        obs = ocr.execute({}, "img.jpg")
+        assert obs["status"] == "empty"
+        assert obs["texts"] == []
         validate_observation(REGISTRY["ocr"], obs)
     finally:
         ocr.set_engine(None)

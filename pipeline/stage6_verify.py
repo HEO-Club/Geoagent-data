@@ -39,6 +39,87 @@ class _JudgeResult(BaseModel):
 _COORD_RE = re.compile(
     r"(?<!\d)(-?\d{1,2}\.\d{2,})\s*[,，]\s*(-?\d{1,3}\.\d{2,})(?!\d)"
 )
+
+# 国家别名：GT 反向地理编码名与模型输出（中/英）应对齐
+_COUNTRY_ALIAS_GROUPS: tuple[frozenset[str], ...] = (
+    frozenset(
+        {
+            "china",
+            "中国",
+            "prc",
+            "p.r.c.",
+            "people's republic of china",
+            "中华人民共和国",
+        }
+    ),
+    frozenset(
+        {
+            "united states",
+            "united states of america",
+            "usa",
+            "u.s.",
+            "u.s.a.",
+            "us",
+            "美国",
+        }
+    ),
+    frozenset({"france", "法国", "république française", "republique francaise"}),
+    frozenset({"japan", "日本", "nippon"}),
+    frozenset({"united kingdom", "uk", "u.k.", "britain", "great britain", "英国"}),
+)
+
+# 一级行政区常见别名（中英）
+_REGION_ALIAS_GROUPS: tuple[frozenset[str], ...] = (
+    frozenset({"henan", "河南", "河南省"}),
+    frozenset({"beijing", "北京", "北京市"}),
+    frozenset({"shanghai", "上海", "上海市"}),
+    frozenset({"guangdong", "广东", "广东省"}),
+    frozenset({"sichuan", "四川", "四川省"}),
+    frozenset({"zhejiang", "浙江", "浙江省"}),
+    frozenset({"jiangsu", "江苏", "江苏省"}),
+    frozenset({"shandong", "山东", "山东省"}),
+    frozenset({"hubei", "湖北", "湖北省"}),
+    frozenset({"hunan", "湖南", "湖南省"}),
+    frozenset({"île-de-france", "ile-de-france", "ile de france"}),
+)
+
+
+def _alias_cluster(
+    name: str, groups: tuple[frozenset[str], ...]
+) -> set[str]:
+    """将地名归一到别名簇（小写）；未知名则仅含自身。"""
+    key = name.strip().lower()
+    if not key:
+        return set()
+    for group in groups:
+        if key in group:
+            return set(group)
+        # 允许「河南省」对「河南」等包含关系落入同簇
+        if any(key in g or g in key for g in group if len(g) >= 2):
+            return set(group) | {key}
+    return {key}
+
+
+def _names_cover(
+    candidates: list[str],
+    target: str,
+    groups: tuple[frozenset[str], ...],
+) -> bool:
+    """候选列表是否覆盖目标地名（含中英别名）。"""
+    target_set = _alias_cluster(target, groups)
+    if not target_set:
+        return True
+    for cand in candidates:
+        cand_set = _alias_cluster(cand, groups)
+        if cand_set & target_set:
+            return True
+        # 回退：子串包含（无别名表时）
+        c = cand.strip().lower()
+        t = target.strip().lower()
+        if c and t and (c in t or t in c):
+            return True
+    return False
+
 _CITY_HINT_RE = re.compile(
     r"\b(Paris|London|Tokyo|Beijing|Shanghai|New York|Berlin|Rome|Madrid|"
     r"Sydney|Moscow|Cairo|Dubai|Seoul|Singapore|Bangkok|Toronto|Chicago|"
@@ -66,11 +147,19 @@ def _haversine_km(a: tuple[float, float], b: tuple[float, float]) -> float:
         return 6371.0 * 2 * math.asin(math.sqrt(h))
 
 
-def default_reverse_geocode(coords: tuple[float, float]) -> tuple[str, Optional[str]]:
-    """默认反向地理编码（geopy Nominatim）。测试应 mock 本函数或注入。"""
+def _reverse_geocode_nominatim(
+    coords: tuple[float, float],
+) -> tuple[str, Optional[str]]:
+    """Nominatim 反向地理编码。"""
     from geopy.geocoders import Nominatim
 
-    geolocator = Nominatim(user_agent="geoagent-dataset-stage6")
+    from pipeline.config import get_settings
+
+    settings = get_settings()
+    geolocator = Nominatim(
+        user_agent=settings.NOMINATIM_USER_AGENT,
+        timeout=settings.NOMINATIM_TIMEOUT_SEC,
+    )
     loc = geolocator.reverse(coords, language="en", exactly_one=True)
     if loc is None or not getattr(loc, "raw", None):
         raise ValueError(f"无法反向解析坐标: {coords}")
@@ -85,6 +174,62 @@ def default_reverse_geocode(coords: tuple[float, float]) -> tuple[str, Optional[
         or address.get("county")
     )
     return str(country), (str(region) if region else None)
+
+
+def _reverse_geocode_amap(coords: tuple[float, float]) -> tuple[str, Optional[str]]:
+    """高德逆地理编码 → (country, region)。"""
+    import json
+    from urllib.parse import urlencode
+    from urllib.request import Request, urlopen
+
+    from pipeline.config import get_settings
+
+    settings = get_settings()
+    api_key = (settings.AMAP_API_KEY or "").strip()
+    if not api_key:
+        raise ValueError("未配置 AMAP_API_KEY（MAP_PROVIDER=amap 时必填）")
+    base = (settings.AMAP_BASE_URL or "").rstrip("/")
+    lat, lng = float(coords[0]), float(coords[1])
+    params = {
+        "key": api_key,
+        "location": f"{lng:.6f},{lat:.6f}",
+        "extensions": "base",
+        "output": "JSON",
+    }
+    url = f"{base}/v3/geocode/regeo?{urlencode(params)}"
+    req = Request(url, headers={"Accept": "application/json"})
+    with urlopen(req, timeout=float(settings.AMAP_TIMEOUT_SEC)) as resp:  # noqa: S310
+        payload = json.loads(resp.read().decode("utf-8"))
+    if not isinstance(payload, dict) or str(payload.get("status")) != "1":
+        raise ValueError(f"AMap reverse 失败: {payload!r}")
+    regeo = payload.get("regeocode")
+    if not isinstance(regeo, dict):
+        raise ValueError(f"无法反向解析坐标: {coords}")
+    component = regeo.get("addressComponent")
+    if not isinstance(component, dict):
+        raise ValueError(f"反向解析缺少 addressComponent: {coords}")
+    country = component.get("country")
+    if not country:
+        raise ValueError(f"反向解析缺少 country: {coords}")
+    region = component.get("province") or component.get("city")
+    return str(country), (str(region) if region else None)
+
+
+def default_reverse_geocode(coords: tuple[float, float]) -> tuple[str, Optional[str]]:
+    """默认反向地理编码；按 MAP_PROVIDER 选择高德或 Nominatim。
+
+    测试应 mock 本函数或注入 reverse_geocode。
+    """
+    from pipeline.config import get_settings
+
+    provider = get_settings().MAP_PROVIDER.strip().lower()
+    if provider in {"amap", "gaode", "高德"}:
+        return _reverse_geocode_amap(coords)
+    if provider in {"nominatim", "osm"}:
+        return _reverse_geocode_nominatim(coords)
+    raise ValueError(
+        f"不支持的 MAP_PROVIDER={get_settings().MAP_PROVIDER!r}；可选: amap / nominatim"
+    )
 
 
 def _collect_thought_text(traj: Trajectory) -> str:
@@ -115,17 +260,25 @@ def _detect_leakage(
     text = _collect_thought_text(traj)
     role = traj.agent_role
 
-    # 任何角色：Thought 中直接写出与 groundtruth 几乎相同的坐标 → 泄漏
+    # Thought 中写出与 groundtruth 几乎相同的坐标 → 泄漏
+    # VERIFIER：允许引用 fine_handoff 候选坐标（即使候选碰巧靠近 GT）
     for match in _COORD_RE.finditer(text):
         lat_s, lng_s = match.group(1), match.group(2)
         try:
             lat, lng = float(lat_s), float(lng_s)
         except ValueError:
             continue
-        if _coord_near(lat, lng, groundtruth):
-            # Agent2 最后一步允许在 Action 中提交坐标；Thought 仍不应提前写出真值
-            reasons.append("thought 中出现与 groundtruth 接近的坐标")
-            break
+        if not _coord_near(lat, lng, groundtruth):
+            continue
+        if role == AgentRole.VERIFIER:
+            cand = traj.fine_handoff
+            if cand is not None and _coord_near(
+                lat, lng, (cand.latitude, cand.longitude), tol_deg=0.05
+            ):
+                continue  # 候选坐标，非 GT 泄漏
+        # Agent2 最后一步允许在 Action 中提交坐标；Thought 仍不应提前写出真值
+        reasons.append("thought 中出现与 groundtruth 接近的坐标")
+        break
 
     if role == AgentRole.COARSE:
         # Agent1 不得出现最终城市、精确地点或坐标
@@ -196,22 +349,16 @@ def _check_coarse_coverage(
         soft.append(f"反向地理编码失败: {exc}")
         return True, hard, soft
 
-    countries_norm = {c.strip().lower() for c in hyp.possible_countries}
-    if country.strip().lower() not in countries_norm:
-        # 允许常见别名包含关系（如 "United States" vs "USA"）
-        covered = any(
-            country.lower() in c or c in country.lower() for c in countries_norm
+    countries_norm = [c.strip() for c in hyp.possible_countries if c.strip()]
+    if not _names_cover(countries_norm, country, _COUNTRY_ALIAS_GROUPS):
+        hard.append(
+            f"COARSE possible_countries 未覆盖真值国家 {country!r}"
         )
-        if not covered:
-            hard.append(
-                f"COARSE possible_countries 未覆盖真值国家 {country!r}"
-            )
 
     if region:
-        regions_norm = {r.strip().lower() for r in hyp.possible_regions}
-        region_l = region.strip().lower()
-        if regions_norm and not any(
-            region_l in r or r in region_l for r in regions_norm
+        regions_norm = [r.strip() for r in hyp.possible_regions if r.strip()]
+        if regions_norm and not _names_cover(
+            regions_norm, region, _REGION_ALIAS_GROUPS
         ):
             soft.append(
                 f"COARSE possible_regions 可能未覆盖真值地区 {region!r}"

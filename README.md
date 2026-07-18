@@ -18,6 +18,9 @@ cp .env.example .env
 # 按需填写 API Key；测试环境保持 ALLOW_REAL_API=false
 ```
 
+默认 LLM 为**通义千问（DashScope）**：在 `.env` 填写 `DASHSCOPE_API_KEY`，保持 `LLM_PROVIDER=qwen`。  
+申请入口：https://bailian.console.aliyun.com/ → API-KEY。默认模型 `qwen3.7-plus`。
+
 ## 目录约定
 
 | 路径 | 说明 |
@@ -27,6 +30,18 @@ cp .env.example .env
 | `data/intermediate/{video_id}/` | 各阶段中间产物 + `manifest.json` |
 | `data/output/shards/` | 每视频 JSONL 分片（并发安全） |
 | `data/output/agent1_coarse.jsonl` 等 | 最终三份训练文件（批处理结束后合并） |
+
+## 准备 groundtruth（地图查坐标）
+
+若尚无精确坐标，可先从字幕推断地名并用 Nominatim 解析：
+
+```bash
+python prep_groundtruth.py --transcript data/transcripts/BV13m61BJEQC.json
+# 或手动指定地名
+python prep_groundtruth.py --transcript data/transcripts/BV13m61BJEQC.json --query 郑州黄河文化公园
+```
+
+成功后会打印 `gt: LAT,LNG`，可直接用于下方 `run_one_video.py --gt`。
 
 ## 单视频
 

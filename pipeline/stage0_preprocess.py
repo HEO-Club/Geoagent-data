@@ -1,9 +1,9 @@
-"""stage0：带时间戳文字稿预处理 — 答案时间戳、Agent 区间、返工区间。"""
+"""stage0：带时间戳文字稿预处理 — 答案时间戳、Agent 区间、可选验证证据窗、返工区间。"""
 
 from __future__ import annotations
 
 import re
-from typing import Sequence
+from typing import Optional, Sequence
 
 from pipeline.schemas import (
     AgentRole,
@@ -50,7 +50,7 @@ _REVISION_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
     )
 )
 
-# VERIFIER 阶段线索（答案宣布后的交叉验证）
+# 答案后可选验证证据话术（不得用于吞掉整段片尾）
 _VERIFIER_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
     re.compile(p, re.IGNORECASE)
     for p in (
@@ -117,24 +117,66 @@ def _answer_segment_end(
     return float(answer_timestamp)
 
 
+def _merge_adjacent_windows(
+    windows: list[tuple[float, float]],
+    *,
+    gap_tol: float = 0.5,
+) -> list[tuple[float, float]]:
+    """合并相邻/重叠的时间窗。"""
+    if not windows:
+        return []
+    ordered = sorted(windows, key=lambda w: (w[0], w[1]))
+    merged: list[tuple[float, float]] = [ordered[0]]
+    for start, end in ordered[1:]:
+        prev_start, prev_end = merged[-1]
+        if start <= prev_end + gap_tol:
+            merged[-1] = (prev_start, max(prev_end, end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def select_post_answer_evidence_windows(
+    transcript: list[TranscriptSegment],
+    answer_timestamp: float,
+) -> list[tuple[float, float]]:
+    """在宣布答案句结束之后筛选可选验证证据短窗。
+
+    仅保留含验证话术的片段；合并相邻窗。排除宣布句本身；
+    不得默认吞掉答案后全部字幕。
+    """
+    if not transcript:
+        return []
+    answer_end = _answer_segment_end(transcript, answer_timestamp)
+    windows: list[tuple[float, float]] = []
+    for seg in transcript:
+        if seg.end <= answer_end + 1e-9:
+            continue
+        # 跨越宣布句末尾的片段跳过，避免带入宣布内容
+        if seg.start < answer_end:
+            continue
+        if _segment_matches(seg, _VERIFIER_PATTERNS):
+            windows.append((float(seg.start), float(seg.end)))
+    return _merge_adjacent_windows(windows)
+
+
 def segment_by_agent_role(
     transcript: list[TranscriptSegment],
     answer_timestamp: float,
+    post_answer_evidence_windows: Optional[list[tuple[float, float]]] = None,
 ) -> list[AgentTimeSegment]:
-    """识别三个 Agent 的时间区间。
+    """划分 COARSE / FINE / VERIFIER 时间区间。
 
-    COARSE/FINE 落在 answer_timestamp 之前；
-    VERIFIER 落在宣布答案片段结束之后（宣布句本身不作验证证据）。
+    COARSE/FINE 落在 answer_timestamp 之前。
+    VERIFIER：若证据窗非空取其并集；否则为零长度占位（主链由 stage5 合成）。
     """
     if not transcript:
         raise ValueError("transcript 为空，无法划分 Agent 时间区间")
 
     t_min = float(min(s.start for s in transcript))
-    t_max = float(max(s.end for s in transcript))
     if answer_timestamp <= t_min:
         raise ValueError("answer_timestamp 不晚于文字稿起点，无法划分 COARSE/FINE")
 
-    # COARSE → FINE 切换点：答案前的精定位线索；找不到则对半切
     fine_start = _find_first_match_start(
         transcript,
         _FINE_TRANSITION_PATTERNS,
@@ -144,7 +186,6 @@ def segment_by_agent_role(
     if fine_start is None:
         fine_start = t_min + (answer_timestamp - t_min) / 2.0
 
-    # 保证严格有序且非空区间
     if fine_start <= t_min:
         fine_start = t_min + max((answer_timestamp - t_min) * 0.1, 0.01)
     if fine_start >= answer_timestamp:
@@ -153,23 +194,20 @@ def segment_by_agent_role(
             fine_start = (t_min + answer_timestamp) / 2.0
 
     answer_end = _answer_segment_end(transcript, answer_timestamp)
-    verifier_start = max(answer_end, answer_timestamp)
-
-    # VERIFIER：优先从验证话术后延；否则从答案句结束延到文稿末尾
-    verifier_cue = _find_first_match_start(
-        transcript,
-        _VERIFIER_PATTERNS,
-        before=t_max + 1.0,
-        after=verifier_start - 1e-9,
+    windows = (
+        list(post_answer_evidence_windows)
+        if post_answer_evidence_windows is not None
+        else select_post_answer_evidence_windows(transcript, answer_timestamp)
     )
-    if verifier_cue is not None and verifier_cue >= verifier_start:
-        verifier_start = verifier_cue
 
-    if verifier_start >= t_max:
-        # 文稿在答案后几乎无内容：仍给出极短 VERIFIER 区间以保持三段结构
-        verifier_end = verifier_start + 0.01
+    if windows:
+        verifier_start = max(min(w[0] for w in windows), answer_end)
+        verifier_end = max(w[1] for w in windows)
+        if verifier_end < verifier_start:
+            verifier_end = verifier_start
     else:
-        verifier_end = t_max
+        verifier_start = float(answer_end)
+        verifier_end = float(answer_end)
 
     return [
         AgentTimeSegment(
@@ -211,7 +249,6 @@ def detect_revision_segments(
                 current_start = float(seg.start)
                 current_end = float(seg.end)
             else:
-                # 与上一段时间相邻或重叠则合并
                 assert current_end is not None
                 if seg.start <= current_end + 1.0:
                     current_end = max(current_end, float(seg.end))
@@ -237,10 +274,18 @@ def preprocess(video_input: VideoInput) -> PreprocessResult:
     """
     transcript = video_input.transcript
     answer_timestamp = locate_answer_timestamp(transcript)
-    agent_segments = segment_by_agent_role(transcript, answer_timestamp)
+    evidence_windows = select_post_answer_evidence_windows(
+        transcript, answer_timestamp
+    )
+    agent_segments = segment_by_agent_role(
+        transcript,
+        answer_timestamp,
+        post_answer_evidence_windows=evidence_windows,
+    )
     revision_segments = detect_revision_segments(transcript)
     return PreprocessResult(
         answer_timestamp=answer_timestamp,
         agent_segments=agent_segments,
         revision_segments=revision_segments,
+        post_answer_evidence_windows=evidence_windows,
     )

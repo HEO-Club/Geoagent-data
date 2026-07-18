@@ -193,6 +193,14 @@ def test_promote_failure_rolls_back(tmp_registry: Path) -> None:
     def boom(tool_name: str, video_ids: list[str]) -> dict:
         raise RuntimeError("stage rerun failed")
 
+    # 将 ocr 先降为 draft，验证升档失败后回滚到升档前状态
+    items = json.loads(tmp_registry.read_text(encoding="utf-8"))
+    for item in items:
+        if item["name"] == "ocr":
+            item["tier"] = "draft"
+            item["executor_ref"] = None
+    tmp_registry.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+
     # 无受影响样本时默认 rerunner 不会失败；放入假样本
     out_dir = Path(tmp_registry).parent / "output"
     (out_dir / "x.jsonl").write_text(

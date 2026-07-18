@@ -1,7 +1,8 @@
 """stage5：三 Agent 主轨迹与 revision 轨迹重构。
 
 本阶段禁止访问 groundtruth；函数签名不得包含 groundtruth。
-LLM 仅改写前向推理 Thought，并产出角色结构化输出。
+LLM 改写前向推理 Thought，并产出角色结构化输出；
+若 FINE 脚手架缺少 terminal submit_answer，则基于证据合成该步（仍禁止 GT）。
 """
 
 from __future__ import annotations
@@ -16,6 +17,8 @@ from pipeline.schemas import (
     Action,
     AgentRole,
     LocationHypothesis,
+    Move,
+    NormalizationMode,
     NormalizedStep,
     ObservationExecutionResult,
     RevisionContext,
@@ -25,6 +28,9 @@ from pipeline.schemas import (
     TrajectoryStep,
     VerificationResult,
 )
+from pipeline.tools.base import execute_action
+from pipeline.tools.registry import load_registry
+from pipeline.tools.validation import validate_action_params
 
 # ---------------------------------------------------------------------------
 # LLM 结构化输出（仅本模块内部使用）
@@ -224,6 +230,148 @@ def _to_trajectory_steps(
     return out
 
 
+def _synthesize_submit_answer(
+    units: list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]],
+    *,
+    coarse_handoff: LocationHypothesis,
+    image_path: str,
+    answer_timestamp: float,
+) -> SubmitAnswerResult:
+    """根据脚手架证据结构化生成 SubmitAnswerResult（禁止使用 groundtruth）。"""
+    evidence_lines = [
+        "FINE 轨迹缺少 terminal submit_answer。请仅根据下列脚手架证据"
+        "生成 SubmitAnswerResult，作为最后一步 submit_answer 的 params。",
+        "约束：",
+        "1. 不得使用 groundtruth、真值地名或由真值反推的地址；",
+        "2. 坐标优先采用成功 map_query Observation 中的 resolved_latlng；",
+        "3. location_name / reasoning 只能来自 thought_draft 与 Observation 已出现信息；",
+        "4. 禁止编造 Observation 中完全不支持的精确坐标。",
+        f"answer_timestamp: {answer_timestamp}",
+        f"coarse_handoff: {coarse_handoff.model_dump_json()}",
+        "\n## Scaffold evidence",
+    ]
+    for i, (thought, action, obs, _step) in enumerate(units, start=1):
+        evidence_lines.append(_format_unit_for_prompt(i, thought, action, obs))
+    return call_structured(
+        "\n".join(evidence_lines),
+        SubmitAnswerResult,
+        images=[image_path],
+    )
+
+
+def _ensure_fine_terminal_submit(
+    units: list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]],
+    *,
+    coarse_handoff: LocationHypothesis,
+    image_path: str,
+    answer_timestamp: float,
+) -> list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]]:
+    """若 FINE 末步不是 submit_answer，则基于证据合成并追加 terminal 步。
+
+    Action/Observation 骨架仍由程序构造；LLM 只产出 SubmitAnswerResult params。
+    """
+    if not units:
+        raise ValueError("FINE 无可重构的 Action 步，无法合成 submit_answer")
+    if units[-1][1].tool == "submit_answer":
+        return units
+
+    submit_result = _synthesize_submit_answer(
+        units,
+        coarse_handoff=coarse_handoff,
+        image_path=image_path,
+        answer_timestamp=answer_timestamp,
+    )
+    registry = load_registry()
+    tool = registry["submit_answer"]
+    params = validate_action_params(
+        tool,
+        submit_result.model_dump(),
+        agent_role=AgentRole.FINE,
+    )
+    action = Action(tool="submit_answer", params=params)
+    obs = ObservationExecutionResult(
+        action=action,
+        observation=None,
+        source=None,
+        status="skipped",
+        error_message=None,
+        cache_hit=False,
+    )
+    last_step = units[-1][3]
+    t_end = float(last_step.move.end_time)
+    syn_step = NormalizedStep(
+        move=Move(
+            start_time=t_end,
+            end_time=t_end,
+            narration="提交最终定位答案。",
+            screen_action="submit_answer",
+            visible_clues=[],
+            agent_role=AgentRole.FINE,
+        ),
+        thought_draft="综合已有 Observation，提交最终定位答案。",
+        actions=[action],
+        normalization_mode=NormalizationMode.FALLBACK,
+        matched_tool_confidence=None,
+        fallback_reason="stage5 合成 FINE terminal submit_answer",
+    )
+    draft = syn_step.thought_draft
+    return [*units, (draft, action, obs, syn_step)]
+
+
+def _synthesize_verifier_units(
+    fine_handoff: SubmitAnswerResult,
+    image_path: str,
+) -> list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]]:
+    """基于 fine_handoff 合成至少一步 map_query 验证脚手架并真实/可注入执行。
+
+    禁止使用 groundtruth；候选坐标仅来自 Agent2 交接物。
+    """
+    registry = load_registry()
+    tool = registry["map_query"]
+    raw_params = {
+        "latlng": [fine_handoff.latitude, fine_handoff.longitude],
+        "query": fine_handoff.location_name,
+    }
+    params = validate_action_params(
+        tool, raw_params, agent_role=AgentRole.VERIFIER
+    )
+    action = Action(tool="map_query", params=params)
+    obs = execute_action(action, image_path, AgentRole.VERIFIER)
+    draft = (
+        "将 Agent2 候选定位与地图结果交叉核对，"
+        f"检查 {fine_handoff.location_name} 是否与图像线索自洽。"
+    )
+    syn_step = NormalizedStep(
+        move=Move(
+            start_time=0.0,
+            end_time=0.0,
+            narration="交叉验证候选定位。",
+            screen_action="map_query",
+            visible_clues=[],
+            agent_role=AgentRole.VERIFIER,
+        ),
+        thought_draft=draft,
+        actions=[action],
+        normalization_mode=NormalizationMode.FALLBACK,
+        matched_tool_confidence=None,
+        fallback_reason="stage5 合成 VERIFIER 主验证链（基于 fine_handoff）",
+    )
+    return [(draft, action, obs, syn_step)]
+
+
+def _expand_or_synthesize_verifier_units(
+    steps: list[NormalizedStep],
+    observations: list[ObservationExecutionResult],
+    fine_handoff: SubmitAnswerResult,
+    image_path: str,
+) -> list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]]:
+    """优先展开视频侧 Action；若无可展开步则合成验证脚手架。"""
+    try:
+        return _expand_action_units(steps, observations)
+    except ValueError:
+        return _synthesize_verifier_units(fine_handoff, image_path)
+
+
 def _extract_submit_answer(steps: list[TrajectoryStep]) -> SubmitAnswerResult:
     """FINE 最后一步必须为 submit_answer，params 解析为 SubmitAnswerResult。"""
     if not steps:
@@ -290,7 +438,21 @@ def reconstruct_single_trajectory(
     if revision_context is not None and not is_revision:
         raise ValueError("提供 revision_context 时 is_revision 必须为 True")
 
-    units = _expand_action_units(steps, observations)
+    if agent_role == AgentRole.VERIFIER:
+        assert fine_handoff is not None  # 上文已校验
+        units = _expand_or_synthesize_verifier_units(
+            steps, observations, fine_handoff, image_path
+        )
+    else:
+        units = _expand_action_units(steps, observations)
+    if agent_role == AgentRole.FINE:
+        assert coarse_handoff is not None  # 上文已校验
+        units = _ensure_fine_terminal_submit(
+            units,
+            coarse_handoff=coarse_handoff,
+            image_path=image_path,
+            answer_timestamp=answer_timestamp,
+        )
     prompt = _build_scaffold_prompt(
         agent_role,
         units,
@@ -382,6 +544,7 @@ def reconstruct_all_trajectories(
 
     Agent1.coarse_output → Agent2.coarse_handoff
     Agent2.fine_output → Agent3.fine_handoff
+    Agent3：若视频侧无任何可展开 Action，则基于 fine_handoff 合成验证脚手架。
     """
     required = (AgentRole.COARSE, AgentRole.FINE, AgentRole.VERIFIER)
     for role in required:

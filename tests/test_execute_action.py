@@ -39,6 +39,16 @@ def _promote_local(registry_path: Path, name: str, ref: str) -> None:
     registry_path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _demote_local(registry_path: Path, name: str) -> None:
+    """测试用：将 tool 临时标为 draft 以覆盖 VLM 合成路径。"""
+    items = json.loads(registry_path.read_text(encoding="utf-8"))
+    for item in items:
+        if item["name"] == name:
+            item["tier"] = "draft"
+            item["executor_ref"] = None
+    registry_path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def test_permission_denied_for_wrong_agent(env_registry: Path, tmp_path: Path) -> None:
     img = tmp_path / "frame.jpg"
     img.write_bytes(b"fake")
@@ -110,10 +120,7 @@ def test_draft_vlm_synthesis_mocked(
             return {
                 "status": "success",
                 "error_message": None,
-                "results": [
-                    {"title": "A", "snippet": "B", "url": "https://example.com/a"},
-                    {"title": "C", "snippet": "D", "url": "https://example.com/c"},
-                ],
+                "description": "red brick facade with arched window",
             }
 
     def fake_structured(prompt: str, response_model: type, images: list[str] | None = None, **kwargs: Any) -> Any:
@@ -121,8 +128,10 @@ def test_draft_vlm_synthesis_mocked(
         return _Obs()
 
     monkeypatch.setattr("pipeline.tools.base.call_structured", fake_structured)
+    # 临时降为 draft，专门验证 VLM 合成路径
+    _demote_local(env_registry, "zoom_inspect")
     result = execute_action(
-        Action(tool="web_search", params={"query": "spire", "purpose": "broad_discovery"}),
+        Action(tool="zoom_inspect", params={"bbox": [0.1, 0.2, 0.3, 0.4]}),
         str(img),
         AgentRole.COARSE,
         registry_path=str(env_registry),
@@ -131,7 +140,7 @@ def test_draft_vlm_synthesis_mocked(
     assert result.status == "success"
     assert result.source is ObservationSource.VLM_SYNTHESIZED
     assert result.observation is not None
-    assert result.observation["results"][0]["title"] == "A"
+    assert "brick" in result.observation["description"]
 
 
 def test_production_invalid_observation_not_masked_by_vlm(

@@ -152,6 +152,8 @@ def mock_llm(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
             )
         if response_model is _RewrittenTrajectory:
             return _RewrittenTrajectory(thoughts=thoughts)
+        if response_model is SubmitAnswerResult:
+            return _submit()
         raise AssertionError(f"未预期的 response_model: {response_model}")
 
     monkeypatch.setattr(
@@ -238,19 +240,52 @@ def test_fine_requires_submit_answer_and_terminal_none(mock_llm: MagicMock) -> N
     assert traj.fine_handoff is None
 
 
-def test_fine_without_submit_answer_raises(mock_llm: MagicMock) -> None:
-    action = Action(tool="ocr", params={})
-    steps = [_step([action], role=AgentRole.FINE)]
+def test_fine_synthesizes_submit_answer_when_missing(mock_llm: MagicMock) -> None:
+    """脚手架末步非 submit_answer 时，stage5 基于证据合成 terminal 步。"""
+    map_action = Action(tool="map_query", params={"query": "Eiffel Tower"})
+    steps = [
+        _step([map_action], role=AgentRole.FINE, thought="查地图锁定地标。"),
+    ]
     observations = [
         _obs(
-            action,
-            observation={"status": "success", "error_message": None, "texts": ["Rue"]},
+            map_action,
+            observation={
+                "status": "success",
+                "error_message": None,
+                "formatted_address": "Paris",
+                "resolved_latlng": [48.8584, 2.2945],
+                "place_type": "tourist_attraction",
+            },
         )
     ]
-    with pytest.raises(ValueError, match="submit_answer"):
+    traj = reconstruct_single_trajectory(
+        steps,
+        observations,
+        AgentRole.FINE,
+        answer_timestamp=50.0,
+        image_path="a.jpg",
+        coarse_handoff=_hyp(),
+    )
+    assert traj.steps[-1].action.tool == "submit_answer"
+    assert traj.steps[-1].observation is None
+    assert traj.fine_output is not None
+    assert traj.fine_output.location_name == "Eiffel Tower"
+    assert len(traj.steps) == 2
+    # 先合成 SubmitAnswerResult，再改写 thoughts
+    assert mock_llm.calls[0]["response_model"] is SubmitAnswerResult
+    # 禁止把真值作为输入字段；提示中的「不得使用 groundtruth」约束除外
+    assert "groundtruth:" not in mock_llm.calls[0]["prompt"].lower()
+    assert mock_llm.calls[1]["response_model"] is _RewrittenTrajectory
+    assert mock_llm.calls[1]["prompt"].count("### Step ") == 2
+
+
+def test_fine_empty_units_cannot_synthesize_submit(mock_llm: MagicMock) -> None:
+    """全 thought_only 时无法展开 Action，仍应失败。"""
+    steps = [_step([], role=AgentRole.FINE, thought="只有旁白。")]
+    with pytest.raises(ValueError, match="无可重构的 Action"):
         reconstruct_single_trajectory(
             steps,
-            observations,
+            [],
             AgentRole.FINE,
             answer_timestamp=50.0,
             image_path="a.jpg",
@@ -292,6 +327,47 @@ def test_verifier_uses_fine_handoff_as_candidate(mock_llm: MagicMock) -> None:
     assert "候选" in prompt or "fine_handoff" in prompt
     assert "48.8584" in prompt  # 候选坐标可出现
     assert "groundtruth" not in prompt.lower()
+
+
+def test_verifier_synthesizes_scaffold_when_no_video_actions(
+    mock_llm: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """无视频 Action 时，基于 fine_handoff 合成 map_query 验证链。"""
+
+    def _fake_execute(
+        action: Action, image_path: str, agent_role: AgentRole
+    ) -> ObservationExecutionResult:
+        assert action.tool == "map_query"
+        assert agent_role == AgentRole.VERIFIER
+        assert image_path == "frame.jpg"
+        return _obs(
+            action,
+            observation={
+                "status": "success",
+                "error_message": None,
+                "formatted_address": "Paris",
+                "resolved_latlng": [48.8584, 2.2945],
+                "place_type": "tourist_attraction",
+            },
+        )
+
+    monkeypatch.setattr(
+        "pipeline.stage5_reconstruct.execute_action",
+        _fake_execute,
+    )
+    traj = reconstruct_single_trajectory(
+        [],
+        [],
+        AgentRole.VERIFIER,
+        answer_timestamp=100.0,
+        image_path="frame.jpg",
+        fine_handoff=_submit(),
+    )
+    assert len(traj.steps) == 1
+    assert traj.steps[0].action.tool == "map_query"
+    assert traj.steps[0].observation is not None
+    assert traj.verifier_output is not None
+    assert traj.fine_handoff is not None
 
 
 def test_reconstruct_all_handoff_chain(mock_llm: MagicMock) -> None:

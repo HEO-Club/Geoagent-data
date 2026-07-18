@@ -170,8 +170,23 @@ class TestSeedRegistry:
         tools = [ToolDefinition.model_validate(item) for item in raw]
         names = {t.name for t in tools}
         assert names == SEED_TOOL_NAMES
-        assert all(t.tier == ToolTier.DRAFT for t in tools)
-        assert all(t.executor_ref is None for t in tools)
+        by_name = {t.name: t for t in tools}
+        expected_production = {
+            "sun_position_calc": "pipeline.tools.sun_position.execute",
+            "map_query": "pipeline.tools.map_query.execute",
+            "web_search": "pipeline.tools.web_search.execute",
+            "reverse_image_search": "pipeline.tools.reverse_image_search.execute",
+            "ocr": "pipeline.tools.ocr.execute",
+            "zoom_inspect": "pipeline.tools.zoom_inspect.execute",
+        }
+        for name, ref in expected_production.items():
+            assert by_name[name].tier == ToolTier.PRODUCTION
+            assert by_name[name].executor_ref == ref
+        for t in tools:
+            if t.name in expected_production:
+                continue
+            assert t.tier == ToolTier.DRAFT
+            assert t.executor_ref is None
 
     def test_map_query_uses_resolved_latlng(self) -> None:
         raw = json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
