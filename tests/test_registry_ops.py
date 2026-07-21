@@ -1,18 +1,16 @@
-"""registry 注册 / 文件锁 / 升档备份回滚测试。"""
+"""registry 注册 / 文件锁测试（无 promote / 无 tier）。"""
 
 from __future__ import annotations
 
-import json
 import threading
 from pathlib import Path
 
 import pytest
 
-from pipeline.schemas import AgentRole, ObservationField, ParamField, ToolDefinition, ToolTier
+from pipeline.schemas import AgentRole, ObservationField, ParamField, ToolDefinition
 from pipeline.tools.registry import (
     get_tools_for_agent,
     load_registry,
-    promote_tool,
     register_tool,
 )
 
@@ -34,12 +32,11 @@ def _status_fields() -> list[ObservationField]:
     ]
 
 
-def _draft_tool(name: str, description: str) -> ToolDefinition:
+def _new_tool(name: str, description: str) -> ToolDefinition:
     return ToolDefinition.model_validate(
         {
             "name": name,
             "description": description,
-            "tier": ToolTier.DRAFT,
             "params": [
                 ParamField(
                     name="query",
@@ -60,7 +57,6 @@ def _draft_tool(name: str, description: str) -> ToolDefinition:
             ],
             "allowed_agents": [AgentRole.COARSE],
             "is_terminal": False,
-            "executor_ref": None,
             "created_at": "2026-07-14T00:00:00Z",
         }
     )
@@ -92,24 +88,24 @@ def test_load_registry_indexes_seeds(tmp_registry: Path) -> None:
 
 
 def test_register_tool_and_reject_duplicate_name(tmp_registry: Path) -> None:
-    tool = _draft_tool("detect_signage", "检测路牌文字线索供粗定位使用。")
+    tool = _new_tool("detect_signage", "检测路牌文字线索供粗定位使用。")
     register_tool(tool, path=tmp_registry)
     reg = load_registry(tmp_registry)
     assert "detect_signage" in reg
-    assert reg["detect_signage"].tier is ToolTier.DRAFT
+    assert reg["detect_signage"].name == "detect_signage"
     with pytest.raises(ValueError, match="已存在|编辑距离|语义"):
         register_tool(tool, path=tmp_registry)
 
 
 def test_register_rejects_near_duplicate_name(tmp_registry: Path) -> None:
     # 与 web_search 编辑距离很小
-    tool = _draft_tool("web_searx", "按用途检索网页用于地理线索发现验证。")
+    tool = _new_tool("web_searx", "按用途检索网页用于地理线索发现验证。")
     with pytest.raises(ValueError):
         register_tool(tool, path=tmp_registry)
 
 
 def test_derived_from_must_exist(tmp_registry: Path) -> None:
-    tool = _draft_tool("lookup_plaza", "查询广场周边地理线索供定位使用。")
+    tool = _new_tool("lookup_plaza", "查询广场周边地理线索供定位使用。")
     tool = tool.model_copy(update={"derived_from_existing_tools": ["not_exists_tool"]})
     with pytest.raises(ValueError, match="derived_from"):
         register_tool(tool, path=tmp_registry)
@@ -138,7 +134,7 @@ def test_concurrent_register_with_file_lock(tmp_registry: Path) -> None:
     def worker(name: str) -> None:
         try:
             register_tool(
-                _draft_tool(name, f"处理与{name}相关的独特地理线索。"),
+                _new_tool(name, f"处理与{name}相关的独特地理线索。"),
                 path=tmp_registry,
             )
         except BaseException as exc:  # noqa: BLE001
@@ -152,81 +148,3 @@ def test_concurrent_register_with_file_lock(tmp_registry: Path) -> None:
     assert not errors
     reg = load_registry(tmp_registry)
     assert all(n in reg for n in names)
-
-
-def test_promote_sun_position_success_with_mocked_rerun(
-    tmp_registry: Path,
-    tmp_path: Path,
-) -> None:
-    # 写入一条受影响样本
-    out = tmp_path / "output" / "agent1.jsonl"
-    out.write_text(
-        json.dumps(
-            {
-                "id": "v1",
-                "source_video": "video_a",
-                "draft_tool_names": ["sun_position_calc"],
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
-    def rerun(tool_name: str, video_ids: list[str]) -> dict:
-        assert tool_name == "sun_position_calc"
-        assert "video_a" in video_ids
-        return {"rerun": video_ids, "stages": ["stage4", "stage5", "stage6", "stage7"]}
-
-    report = promote_tool(
-        "sun_position_calc",
-        "pipeline.tools.sun_position.execute",
-        path=tmp_registry,
-        stage_rerunner=rerun,
-    )
-    assert report["status"] == "success"
-    reg = load_registry(tmp_registry)
-    assert reg["sun_position_calc"].tier is ToolTier.PRODUCTION
-    assert reg["sun_position_calc"].executor_ref == "pipeline.tools.sun_position.execute"
-
-
-def test_promote_failure_rolls_back(tmp_registry: Path) -> None:
-    def boom(tool_name: str, video_ids: list[str]) -> dict:
-        raise RuntimeError("stage rerun failed")
-
-    # 将 ocr 先降为 draft，验证升档失败后回滚到升档前状态
-    items = json.loads(tmp_registry.read_text(encoding="utf-8"))
-    for item in items:
-        if item["name"] == "ocr":
-            item["tier"] = "draft"
-            item["executor_ref"] = None
-    tmp_registry.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    # 无受影响样本时默认 rerunner 不会失败；放入假样本
-    out_dir = Path(tmp_registry).parent / "output"
-    (out_dir / "x.jsonl").write_text(
-        json.dumps({"source_video": "v9", "draft_tool_names": ["ocr"]}) + "\n",
-        encoding="utf-8",
-    )
-
-    # ocr promote 需要可执行 smoke；注入 OCR 引擎
-    from pipeline.tools import ocr as ocr_mod
-
-    class _Eng:
-        def run(self, image_path: str, bbox: list[float] | None) -> list[str]:
-            return ["HELLO"]
-
-    ocr_mod.set_engine(_Eng())
-    try:
-        with pytest.raises(RuntimeError, match="stage rerun failed"):
-            promote_tool(
-                "ocr",
-                "pipeline.tools.ocr.execute",
-                path=tmp_registry,
-                stage_rerunner=boom,
-            )
-    finally:
-        ocr_mod.set_engine(None)
-
-    reg = load_registry(tmp_registry)
-    assert reg["ocr"].tier is ToolTier.DRAFT
-    assert reg["ocr"].executor_ref is None

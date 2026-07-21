@@ -2,7 +2,6 @@
   {
     "name": "web_search",
     "description": "按用途检索网页，用于地理线索的广泛发现、精确查找或验证。",
-    "tier": "production",
     "params": [
       {
         "name": "query",
@@ -87,7 +86,6 @@
       "verifier"
     ],
     "is_terminal": false,
-    "executor_ref": "pipeline.tools.web_search.execute",
     "created_at": "2026-07-13T00:00:00Z",
     "source_video_timestamp": null,
     "source_narration": null,
@@ -96,7 +94,6 @@
   {
     "name": "reverse_image_search",
     "description": "以图搜图匹配相似网页，用于精定位候选地点发现。",
-    "tier": "production",
     "params": [
       {
         "name": "bbox",
@@ -162,7 +159,6 @@
       "fine_locator"
     ],
     "is_terminal": false,
-    "executor_ref": "pipeline.tools.reverse_image_search.execute",
     "created_at": "2026-07-13T00:00:00Z",
     "source_video_timestamp": null,
     "source_narration": null,
@@ -171,7 +167,6 @@
   {
     "name": "map_query",
     "description": "按地名或坐标查询地图地点信息，用于精定位与验证。",
-    "tier": "production",
     "params": [
       {
         "name": "query",
@@ -237,7 +232,6 @@
       "verifier"
     ],
     "is_terminal": false,
-    "executor_ref": "pipeline.tools.map_query.execute",
     "created_at": "2026-07-13T00:00:00Z",
     "source_video_timestamp": null,
     "source_narration": null,
@@ -246,7 +240,6 @@
   {
     "name": "ocr",
     "description": "识别图像或局部区域中的文字，用于提取路牌店招等线索。",
-    "tier": "production",
     "params": [
       {
         "name": "bbox",
@@ -291,7 +284,6 @@
       "fine_locator"
     ],
     "is_terminal": false,
-    "executor_ref": "pipeline.tools.ocr.execute",
     "created_at": "2026-07-13T00:00:00Z",
     "source_video_timestamp": null,
     "source_narration": null,
@@ -300,7 +292,6 @@
   {
     "name": "zoom_inspect",
     "description": "放大查看指定图像区域，描述局部视觉细节与线索。",
-    "tier": "production",
     "params": [
       {
         "name": "bbox",
@@ -345,7 +336,6 @@
       "fine_locator"
     ],
     "is_terminal": false,
-    "executor_ref": "pipeline.tools.zoom_inspect.execute",
     "created_at": "2026-07-13T00:00:00Z",
     "source_video_timestamp": null,
     "source_narration": null,
@@ -354,7 +344,6 @@
   {
     "name": "sun_position_calc",
     "description": "根据阴影方向与估计地方时推算可能纬度范围。",
-    "tier": "production",
     "params": [
       {
         "name": "shadow_direction_deg",
@@ -409,7 +398,6 @@
       "coarse_locator"
     ],
     "is_terminal": false,
-    "executor_ref": "pipeline.tools.sun_position.execute",
     "created_at": "2026-07-13T00:00:00Z",
     "source_video_timestamp": null,
     "source_narration": null,
@@ -418,7 +406,6 @@
   {
     "name": "submit_answer",
     "description": "提交精定位最终答案（坐标、地名、置信度与理由）。",
-    "tier": "draft",
     "params": [
       {
         "name": "latitude",
@@ -471,10 +458,108 @@
       "fine_locator"
     ],
     "is_terminal": true,
-    "executor_ref": null,
     "created_at": "2026-07-13T00:00:00Z",
     "source_video_timestamp": null,
     "source_narration": null,
     "derived_from_existing_tools": []
+  },
+  {
+    "name": "compare_images_for_geolocation",
+    "description": "分屏对比两张图像（如老照片与卫星地图），提取视觉相似性线索并返回匹配评估结果，用于粗定位阶段寻找候选地点。",
+    "params": [
+      {
+        "name": "image_a",
+        "type": "string",
+        "required": true,
+        "description": "第一张图像的标识（如老照片路径或URL）",
+        "example": "old_photo.jpg",
+        "default": null,
+        "enum_values": null
+      },
+      {
+        "name": "image_b",
+        "type": "string",
+        "required": true,
+        "description": "第二张图像的标识（如卫星地图截图路径或URL）",
+        "example": "satellite_map.jpg",
+        "default": null,
+        "enum_values": null
+      },
+      {
+        "name": "focus_features",
+        "type": "string_list",
+        "required": false,
+        "description": "需要重点对比的视觉特征列表（如桥梁、河流、道路走向）",
+        "example": [
+          "bridge",
+          "river",
+          "road_layout"
+        ],
+        "default": null,
+        "enum_values": null
+      }
+    ],
+    "observation_fields": [
+      {
+        "name": "status",
+        "type": "string",
+        "nullable": false,
+        "description": "调用状态，success 或 error",
+        "item_fields": null
+      },
+      {
+        "name": "error_message",
+        "type": "string",
+        "nullable": true,
+        "description": "当 status 为 error 时的错误描述；当 status 为 success 时为 null",
+        "item_fields": null
+      },
+      {
+        "name": "visual_similarity_score",
+        "type": "float",
+        "nullable": false,
+        "description": "两张图像的整体视觉相似度，范围 0.0-1.0",
+        "item_fields": null
+      },
+      {
+        "name": "matched_features",
+        "type": "string_list",
+        "nullable": false,
+        "description": "成功匹配的视觉特征列表",
+        "item_fields": null
+      },
+      {
+        "name": "mismatched_features",
+        "type": "string_list",
+        "nullable": false,
+        "description": "未匹配或存在明显差异的视觉特征列表",
+        "item_fields": null
+      },
+      {
+        "name": "geolocation_hints",
+        "type": "string_list",
+        "nullable": false,
+        "description": "基于图像对比得出的地理线索（如河流宽度、桥梁类型、地形特征）",
+        "item_fields": null
+      },
+      {
+        "name": "candidate_region_description",
+        "type": "string",
+        "nullable": true,
+        "description": "根据匹配特征推测的候选区域描述；当无法推测出候选区域时为 null",
+        "item_fields": null
+      }
+    ],
+    "allowed_agents": [
+      "coarse_locator"
+    ],
+    "is_terminal": false,
+    "created_at": "2026-07-20T15:03:21Z",
+    "source_video_timestamp": null,
+    "source_narration": "因此根据桥的跨度,这大概率跨越的是一条河,而且这条河还很宽。",
+    "derived_from_existing_tools": [
+      "zoom_inspect",
+      "web_search"
+    ]
   }
 ]

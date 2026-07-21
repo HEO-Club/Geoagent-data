@@ -1,4 +1,4 @@
-"""prep_groundtruth：字幕地名抽取与 map 解析（mock map_query）。"""
+"""prep_groundtruth：字幕地名抽取与 geocode_place 解析（mock Nominatim）。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ from pipeline.prep_groundtruth import (
     lookup_groundtruth,
 )
 from pipeline.schemas import TranscriptSegment
-from pipeline.tools import map_query
 
 
 def _segs() -> list[TranscriptSegment]:
@@ -36,50 +35,46 @@ def test_extract_place_candidates_prefers_answer_window() -> None:
     assert any("黄河文化公园" in n or "郑州黄河文化公园" in n for n in names)
 
 
-def test_lookup_groundtruth_uses_map_query(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_lookup_groundtruth_uses_geocode_place(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
 
-    class _Client:
-        def query(self, query: str | None, latlng: list[float] | None) -> dict[str, Any]:
-            assert latlng is None
-            assert query is not None
-            calls.append(query)
-            return {
-                "status": "success",
-                "error_message": None,
-                "formatted_address": "Zhengzhou Yellow River Scenic Area",
-                "resolved_latlng": [34.946, 113.512],
-                "place_type": "park",
-            }
+    def fake_geocode(query: str) -> dict[str, Any]:
+        calls.append(query)
+        return {
+            "status": "success",
+            "error_message": None,
+            "formatted_address": "Zhengzhou Yellow River Scenic Area",
+            "resolved_latlng": [34.946, 113.512],
+            "place_type": "park",
+        }
 
-    map_query.set_client(_Client())
-    try:
-        sug = lookup_groundtruth(_segs(), query=None)
-        assert sug.status == "success"
-        assert sug.latitude == pytest.approx(34.946)
-        assert sug.longitude == pytest.approx(113.512)
-        assert sug.gt_cli() == "34.946,113.512"
-        assert calls
-    finally:
-        map_query.set_client(None)
+    monkeypatch.setattr(
+        "pipeline.prep_groundtruth.geocode_place",
+        fake_geocode,
+    )
+    sug = lookup_groundtruth(_segs(), query=None)
+    assert sug.status == "success"
+    assert sug.latitude == pytest.approx(34.946)
+    assert sug.longitude == pytest.approx(113.512)
+    assert sug.gt_cli() == "34.946,113.512"
+    assert calls
 
 
 def test_lookup_respects_manual_query(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _Client:
-        def query(self, query: str | None, latlng: list[float] | None) -> dict[str, Any]:
-            assert query == "依山亭"
-            return {
-                "status": "success",
-                "error_message": None,
-                "formatted_address": "Yishan Pavilion",
-                "resolved_latlng": [34.95, 113.52],
-                "place_type": "attraction",
-            }
+    def fake_geocode(query: str) -> dict[str, Any]:
+        assert query == "依山亭"
+        return {
+            "status": "success",
+            "error_message": None,
+            "formatted_address": "Yishan Pavilion",
+            "resolved_latlng": [34.95, 113.52],
+            "place_type": "attraction",
+        }
 
-    map_query.set_client(_Client())
-    try:
-        sug = lookup_groundtruth(_segs(), query="依山亭")
-        assert sug.query == "依山亭"
-        assert sug.status == "success"
-    finally:
-        map_query.set_client(None)
+    monkeypatch.setattr(
+        "pipeline.prep_groundtruth.geocode_place",
+        fake_geocode,
+    )
+    sug = lookup_groundtruth(_segs(), query="依山亭")
+    assert sug.query == "依山亭"
+    assert sug.status == "success"

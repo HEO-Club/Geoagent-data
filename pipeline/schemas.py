@@ -99,11 +99,6 @@ class AgentRole(str, Enum):
 # ---------------------------------------------------------------------------
 
 
-class ToolTier(str, Enum):
-    DRAFT = "draft"
-    PRODUCTION = "production"
-
-
 def _value_matches_param_type(value: Any, type_name: str) -> bool:
     """检查 example/default 是否符合 ParamField 声明类型。"""
     if type_name == "string":
@@ -266,23 +261,21 @@ def validate_tool_name(name: str, *, is_seed: bool | None = None) -> str:
         raise ValueError(f"Tool 名称不得包含连续下划线: {name!r}")
     if name in _FORBIDDEN_TOOL_NAMES:
         raise ValueError(f"禁止无意义 Tool 名称: {name!r}")
-    # A4: 非种子 Draft 名称至少两个语义 token
+    # A4: 非种子 Tool 名称至少两个语义 token
     if not is_seed and "_" not in name:
         raise ValueError(f"非种子 Tool 名称至少包含两个语义 token: {name!r}")
     return name
 
 
 class ToolDefinition(BaseModel):
-    """Registry 中的单条 Tool 定义。"""
+    """Registry 中的单条 Tool 定义（仅 schema，无真实 executor）。"""
 
     name: str
     description: str
-    tier: ToolTier
     params: list[ParamField]
     observation_fields: list[ObservationField]
     allowed_agents: list[AgentRole]
     is_terminal: bool = False
-    executor_ref: Optional[str] = None
     created_at: str
     source_video_timestamp: Optional[float] = None
     source_narration: Optional[str] = None
@@ -337,31 +330,7 @@ class ToolDefinition(BaseModel):
             if err is None or err.type != "string" or not err.nullable:
                 raise ValueError("非 terminal Tool 必须包含 nullable string 字段 error_message")
 
-        # F9: draft / production 与 executor_ref
-        if self.tier == ToolTier.DRAFT:
-            if self.executor_ref is not None:
-                raise ValueError("draft Tool 的 executor_ref 必须为 None")
-        elif self.tier == ToolTier.PRODUCTION:
-            if not self.executor_ref:
-                raise ValueError("production Tool 的 executor_ref 必须非空")
-            _assert_executor_importable(self.executor_ref)
-
         return self
-
-
-def _assert_executor_importable(executor_ref: str) -> None:
-    """检查 executor_ref 是否为可导入的 module.attr 路径。"""
-    if "." not in executor_ref:
-        raise ValueError(f"executor_ref 必须为可导入路径: {executor_ref!r}")
-    module_path, _, attr = executor_ref.rpartition(".")
-    try:
-        import importlib
-
-        mod = importlib.import_module(module_path)
-    except ImportError as exc:
-        raise ValueError(f"executor_ref 模块不可导入: {executor_ref!r}") from exc
-    if not hasattr(mod, attr):
-        raise ValueError(f"executor_ref 属性不存在: {executor_ref!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -460,7 +429,7 @@ class Action(BaseModel):
 class NormalizationMode(str, Enum):
     MATCHED = "matched"
     COMPOSED = "composed"
-    DRAFT_CREATED = "draft_created"
+    TOOL_REGISTERED = "tool_registered"
     FALLBACK = "fallback"
     THOUGHT_ONLY = "thought_only"
 
@@ -477,8 +446,7 @@ class NormalizedStep(BaseModel):
 
 
 class ObservationSource(str, Enum):
-    REAL_EXECUTION = "real_execution"
-    VLM_SYNTHESIZED = "vlm_synthesized"
+    LLM_SYNTHESIZED = "llm_synthesized"
 
 
 class ObservationExecutionResult(BaseModel):
@@ -608,8 +576,6 @@ class DatasetEntry(BaseModel):
     revision_round: int = 0
     revision_source: Optional[RevisionSource] = None
     revision_input: Optional[VerificationResult] = None
-    contains_draft_tools: bool = False
-    draft_tool_names: list[str] = Field(default_factory=list)
     quality_score: float
     verified: bool
     distance_error_km: Optional[float] = None

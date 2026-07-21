@@ -1,16 +1,15 @@
-"""execute_action：权限、terminal、draft/production、缓存测试。"""
+"""execute_action：权限、terminal、LLM 合成、缓存与重试测试。"""
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from pipeline.config import clear_settings_cache
-from pipeline.schemas import Action, AgentRole, ObservationSource, ToolDefinition
-from pipeline.tools.base import execute_action
+from pipeline.schemas import Action, AgentRole, ObservationSource
+from pipeline.tools.base import execute_action, sanitize_narration_for_obs
 
 
 @pytest.fixture()
@@ -22,31 +21,10 @@ def env_registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("CACHE_DIR", str(tmp_path / ".cache"))
     monkeypatch.setenv("ALLOW_REAL_API", "false")
     monkeypatch.setenv("APP_ENV", "test")
-    monkeypatch.setenv("DRAFT_TOOL_MAX_RETRY", "2")
+    monkeypatch.setenv("OBS_SYNTH_MAX_RETRY", "2")
     clear_settings_cache()
     yield dst
     clear_settings_cache()
-
-
-def _promote_local(registry_path: Path, name: str, ref: str) -> None:
-    items = json.loads(registry_path.read_text(encoding="utf-8"))
-    for item in items:
-        if item["name"] == name:
-            item["tier"] = "production"
-            item["executor_ref"] = ref
-    # 校验可导入
-    ToolDefinition.model_validate(next(i for i in items if i["name"] == name))
-    registry_path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-def _demote_local(registry_path: Path, name: str) -> None:
-    """测试用：将 tool 临时标为 draft 以覆盖 VLM 合成路径。"""
-    items = json.loads(registry_path.read_text(encoding="utf-8"))
-    for item in items:
-        if item["name"] == name:
-            item["tier"] = "draft"
-            item["executor_ref"] = None
-    registry_path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def test_permission_denied_for_wrong_agent(env_registry: Path, tmp_path: Path) -> None:
@@ -87,88 +65,200 @@ def test_terminal_skipped(env_registry: Path, tmp_path: Path) -> None:
     assert result.source is None
 
 
-def test_production_sun_position_and_cache(env_registry: Path, tmp_path: Path) -> None:
-    _promote_local(env_registry, "sun_position_calc", "pipeline.tools.sun_position.execute")
-    img = tmp_path / "frame.jpg"
-    img.write_bytes(b"fake-image-bytes")
-    action = Action(
-        tool="sun_position_calc",
-        params={"shadow_direction_deg": 180.0, "estimated_local_time": "12:00"},
-    )
-    r1 = execute_action(action, str(img), AgentRole.COARSE, registry_path=str(env_registry))
-    assert r1.status == "success"
-    assert r1.source is ObservationSource.REAL_EXECUTION
-    assert r1.observation is not None
-    assert "possible_latitude_range" in r1.observation
-    assert r1.cache_hit is False
-
-    r2 = execute_action(action, str(img), AgentRole.COARSE, registry_path=str(env_registry))
-    assert r2.cache_hit is True
-    assert r2.observation == r1.observation
-
-
-def test_draft_vlm_synthesis_mocked(
+def test_llm_synthesis_and_cache(
     env_registry: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     img = tmp_path / "frame.jpg"
-    img.write_bytes(b"x")
+    img.write_bytes(b"fake-image-bytes")
+    narrations: list[str] = []
 
     class _Obs:
         def model_dump(self, mode: str = "json") -> dict[str, Any]:
             return {
                 "status": "success",
                 "error_message": None,
-                "description": "red brick facade with arched window",
+                "possible_latitude_range": [20.0, 40.0],
+                "note": "from shadow",
             }
 
-    def fake_structured(prompt: str, response_model: type, images: list[str] | None = None, **kwargs: Any) -> Any:
-        _ = prompt, response_model, images, kwargs
+    def fake_structured(
+        prompt: str,
+        response_model: type,
+        images: list[str] | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        _ = response_model, images, kwargs
+        # 从 prompt 中抽出 Narration 行便于断言
+        for line in prompt.splitlines():
+            if line.startswith("Narration:"):
+                narrations.append(line.split(":", 1)[1].strip())
         return _Obs()
 
     monkeypatch.setattr("pipeline.tools.base.call_structured", fake_structured)
-    # 临时降为 draft，专门验证 VLM 合成路径
-    _demote_local(env_registry, "zoom_inspect")
-    result = execute_action(
-        Action(tool="zoom_inspect", params={"bbox": [0.1, 0.2, 0.3, 0.4]}),
+    action = Action(
+        tool="sun_position_calc",
+        params={"shadow_direction_deg": 180.0, "estimated_local_time": "12:00"},
+    )
+    r1 = execute_action(
+        action,
         str(img),
         AgentRole.COARSE,
+        narration="阴影朝北。",
         registry_path=str(env_registry),
-        use_cache=False,
     )
-    assert result.status == "success"
-    assert result.source is ObservationSource.VLM_SYNTHESIZED
-    assert result.observation is not None
-    assert "brick" in result.observation["description"]
+    assert r1.status == "success"
+    assert r1.source is ObservationSource.LLM_SYNTHESIZED
+    assert r1.observation is not None
+    assert "possible_latitude_range" in r1.observation
+    assert r1.cache_hit is False
+    assert narrations and "阴影朝北" in narrations[0]
+
+    r2 = execute_action(
+        action,
+        str(img),
+        AgentRole.COARSE,
+        narration="阴影朝北。",
+        registry_path=str(env_registry),
+    )
+    assert r2.cache_hit is True
+    assert r2.observation == r1.observation
+    assert r2.source is ObservationSource.LLM_SYNTHESIZED
 
 
-def test_production_invalid_observation_not_masked_by_vlm(
+def test_synth_retry_exhausted_returns_error(
     env_registry: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _promote_local(env_registry, "sun_position_calc", "pipeline.tools.sun_position.execute")
     img = tmp_path / "frame.jpg"
     img.write_bytes(b"x")
+    calls = {"n": 0}
 
-    def bad_execute(params: dict[str, Any], image_path: str) -> dict[str, Any]:
-        _ = params, image_path
-        return {"status": "success", "error_message": None}  # 缺字段
+    class _BadObs:
+        def model_dump(self, mode: str = "json") -> dict[str, Any]:
+            return {"status": "success", "error_message": None}  # 缺 description
 
-    monkeypatch.setattr("pipeline.tools.sun_position.execute", bad_execute)
+    def fake_structured(*args: Any, **kwargs: Any) -> Any:
+        _ = args, kwargs
+        calls["n"] += 1
+        return _BadObs()
 
+    monkeypatch.setattr("pipeline.tools.base.call_structured", fake_structured)
     result = execute_action(
-        Action(tool="sun_position_calc", params={"shadow_direction_deg": 10.0}),
+        Action(tool="zoom_inspect", params={"bbox": [0.1, 0.2, 0.3, 0.4]}),
         str(img),
         AgentRole.COARSE,
+        narration="放大查看立面。",
         registry_path=str(env_registry),
         use_cache=False,
     )
+    assert calls["n"] == 2  # OBS_SYNTH_MAX_RETRY=2
     assert result.status == "error"
-    assert result.source is ObservationSource.REAL_EXECUTION
+    assert result.source is ObservationSource.LLM_SYNTHESIZED
     assert result.observation is None
-    assert "校验失败" in (result.error_message or "")
+
+
+def test_synth_retry_succeeds_on_second_attempt(
+    env_registry: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    img = tmp_path / "frame.jpg"
+    img.write_bytes(b"x")
+    calls = {"n": 0}
+
+    class _Bad:
+        def model_dump(self, mode: str = "json") -> dict[str, Any]:
+            return {"status": "success", "error_message": None}
+
+    class _Good:
+        def model_dump(self, mode: str = "json") -> dict[str, Any]:
+            return {
+                "status": "empty",
+                "error_message": None,
+                "description": "",
+            }
+
+    def fake_structured(*args: Any, **kwargs: Any) -> Any:
+        _ = args, kwargs
+        calls["n"] += 1
+        return _Bad() if calls["n"] == 1 else _Good()
+
+    monkeypatch.setattr("pipeline.tools.base.call_structured", fake_structured)
+    result = execute_action(
+        Action(tool="zoom_inspect", params={"bbox": [0.1, 0.2, 0.3, 0.4]}),
+        str(img),
+        AgentRole.COARSE,
+        narration="局部细节。",
+        registry_path=str(env_registry),
+        use_cache=False,
+    )
+    assert calls["n"] == 2
+    assert result.status == "empty"
+    assert result.source is ObservationSource.LLM_SYNTHESIZED
+    assert result.observation is not None
+    assert result.observation["description"] == ""
+
+
+def test_error_result_not_cached(
+    env_registry: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    img = tmp_path / "frame.jpg"
+    img.write_bytes(b"bytes-for-hash")
+    calls = {"n": 0}
+
+    class _Bad:
+        def model_dump(self, mode: str = "json") -> dict[str, Any]:
+            return {"status": "success", "error_message": None}
+
+    class _Good:
+        def model_dump(self, mode: str = "json") -> dict[str, Any]:
+            return {
+                "status": "success",
+                "error_message": None,
+                "possible_latitude_range": [10.0, 30.0],
+                "note": None,
+            }
+
+    def fake_structured(*args: Any, **kwargs: Any) -> Any:
+        _ = args, kwargs
+        calls["n"] += 1
+        return _Bad() if calls["n"] == 1 else _Good()
+
+    monkeypatch.setattr("pipeline.tools.base.call_structured", fake_structured)
+    # OBS_SYNTH_MAX_RETRY=2：第一次调用整次 execute 会重试到成功，故拆成两次独立调用
+    monkeypatch.setenv("OBS_SYNTH_MAX_RETRY", "1")
+    clear_settings_cache()
+
+    action = Action(
+        tool="sun_position_calc",
+        params={"shadow_direction_deg": 90.0},
+    )
+    r1 = execute_action(
+        action,
+        str(img),
+        AgentRole.COARSE,
+        narration="阴影。",
+        registry_path=str(env_registry),
+    )
+    assert r1.status == "error"
+    assert r1.cache_hit is False
+
+    r2 = execute_action(
+        action,
+        str(img),
+        AgentRole.COARSE,
+        narration="阴影。",
+        registry_path=str(env_registry),
+    )
+    assert calls["n"] == 2
+    assert r2.status == "success"
+    assert r2.cache_hit is False
+    assert r2.source is ObservationSource.LLM_SYNTHESIZED
 
 
 def test_fine_cannot_use_sun_position(env_registry: Path, tmp_path: Path) -> None:
@@ -182,3 +272,79 @@ def test_fine_cannot_use_sun_position(env_registry: Path, tmp_path: Path) -> Non
         use_cache=False,
     )
     assert result.status == "error"
+
+
+def test_unknown_tool_error(env_registry: Path, tmp_path: Path) -> None:
+    img = tmp_path / "a.jpg"
+    img.write_bytes(b"1")
+    result = execute_action(
+        Action(tool="not_a_real_tool", params={}),
+        str(img),
+        AgentRole.COARSE,
+        registry_path=str(env_registry),
+        use_cache=False,
+    )
+    assert result.status == "error"
+    assert "未知 tool" in (result.error_message or "")
+
+
+def test_sanitize_narration_strips_places_for_coarse() -> None:
+    raw = "阴影朝北，感觉像在许昌市附近，大概 34.0, 113.8。"
+    cleaned = sanitize_narration_for_obs(AgentRole.COARSE, raw)
+    assert "许昌" not in cleaned
+    assert "34.0" not in cleaned
+    assert "阴影朝北" in cleaned
+
+
+def test_sanitize_narration_keeps_place_words_for_fine() -> None:
+    raw = "对照地图核对许昌市候选点。"
+    cleaned = sanitize_narration_for_obs(AgentRole.FINE, raw)
+    assert "许昌市" in cleaned
+
+
+def test_coarse_synth_prompt_uses_sanitized_narration(
+    env_registry: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    img = tmp_path / "frame.jpg"
+    img.write_bytes(b"fake-image-bytes")
+    prompts: list[str] = []
+
+    class _Obs:
+        def model_dump(self, mode: str = "json") -> dict[str, Any]:
+            return {
+                "status": "success",
+                "error_message": None,
+                "possible_latitude_range": [20.0, 40.0],
+                "note": "from shadow",
+            }
+
+    def fake_structured(
+        prompt: str,
+        response_model: type,
+        images: list[str] | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        _ = response_model, images, kwargs
+        prompts.append(prompt)
+        return _Obs()
+
+    monkeypatch.setattr("pipeline.tools.base.call_structured", fake_structured)
+    result = execute_action(
+        Action(
+            tool="sun_position_calc",
+            params={"shadow_direction_deg": 180.0, "estimated_local_time": "12:00"},
+        ),
+        str(img),
+        AgentRole.COARSE,
+        narration="阴影朝北，这是河南许昌市的建筑。",
+        registry_path=str(env_registry),
+        use_cache=False,
+    )
+    assert result.status == "success"
+    assert prompts
+    narr_line = next(ln for ln in prompts[0].splitlines() if ln.startswith("Narration:"))
+    assert "许昌" not in narr_line
+    assert "阴影朝北" in narr_line
+    assert "Do NOT copy city names" in prompts[0]

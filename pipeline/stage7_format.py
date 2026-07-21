@@ -14,7 +14,6 @@ from pipeline.schemas import (
     AgentRole,
     ChatMessage,
     DatasetEntry,
-    ObservationSource,
     Trajectory,
     TrajectoryStep,
 )
@@ -100,19 +99,6 @@ def trajectory_to_messages(traj: Trajectory) -> list[ChatMessage]:
     return messages
 
 
-def _collect_draft_tool_names(traj: Trajectory) -> list[str]:
-    """从 VLM 合成 Observation 的步骤收集 draft tool 名（去重保序）。"""
-    names: list[str] = []
-    seen: set[str] = set()
-    for step in traj.steps:
-        if step.observation_source == ObservationSource.VLM_SYNTHESIZED:
-            tool = step.action.tool
-            if tool not in seen:
-                seen.add(tool)
-                names.append(tool)
-    return names
-
-
 def _resolve_traj_meta(traj: Trajectory, meta: dict[str, Any]) -> dict[str, Any]:
     """合并视频级 meta 与按 trajectory id 的报告字段。"""
     reports = meta.get("reports") or {}
@@ -131,7 +117,7 @@ def to_dataset_entry(traj: Trajectory, meta: dict[str, Any]) -> DatasetEntry:
     - groundtruth: tuple[float, float]
     - quality_score: float
     - verified: bool
-    可选：distance_error_km、draft_tool_names
+    可选：distance_error_km
     """
     resolved = _resolve_traj_meta(traj, meta)
     required = ("source_video", "groundtruth", "quality_score", "verified")
@@ -147,12 +133,6 @@ def to_dataset_entry(traj: Trajectory, meta: dict[str, Any]) -> DatasetEntry:
     else:
         raise TypeError(f"groundtruth 类型非法: {type(gt)}")
 
-    draft_names = resolved.get("draft_tool_names")
-    if draft_names is None:
-        draft_names = _collect_draft_tool_names(traj)
-    else:
-        draft_names = list(draft_names)
-
     return DatasetEntry(
         id=traj.id,
         source_video=str(resolved["source_video"]),
@@ -166,8 +146,6 @@ def to_dataset_entry(traj: Trajectory, meta: dict[str, Any]) -> DatasetEntry:
         revision_round=traj.revision_round,
         revision_source=traj.revision_source,
         revision_input=traj.revision_input,
-        contains_draft_tools=bool(draft_names),
-        draft_tool_names=draft_names,
         quality_score=float(resolved["quality_score"]),
         verified=bool(resolved["verified"]),
         distance_error_km=(

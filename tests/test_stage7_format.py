@@ -45,8 +45,7 @@ def _submit() -> SubmitAnswerResult:
     )
 
 
-def _coarse_traj(*, with_draft: bool = False) -> Trajectory:
-    src = ObservationSource.VLM_SYNTHESIZED if with_draft else ObservationSource.REAL_EXECUTION
+def _coarse_traj() -> Trajectory:
     return Trajectory(
         id="traj-coarse-1",
         agent_role=AgentRole.COARSE,
@@ -62,7 +61,7 @@ def _coarse_traj(*, with_draft: bool = False) -> Trajectory:
                     "error_message": None,
                     "texts": ["Tour"],
                 },
-                observation_source=src,
+                observation_source=ObservationSource.LLM_SYNTHESIZED,
             )
         ],
         coarse_output=_hyp(),
@@ -93,7 +92,7 @@ def _fine_traj() -> Trajectory:
                     "viewport": None,
                     "place_id": None,
                 },
-                observation_source=ObservationSource.REAL_EXECUTION,
+                observation_source=ObservationSource.LLM_SYNTHESIZED,
             ),
             TrajectoryStep(
                 thought="提交答案。",
@@ -130,7 +129,7 @@ def _verifier_traj() -> Trajectory:
                     "viewport": None,
                     "place_id": None,
                 },
-                observation_source=ObservationSource.REAL_EXECUTION,
+                observation_source=ObservationSource.LLM_SYNTHESIZED,
             )
         ],
         fine_handoff=_submit(),
@@ -160,8 +159,8 @@ def test_trajectory_to_messages_roles_and_terminal() -> None:
     assert roles.count("tool") == 1
 
 
-def test_to_dataset_entry_fields_and_draft() -> None:
-    traj = _coarse_traj(with_draft=True)
+def test_to_dataset_entry_fields() -> None:
+    traj = _coarse_traj()
     entry = to_dataset_entry(
         traj,
         {
@@ -176,8 +175,8 @@ def test_to_dataset_entry_fields_and_draft() -> None:
     assert entry.agent_role == AgentRole.COARSE
     assert entry.source_video == "vid001"
     assert entry.verified is True
-    assert entry.contains_draft_tools is True
-    assert entry.draft_tool_names == ["ocr"]
+    assert not hasattr(entry, "contains_draft_tools")
+    assert not hasattr(entry, "draft_tool_names")
     assert entry.messages[0].role == "system"
     assert any("LocationHypothesis" in m.content for m in entry.messages)
 

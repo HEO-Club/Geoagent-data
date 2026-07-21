@@ -225,7 +225,7 @@ def _make_hooks() -> dict[str, Any]:
                                 "viewport": None,
                                 "place_id": None,
                             },
-                            source=ObservationSource.REAL_EXECUTION,
+                            source=ObservationSource.LLM_SYNTHESIZED,
                             status="success",
                         )
                     )
@@ -238,7 +238,7 @@ def _make_hooks() -> dict[str, Any]:
                                 "error_message": None,
                                 "texts": ["Tour Eiffel"],
                             },
-                            source=ObservationSource.REAL_EXECUTION,
+                            source=ObservationSource.LLM_SYNTHESIZED,
                             status="success",
                         )
                     )

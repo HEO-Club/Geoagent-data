@@ -1,21 +1,30 @@
-"""准备步骤：从带时间戳文字稿推断答案地名，经 map_query(Nominatim) 解析坐标。
+"""准备步骤：从带时间戳文字稿推断答案地名，经 Nominatim 解析坐标。
 
 本模块位于主流水线之外：产出供 ``run_one_video.py --gt`` 使用的 groundtruth 建议，
-不把 groundtruth 注入 stage5。
+不把 groundtruth 注入 stage5；也不走 Observation 合成管线。
 """
 
 from __future__ import annotations
 
 import json
 import re
+import time
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 from pydantic import BaseModel, Field
 
 from pipeline.schemas import TranscriptSegment
 from pipeline.stage0_preprocess import locate_answer_timestamp
-from pipeline.tools import map_query
+
+# Nominatim 公共实例（仅 prep_groundtruth 离线辅助，非 Observation）
+_NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+_NOMINATIM_USER_AGENT = "geoagent-dataset/1.0 (prep_groundtruth; local)"
+_NOMINATIM_TIMEOUT_SEC = 10.0
+_MIN_REQUEST_INTERVAL_SEC = 1.05
+_last_request_monotonic: float = 0.0
 
 # 从答案附近口述中抓取常见地名后缀（控制长度，避免吞进整句）
 _PLACE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
@@ -58,7 +67,7 @@ class PlaceCandidate(BaseModel):
 
 
 class GroundtruthSuggestion(BaseModel):
-    """map 查询得到的 groundtruth 建议。"""
+    """地理编码得到的 groundtruth 建议。"""
 
     query: str
     latitude: float
@@ -73,6 +82,66 @@ class GroundtruthSuggestion(BaseModel):
     def gt_cli(self) -> str:
         """``run_one_video.py --gt`` 可用的 LAT,LNG 字符串。"""
         return f"{self.latitude},{self.longitude}"
+
+
+def _throttle() -> None:
+    global _last_request_monotonic
+    now = time.monotonic()
+    wait = _MIN_REQUEST_INTERVAL_SEC - (now - _last_request_monotonic)
+    if wait > 0:
+        time.sleep(wait)
+    _last_request_monotonic = time.monotonic()
+
+
+def geocode_place(query: str) -> dict[str, Any]:
+    """用 Nominatim 将地名解析为坐标；返回 observation 风格 dict（非 Tool 执行）。"""
+    q = (query or "").strip()
+    if not q:
+        return {
+            "status": "empty",
+            "error_message": None,
+            "formatted_address": None,
+            "resolved_latlng": None,
+            "place_type": None,
+        }
+    try:
+        _throttle()
+        params = urlencode(
+            {"q": q, "format": "json", "limit": 1, "addressdetails": 1}
+        )
+        req = Request(
+            f"{_NOMINATIM_URL}?{params}",
+            headers={"User-Agent": _NOMINATIM_USER_AGENT},
+        )
+        with urlopen(req, timeout=_NOMINATIM_TIMEOUT_SEC) as resp:
+            raw = json.loads(resp.read().decode("utf-8"))
+        if not raw:
+            return {
+                "status": "empty",
+                "error_message": None,
+                "formatted_address": None,
+                "resolved_latlng": None,
+                "place_type": None,
+            }
+        hit = raw[0]
+        lat = float(hit["lat"])
+        lng = float(hit["lon"])
+        place_type = hit.get("type") if isinstance(hit.get("type"), str) else None
+        return {
+            "status": "success",
+            "error_message": None,
+            "formatted_address": hit.get("display_name"),
+            "resolved_latlng": [lat, lng],
+            "place_type": place_type,
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "status": "error",
+            "error_message": str(exc),
+            "formatted_address": None,
+            "resolved_latlng": None,
+            "place_type": None,
+        }
 
 
 def load_transcript(path: str | Path) -> list[TranscriptSegment]:
@@ -155,7 +224,7 @@ def lookup_groundtruth(
     query: Optional[str] = None,
     answer_timestamp: Optional[float] = None,
 ) -> GroundtruthSuggestion:
-    """用 map_query 将答案地名解析为经纬度。
+    """用 Nominatim 将答案地名解析为经纬度。
 
     Args:
         transcript: 带时间戳文字稿。
@@ -210,7 +279,7 @@ def lookup_groundtruth(
 
     last_obs: dict[str, Any] = {}
     for q in deduped:
-        obs = map_query.execute({"query": q}, image_path="")
+        obs = geocode_place(q)
         last_obs = obs
         if obs.get("status") == "success" and obs.get("resolved_latlng"):
             lat, lng = obs["resolved_latlng"]
@@ -226,7 +295,7 @@ def lookup_groundtruth(
                 observation=obs,
             )
 
-    # 全部失败：返回最后一次 Observation，坐标占位 0 并由 status 标明
+    # 全部失败：返回最后一次结果，坐标占位 0 并由 status 标明
     return GroundtruthSuggestion(
         query=deduped[0],
         latitude=0.0,

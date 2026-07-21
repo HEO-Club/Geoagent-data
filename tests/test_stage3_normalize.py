@@ -14,12 +14,11 @@ from pipeline.schemas import (
     NormalizationMode,
     ObservationField,
     ParamField,
-    ToolTier,
 )
 from pipeline.stage3_normalize import (
-    _DraftToolProposal,
     _GRuleFlags,
     _MatchLLMResponse,
+    _NewToolProposal,
     _ProposedAction,
     _is_pure_ui,
     match_or_register_tool,
@@ -50,15 +49,15 @@ def _g_all_true() -> _GRuleFlags:
         cannot_compose=True,
         io_semantics_clear=True,
         reusable_in_geolocation=True,
-        future_executor_possible=True,
+        observation_schema_complete=True,
         not_pure_ui=True,
         not_one_off_for_video=True,
         not_similar_to_existing=True,
     )
 
 
-def _draft_proposal(name: str = "detect_license_plate") -> _DraftToolProposal:
-    return _DraftToolProposal(
+def _new_tool_proposal(name: str = "detect_license_plate") -> _NewToolProposal:
+    return _NewToolProposal(
         name=name,
         description="检测车牌区域文字线索供粗定位使用。",
         params=[
@@ -132,7 +131,9 @@ class TestPureUiAndThoughtOnly:
         assert len(steps) == 1
         assert steps[0].normalization_mode is NormalizationMode.THOUGHT_ONLY
         assert steps[0].actions == []
-        assert steps[0].thought_draft == "只是口述推理。"
+        assert steps[0].thought_draft.startswith("视觉线索：")
+        assert "只是口述推理" in steps[0].thought_draft
+        assert steps[0].thought_draft != "只是口述推理。"
         assert called["n"] == 0
 
     def test_pure_ui_fallback_without_llm(
@@ -225,11 +226,13 @@ class TestMatchedAndComposed:
         assert steps[0].normalization_mode is NormalizationMode.COMPOSED
         assert [a.tool for a in steps[0].actions] == ["ocr", "web_search"]
 
-    def test_agent_permission_rejects_map_query_for_coarse(
+    def test_agent_permission_recovers_via_heuristic_web_search(
         self,
         tmp_registry: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        """COARSE 误选 map_query 时，启发式降级为 web_search，避免空坍缩。"""
+
         def _fake(*_a: Any, **_k: Any) -> _MatchLLMResponse:
             return _MatchLLMResponse(
                 decision="matched",
@@ -247,12 +250,13 @@ class TestMatchedAndComposed:
             [_move(screen_action="打开地图查询巴黎", role=AgentRole.COARSE)],
             AgentRole.COARSE,
         )
-        assert steps[0].normalization_mode is NormalizationMode.FALLBACK
-        assert steps[0].actions == []
-        assert steps[0].fallback_reason is not None
-        assert "无权" in steps[0].fallback_reason or "校验" in steps[0].fallback_reason
+        assert steps[0].normalization_mode is NormalizationMode.MATCHED
+        assert len(steps[0].actions) == 1
+        assert steps[0].actions[0].tool == "web_search"
+        assert steps[0].actions[0].params["purpose"] == "broad_discovery"
+        assert steps[0].matched_tool_confidence == 0.55
 
-    def test_web_search_purpose_role_constraint(
+    def test_web_search_wrong_purpose_recovers_via_heuristic(
         self,
         tmp_registry: Path,
         monkeypatch: pytest.MonkeyPatch,
@@ -278,22 +282,24 @@ class TestMatchedAndComposed:
             tools,
             [_move()],
         )
-        assert actions == []
-        assert mode is NormalizationMode.FALLBACK
-        assert reason is not None
+        assert mode is NormalizationMode.MATCHED
+        assert len(actions) == 1
+        assert actions[0].tool == "web_search"
+        assert actions[0].params["purpose"] == "broad_discovery"
+        assert reason is None
 
 
-class TestDraftAndFallback:
-    def test_draft_created_registers_tool(
+class TestToolRegisteredAndFallback:
+    def test_tool_registered_registers_tool(
         self,
         tmp_registry: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        proposal = _draft_proposal("detect_facade_ornament")
+        proposal = _new_tool_proposal("detect_facade_ornament")
 
         def _fake(*_a: Any, **_k: Any) -> _MatchLLMResponse:
             return _MatchLLMResponse(
-                decision="draft_created",
+                decision="tool_registered",
                 actions=[
                     _ProposedAction(
                         tool="detect_facade_ornament",
@@ -301,7 +307,7 @@ class TestDraftAndFallback:
                     )
                 ],
                 g_flags=_g_all_true(),
-                draft_tool=proposal,
+                new_tool=proposal,
                 confidence=0.6,
             )
 
@@ -310,15 +316,16 @@ class TestDraftAndFallback:
             [_move(screen_action="识别建筑立面纹饰图案")],
             AgentRole.COARSE,
         )
-        assert steps[0].normalization_mode is NormalizationMode.DRAFT_CREATED
+        assert steps[0].normalization_mode is NormalizationMode.TOOL_REGISTERED
         assert len(steps[0].actions) == 1
         assert steps[0].actions[0].tool == "detect_facade_ornament"
         reg = load_registry(tmp_registry)
         assert "detect_facade_ornament" in reg
-        assert reg["detect_facade_ornament"].tier is ToolTier.DRAFT
-        assert reg["detect_facade_ornament"].executor_ref is None
+        dumped = reg["detect_facade_ornament"].model_dump()
+        assert "tier" not in dumped
+        assert "executor_ref" not in dumped
 
-    def test_draft_rejected_when_g_flags_incomplete(
+    def test_tool_registered_rejected_when_g_flags_incomplete(
         self,
         tmp_registry: Path,
         monkeypatch: pytest.MonkeyPatch,
@@ -327,9 +334,9 @@ class TestDraftAndFallback:
 
         def _fake(*_a: Any, **_k: Any) -> _MatchLLMResponse:
             return _MatchLLMResponse(
-                decision="draft_created",
+                decision="tool_registered",
                 g_flags=bad_flags,
-                draft_tool=_draft_proposal("lookup_unique_crest"),
+                new_tool=_new_tool_proposal("lookup_unique_crest"),
             )
 
         monkeypatch.setattr("pipeline.stage3_normalize.call_structured", _fake)
@@ -364,7 +371,7 @@ class TestDraftAndFallback:
         assert steps[0].actions == []
         assert steps[0].fallback_reason == "无法映射为地理定位 Tool"
 
-    def test_invalid_action_params_become_fallback(
+    def test_invalid_map_params_recover_via_heuristic(
         self,
         tmp_registry: Path,
         monkeypatch: pytest.MonkeyPatch,
@@ -391,8 +398,69 @@ class TestDraftAndFallback:
             ],
             AgentRole.FINE,
         )
+        assert steps[0].normalization_mode is NormalizationMode.MATCHED
+        assert len(steps[0].actions) == 1
+        assert steps[0].actions[0].tool == "map_query"
+        assert steps[0].actions[0].params.get("query")
+        assert steps[0].matched_tool_confidence == 0.55
+
+    def test_llm_connection_error_recovers_with_heuristic(
+        self,
+        tmp_registry: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls = {"n": 0}
+
+        def _boom(*_a: Any, **_k: Any) -> Any:
+            calls["n"] += 1
+            raise ConnectionError("simulated llm outage")
+
+        monkeypatch.setattr("pipeline.stage3_normalize.call_structured", _boom)
+        steps = normalize_to_steps(
+            [_move(screen_action="放大尖顶查看细节", narration="尖顶有十字架")],
+            AgentRole.COARSE,
+        )
+        assert calls["n"] == 2  # 重试一次
+        assert steps[0].normalization_mode is NormalizationMode.MATCHED
+        assert steps[0].actions[0].tool == "zoom_inspect"
+        assert steps[0].matched_tool_confidence == 0.55
+
+    def test_llm_error_non_toolish_still_fallback(
+        self,
+        tmp_registry: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        def _boom(*_a: Any, **_k: Any) -> Any:
+            raise ConnectionError("down")
+
+        monkeypatch.setattr("pipeline.stage3_normalize.call_structured", _boom)
+        steps = normalize_to_steps(
+            [_move(screen_action="打开无关娱乐网页", role=AgentRole.FINE)],
+            AgentRole.FINE,
+        )
         assert steps[0].normalization_mode is NormalizationMode.FALLBACK
         assert steps[0].actions == []
+        assert "LLM 决策失败" in (steps[0].fallback_reason or "")
+
+    def test_explicit_fallback_toolish_recovers_search(
+        self,
+        tmp_registry: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        def _fake(*_a: Any, **_k: Any) -> _MatchLLMResponse:
+            return _MatchLLMResponse(
+                decision="fallback",
+                fallback_reason="模型犹豫",
+            )
+
+        monkeypatch.setattr("pipeline.stage3_normalize.call_structured", _fake)
+        steps = normalize_to_steps(
+            [_move(screen_action="搜索红色砖砌教堂", narration="欧洲风格")],
+            AgentRole.COARSE,
+        )
+        assert steps[0].normalization_mode is NormalizationMode.MATCHED
+        assert steps[0].actions[0].tool == "web_search"
+        assert steps[0].actions[0].params["purpose"] == "broad_discovery"
 
 
 class TestNoObservation:

@@ -1,10 +1,9 @@
-"""pipeline.tools 包：Registry / Validation / Executor。"""
+"""pipeline.tools 包：Registry / Validation / Observation 合成。"""
 
 from pipeline.tools.base import execute_action
 from pipeline.tools.registry import (
     get_tools_for_agent,
     load_registry,
-    promote_tool,
     register_tool,
 )
 from pipeline.tools.validation import (
@@ -18,7 +17,6 @@ __all__ = [
     "execute_action",
     "get_tools_for_agent",
     "load_registry",
-    "promote_tool",
     "register_tool",
     "validate_action_params",
     "validate_observation",

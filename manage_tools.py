@@ -1,4 +1,4 @@
-"""Tool 生命周期 CLI：list / promote / stats。"""
+"""Tool 库 CLI：list / stats / register。"""
 
 from __future__ import annotations
 
@@ -6,20 +6,21 @@ import argparse
 import json
 import sys
 from collections import Counter
+from pathlib import Path
 from typing import Any
 
-from pipeline.tools.registry import load_registry, promote_tool
+from pipeline.schemas import ToolDefinition
+from pipeline.tools.registry import load_registry, register_tool
 
 
-def cmd_list(tier: str | None) -> int:
+def cmd_list() -> int:
     registry = load_registry()
     tools = list(registry.values())
-    if tier:
-        tools = [t for t in tools if t.tier.value == tier]
     for t in tools:
         print(
-            f"{t.name}\ttier={t.tier.value}\tterminal={t.is_terminal}\t"
-            f"executor_ref={t.executor_ref}\tagents={[a.value for a in t.allowed_agents]}"
+            f"{t.name}\tterminal={t.is_terminal}\t"
+            f"params={len(t.params)}\tobs_fields={len(t.observation_fields)}\t"
+            f"agents={[a.value for a in t.allowed_agents]}"
         )
     print(f"total: {len(tools)}")
     return 0
@@ -27,29 +28,37 @@ def cmd_list(tier: str | None) -> int:
 
 def cmd_stats() -> int:
     registry = load_registry()
-    tiers = Counter(t.tier.value for t in registry.values())
     agents: Counter[str] = Counter()
     for t in registry.values():
         for a in t.allowed_agents:
             agents[a.value] += 1
     report: dict[str, Any] = {
         "total": len(registry),
-        "by_tier": dict(tiers),
+        "terminal": [n for n, t in registry.items() if t.is_terminal],
+        "non_terminal": [n for n, t in registry.items() if not t.is_terminal],
         "by_agent_allow": dict(agents),
-        "production": [n for n, t in registry.items() if t.tier.value == "production"],
-        "draft": [n for n, t in registry.items() if t.tier.value == "draft"],
     }
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0
 
 
-def cmd_promote(tool_name: str, executor_ref: str) -> int:
-    try:
-        report = promote_tool(tool_name, executor_ref)
-    except Exception as exc:  # noqa: BLE001
-        print(f"promote failed / rolled back: {exc}", file=sys.stderr)
+def cmd_register(from_json: str) -> int:
+    path = Path(from_json)
+    if not path.is_file():
+        print(f"文件不存在: {path}", file=sys.stderr)
         return 1
-    print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(raw, list):
+        tools = [ToolDefinition.model_validate(item) for item in raw]
+    else:
+        tools = [ToolDefinition.model_validate(raw)]
+    try:
+        for tool in tools:
+            register_tool(tool)
+            print(f"registered: {tool.name}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"register failed: {exc}", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -57,17 +66,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Manage tool_registry.json")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_list = sub.add_parser("list", help="列出 tools")
-    p_list.add_argument("--tier", choices=["draft", "production"], default=None)
+    sub.add_parser("list", help="列出 tools")
+    sub.add_parser("stats", help="统计 registry")
 
-    sub.add_parser("stats", help="统计 draft/production")
-
-    p_promote = sub.add_parser("promote", help="显式升档 tool")
-    p_promote.add_argument("tool_name")
-    p_promote.add_argument(
-        "--executor-ref",
+    p_reg = sub.add_parser("register", help="从 JSON 注册 tool（schema 校验后写入）")
+    p_reg.add_argument(
+        "--from-json",
         required=True,
-        help="可导入路径，如 pipeline.tools.sun_position.execute",
+        help="单个 ToolDefinition JSON 或 ToolDefinition 数组",
     )
     return parser
 
@@ -76,11 +82,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.command == "list":
-        return cmd_list(args.tier)
+        return cmd_list()
     if args.command == "stats":
         return cmd_stats()
-    if args.command == "promote":
-        return cmd_promote(args.tool_name, args.executor_ref)
+    if args.command == "register":
+        return cmd_register(args.from_json)
     parser.error(f"unknown command: {args.command}")
     return 2
 

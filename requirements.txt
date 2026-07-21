@@ -8,19 +8,10 @@ pydantic>=2
 pydantic-settings
 python-dotenv
 
-# Tools（外部 SDK；测试中 mock，禁止真实付费调用）
-tavily-python
-google-search-results
-googlemaps
+# 图像 / 地理辅助（prep_groundtruth 等；不用于 Observation 合成）
 geopy
-paddleocr>=3.0
-# Windows CPU：建议从官网源安装，例如
-# pip install paddlepaddle==3.3.1 -i https://www.paddlepaddle.org.cn/packages/stable/cpu/
-paddlepaddle>=3.0
 pillow
 opencv-python
-astral
-pysolar
 
 # 工程与测试
 tenacity

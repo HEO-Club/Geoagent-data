@@ -15,11 +15,13 @@ python -m venv .venv
 
 pip install -r requirements.txt
 cp .env.example .env
-# 按需填写 API Key；测试环境保持 ALLOW_REAL_API=false
+# 按需填写 LLM API Key；测试环境保持 ALLOW_REAL_API=false
 ```
 
 默认 LLM 为**通义千问（DashScope）**：在 `.env` 填写 `DASHSCOPE_API_KEY`，保持 `LLM_PROVIDER=qwen`。  
 申请入口：https://bailian.console.aliyun.com/ → API-KEY。默认模型 `qwen3.7-plus`。
+
+**Observation 一律由 LLM 按 `tool_registry.json` 中的 schema 合成**（关键帧 + 该步旁白），不调用真实搜索/地图/OCR 等 Tool API。
 
 ## 目录约定
 
@@ -33,7 +35,7 @@ cp .env.example .env
 
 ## 准备 groundtruth（地图查坐标）
 
-若尚无精确坐标，可先从字幕推断地名并用 Nominatim 解析：
+若尚无精确坐标，可先从字幕推断地名并用 Nominatim 解析（仅离线辅助，不进入 Observation 管线）：
 
 ```bash
 python prep_groundtruth.py --transcript data/transcripts/BV13m61BJEQC.json
@@ -101,17 +103,17 @@ python batch_run.py --jobs jobs.json
 
 ```bash
 python manage_tools.py list
-python manage_tools.py promote <tool_name> --executor-ref pipeline.tools.<name>.execute
+python manage_tools.py stats
+python manage_tools.py register --from-json path/to/tool.json
 ```
+
+Registry 仅保存 schema；无 draft/production 升档。运行时 stage3 亦可按 G 规则注册新 Tool。
 
 ## 测试
 
-测试中禁止真实付费 API（`ALLOW_REAL_API=false`）。
+测试中禁止真实付费 API（`ALLOW_REAL_API=false`）；Observation 合成路径使用 mock LLM。
 
 ```bash
-# 当前阶段（stage7 / orchestrator / batch）
-python -m pytest tests/test_stage7_format.py tests/test_orchestrator_e2e.py -q
-
 # 全量
 python -m pytest -q
 ```

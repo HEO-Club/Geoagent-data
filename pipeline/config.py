@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     )
 
     APP_ENV: str = "test"
+    # 是否允许真实 LLM 调用（测试默认 false）
     ALLOW_REAL_API: bool = False
 
     GOOGLE_API_KEY: str = ""
@@ -25,20 +26,6 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = ""
     # 通义千问 / 百炼（DashScope）
     DASHSCOPE_API_KEY: str = ""
-    TAVILY_API_KEY: str = ""
-    SERPAPI_KEY: str = ""
-    # 保留字段以兼容旧 .env；map_query 已改用 Nominatim，不再读取此 key
-    GOOGLE_MAPS_KEY: str = ""
-
-    # 地图后端：amap（高德，推荐国内）| nominatim（OSM）
-    MAP_PROVIDER: str = "amap"
-    # 高德 Web 服务 Key（仅 .env；勿提交仓库）
-    AMAP_API_KEY: str = ""
-    AMAP_BASE_URL: str = "https://restapi.amap.com"
-    AMAP_TIMEOUT_SEC: float = 10.0
-    # Nominatim（OpenStreetMap）— MAP_PROVIDER=nominatim 时使用
-    NOMINATIM_USER_AGENT: str = "geoagent-dataset/1.0 (local; contact via project repo)"
-    NOMINATIM_TIMEOUT_SEC: float = 10.0
 
     # stage1：抽帧可较密，但送入 VLM 的关键帧需抽样，避免请求体过大
     STAGE1_VLM_MAX_FRAMES: int = 6
@@ -56,8 +43,13 @@ class Settings(BaseSettings):
     GEMINI_MODEL: str = "gemini-2.0-flash"
     MAX_CONCURRENT_VIDEOS: int = 1
     ANSWER_LEAK_CHECK_ENABLED: bool = True
-    DRAFT_TOOL_MAX_RETRY: int = 3
+    # Observation LLM 合成校验失败重试次数
+    OBS_SYNTH_MAX_RETRY: int = 3
     MAX_REVISION_ROUNDS: int = 2
+
+    # stage6 / prep_groundtruth 逆地理（仅 Nominatim；不用于 Observation 合成）
+    NOMINATIM_USER_AGENT: str = "geoagent-dataset/1.0 (stage6; local)"
+    NOMINATIM_TIMEOUT_SEC: float = 10.0
 
     TOOL_REGISTRY_PATH: str = "tool_registry.json"
     INTERMEDIATE_DIR: str = "data/intermediate"

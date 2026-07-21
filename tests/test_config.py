@@ -26,15 +26,13 @@ def test_default_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     s = Settings(_env_file=None)
     assert s.APP_ENV == "test"
     assert s.ALLOW_REAL_API is False
-    assert s.DRAFT_TOOL_MAX_RETRY == 3
+    assert s.OBS_SYNTH_MAX_RETRY == 3
     assert s.MAX_REVISION_ROUNDS == 2
     assert s.DISTANCE_ERROR_THRESHOLD_KM == 25.0
     assert s.LLM_PROVIDER == "qwen"
     assert s.LLM_MODEL == "qwen3.7-plus"
     assert s.GEMINI_MODEL == "gemini-2.0-flash"
     assert s.TOOL_REGISTRY_PATH == "tool_registry.json"
-    assert s.NOMINATIM_USER_AGENT.startswith("geoagent-dataset/")
-    assert s.NOMINATIM_TIMEOUT_SEC == 10.0
 
 
 def test_env_override(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -526,18 +526,28 @@ def run_one_video(
                     suggested_recheck="",
                     return_to_agent=None,
                 )
-                revs = recon_rev(
-                    trajectories,
-                    placeholder,
-                    steps_by_role,
-                    observations_by_role,
-                    preprocess_result.answer_timestamp,
-                    image_path,
-                    revision_round=1,
-                    max_revision_rounds=cfg.MAX_REVISION_ROUNDS,
-                    video_revision_segments=list(preprocess_result.revision_segments),
-                )
-                all_trajectories.extend(revs)
+                try:
+                    revs = recon_rev(
+                        trajectories,
+                        placeholder,
+                        steps_by_role,
+                        observations_by_role,
+                        preprocess_result.answer_timestamp,
+                        image_path,
+                        revision_round=1,
+                        max_revision_rounds=cfg.MAX_REVISION_ROUNDS,
+                        video_revision_segments=list(
+                            preprocess_result.revision_segments
+                        ),
+                    )
+                    all_trajectories.extend(revs)
+                except Exception as rev_exc:  # noqa: BLE001
+                    # 主轨迹已产出；返工 LLM 断连不应整阶段失败
+                    logger.warning(
+                        "[%s] video_observed revision 失败，继续主轨迹: %s",
+                        vid,
+                        rev_exc,
+                    )
 
             payload = {
                 "main": {r.value: t.model_dump(mode="json") for r, t in trajectories.items()},

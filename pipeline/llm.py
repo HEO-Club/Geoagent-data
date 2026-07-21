@@ -130,7 +130,12 @@ def _build_openai_compatible_client(settings: Settings):  # type: ignore[no-unty
     base_url = settings.LLM_BASE_URL.strip()
     if not base_url:
         raise ValueError("LLM_BASE_URL 未配置")
-    raw = OpenAI(api_key=api_key, base_url=base_url)
+    raw = OpenAI(
+        api_key=api_key,
+        base_url=base_url,
+        max_retries=5,
+        timeout=180.0,
+    )
     return instructor.from_openai(raw, mode=instructor.Mode.JSON)
 
 
@@ -191,6 +196,7 @@ def call_structured(
         model=model_name,
         response_model=response_model,
         messages=[{"role": "user", "content": content}],
+        max_retries=3,
     )
     return result
 
@@ -218,5 +224,6 @@ def call_text(prompt: str, model: Optional[str] = None) -> str:
         model=model_name,
         response_model=_TextResponse,
         messages=[{"role": "user", "content": prompt}],
+        max_retries=3,
     )
     return result.text

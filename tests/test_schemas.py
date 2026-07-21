@@ -18,7 +18,6 @@ from pipeline.schemas import (
     RevisionSource,
     SubmitAnswerResult,
     ToolDefinition,
-    ToolTier,
     Trajectory,
     VerificationResult,
     validate_tool_name,
@@ -45,11 +44,10 @@ def _status_error_fields() -> list[ObservationField]:
     ]
 
 
-def _minimal_draft_tool(**overrides: object) -> ToolDefinition:
+def _minimal_tool(**overrides: object) -> ToolDefinition:
     data: dict = {
         "name": "search_landmark",
         "description": "检索地标相关线索，供粗定位使用。",
-        "tier": ToolTier.DRAFT,
         "params": [
             ParamField(
                 name="query",
@@ -70,7 +68,6 @@ def _minimal_draft_tool(**overrides: object) -> ToolDefinition:
         ],
         "allowed_agents": [AgentRole.COARSE],
         "is_terminal": False,
-        "executor_ref": None,
         "created_at": "2026-07-14T00:00:00Z",
     }
     data.update(overrides)
@@ -98,7 +95,7 @@ class TestToolNameRules:
 class TestToolDefinitionValidators:
     def test_f1_rejects_name_overlap(self) -> None:
         with pytest.raises(ValidationError, match="交集"):
-            _minimal_draft_tool(
+            _minimal_tool(
                 params=[
                     ParamField(
                         name="summary",
@@ -119,13 +116,9 @@ class TestToolDefinitionValidators:
                 ],
             )
 
-    def test_draft_requires_null_executor_ref(self) -> None:
-        with pytest.raises(ValidationError, match="executor_ref"):
-            _minimal_draft_tool(executor_ref="pipeline.tools.web_search.execute")
-
     def test_terminal_requires_empty_observation(self) -> None:
         with pytest.raises(ValidationError, match="空列表"):
-            _minimal_draft_tool(
+            _minimal_tool(
                 name="submit_answer",
                 is_terminal=True,
                 params=[
@@ -169,24 +162,15 @@ class TestSeedRegistry:
         assert isinstance(raw, list)
         tools = [ToolDefinition.model_validate(item) for item in raw]
         names = {t.name for t in tools}
-        assert names == SEED_TOOL_NAMES
-        by_name = {t.name: t for t in tools}
-        expected_production = {
-            "sun_position_calc": "pipeline.tools.sun_position.execute",
-            "map_query": "pipeline.tools.map_query.execute",
-            "web_search": "pipeline.tools.web_search.execute",
-            "reverse_image_search": "pipeline.tools.reverse_image_search.execute",
-            "ocr": "pipeline.tools.ocr.execute",
-            "zoom_inspect": "pipeline.tools.zoom_inspect.execute",
-        }
-        for name, ref in expected_production.items():
-            assert by_name[name].tier == ToolTier.PRODUCTION
-            assert by_name[name].executor_ref == ref
+        # 种子必须齐全；跑数可注册非种子 Tool，注册表不必恰好等于种子集合
+        assert SEED_TOOL_NAMES.issubset(names)
+        for item in raw:
+            assert "tier" not in item
+            assert "executor_ref" not in item
         for t in tools:
-            if t.name in expected_production:
-                continue
-            assert t.tier == ToolTier.DRAFT
-            assert t.executor_ref is None
+            dumped = t.model_dump()
+            assert "tier" not in dumped
+            assert "executor_ref" not in dumped
 
     def test_map_query_uses_resolved_latlng(self) -> None:
         raw = json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
