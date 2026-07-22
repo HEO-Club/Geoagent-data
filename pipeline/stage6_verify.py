@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from pipeline.config import Settings, get_settings
 from pipeline.llm import call_structured
 from pipeline.schemas import (
+    Action,
     AgentRole,
     LocationHypothesis,
     SubmitAnswerResult,
@@ -74,13 +75,31 @@ class CoarseReasoningChainJudgeResult(BaseModel):
     has_reasoning_gap: bool
     thought_action_aligned: bool
     coarse_scope_within_role: bool
+    feature_driven_narrowing: bool = True
+    clues_only_as_auxiliary: bool = True
+    regions_are_administrative_and_consistent: bool = True
     issues: list[str] = Field(default_factory=list)
+
+
+_DESCRIPTIVE_REGION_RE = re.compile(
+    r"(?:平原|丘陵|山地|山区|盆地|高原|沿海|内陆|南缘|北缘|东缘|西缘|"
+    r"过渡带|一带|周边|附近|中原|华北|华南|华东|华西|江南|塞北|"
+    r"温带|亚热带|热带|季风气候)",
+    re.I,
+)
+_ADMIN_HINT_RE = re.compile(
+    r"(?:省|市|州|盟|自治区|特别行政区|县|区|旗|共和国|王国|"
+    r"Province|State|County|Prefecture|Region|Territory)\b|"
+    r"省$|市$|州$|县$|区$",
+    re.I,
+)
 
 
 # Agent1 训练轨迹禁止出现的种子 Tool（与 stage5 投影一致）
 _COARSE_FORBIDDEN_TRAJECTORY_TOOLS: frozenset[str] = frozenset(
     {"web_search", "map_query", "reverse_image_search", "submit_answer"}
 )
+_COARSE_COMPARE_IMAGES_RE = re.compile(r"compare_images", re.IGNORECASE)
 
 # 粗略坐标模式：程序化泄漏兜底
 _COORD_RE = re.compile(
@@ -463,23 +482,56 @@ def _detect_leakage(
     return (len(hard) > 0), hard, soft
 
 
+def _is_descriptive_region(name: str) -> bool:
+    """自然/文化地带描述（非规范行政区）。"""
+    text = (name or "").strip()
+    if not text:
+        return True
+    # 先判定描述性地带（避免「地区」被「区」行政后缀误吃）
+    if _DESCRIPTIVE_REGION_RE.search(text):
+        return True
+    if "地区" in text and "自治区" not in text:
+        return True
+    if _ADMIN_HINT_RE.search(text):
+        return False
+    return False
+
+
+def _validate_coarse_regions_format(hyp: LocationHypothesis) -> list[str]:
+    """possible_regions 非空时须为规范行政区、粒度不宜混用描述地带。"""
+    hard: list[str] = []
+    regions = [r.strip() for r in hyp.possible_regions if r.strip()]
+    if not regions:
+        return hard
+    bad = [r for r in regions if _is_descriptive_region(r)]
+    if bad:
+        hard.append(
+            "COARSE possible_regions 含非规范行政区/描述性地带: "
+            + ", ".join(bad)
+        )
+    return hard
+
+
 def _check_coarse_coverage(
     hyp: LocationHypothesis,
     groundtruth: tuple[float, float],
     reverse_geocode: ReverseGeocodeFn,
 ) -> tuple[bool, list[str], list[str]]:
-    """检查 LocationHypothesis 是否覆盖真值国家/地区。
+    """检查 LocationHypothesis 是否覆盖真值国家/一级行政区。
 
+    regions 为空表示仅收窄到国家，不因空列表 hard-fail。
+    regions 非空时未覆盖 GT 一级行政区 → hard-fail。
     返回 (ok, hard_fails, soft_warnings)。
     """
     hard: list[str] = []
     soft: list[str] = []
+    hard.extend(_validate_coarse_regions_format(hyp))
     try:
         place = _normalize_place_hints(reverse_geocode(groundtruth))
         country, region = place.country, place.region
     except Exception as exc:  # noqa: BLE001
         soft.append(f"反向地理编码失败: {exc}")
-        return True, hard, soft
+        return len(hard) == 0, hard, soft
 
     countries_norm = [c.strip() for c in hyp.possible_countries if c.strip()]
     if not _names_cover(countries_norm, country, _COUNTRY_ALIAS_GROUPS):
@@ -492,8 +544,8 @@ def _check_coarse_coverage(
         if regions_norm and not _names_cover(
             regions_norm, region, _REGION_ALIAS_GROUPS
         ):
-            soft.append(
-                f"COARSE possible_regions 可能未覆盖真值地区 {region!r}"
+            hard.append(
+                f"COARSE possible_regions 未覆盖真值一级行政区 {region!r}"
             )
 
     return len(hard) == 0, hard, soft
@@ -555,12 +607,55 @@ def _run_llm_judge(traj: Trajectory) -> _JudgeResult:
 
 
 def _detect_coarse_forbidden_tools(traj: Trajectory) -> list[str]:
-    """程序化兜底：Agent1 轨迹不得含投影禁止 Tool。"""
+    """程序化兜底：Agent1 轨迹不得含投影禁止 Tool（含 compare_images*）。"""
     hard: list[str] = []
     for i, step in enumerate(traj.steps, start=1):
         name = step.action.tool
         if name in _COARSE_FORBIDDEN_TRAJECTORY_TOOLS:
             hard.append(f"COARSE 轨迹禁止 Tool: step{i}={name}")
+        elif _COARSE_COMPARE_IMAGES_RE.search(name):
+            hard.append(f"COARSE 轨迹禁止 Tool: step{i}={name}")
+    return hard
+
+
+def _is_fullframe_zoom_action(action: Action) -> bool:
+    """zoom_inspect 且 bbox 近似全图。"""
+    if action.tool != "zoom_inspect":
+        return False
+    bbox = action.params.get("bbox")
+    if not isinstance(bbox, list) or len(bbox) != 4:
+        return False
+    try:
+        vals = [float(x) for x in bbox]
+    except (TypeError, ValueError):
+        return False
+    return all(abs(vals[i] - [0.0, 0.0, 1.0, 1.0][i]) < 0.05 for i in range(4))
+
+
+def _detect_coarse_thin_trajectory(traj: Trajectory) -> list[str]:
+    """薄链兜底：重复全图观察且 Observation 无增益。"""
+    hard: list[str] = []
+    if len(traj.steps) < 1:
+        hard.append("COARSE 轨迹无步骤")
+        return hard
+    fps: list[str] = []
+    for step in traj.steps:
+        fps.append(
+            f"{step.action.tool}|{json.dumps(step.action.params, sort_keys=True, ensure_ascii=False, default=str)}"
+        )
+    if len(fps) >= 2 and len(set(fps)) == 1:
+        hard.append("COARSE 薄链：全部步骤重复相同 tool+params")
+    for i in range(1, len(traj.steps)):
+        prev, cur = traj.steps[i - 1], traj.steps[i]
+        if not (
+            _is_fullframe_zoom_action(prev.action)
+            and _is_fullframe_zoom_action(cur.action)
+        ):
+            continue
+        if prev.observation == cur.observation:
+            hard.append(
+                f"COARSE 薄链：Step {i}–{i + 1} 连续全图 zoom 且 Observation 无新增证据"
+            )
     return hard
 
 
@@ -571,8 +666,10 @@ def _run_coarse_reasoning_chain_judge(
     steps_brief: list[str] = []
     for i, step in enumerate(traj.steps, start=1):
         steps_brief.append(
-            f"Step {i}: tool={step.action.tool}; thought={step.thought!r}; "
-            f"observation={step.observation!r}"
+            f"### Step {i}\n"
+            f"tool: {step.action.tool}\n"
+            f"thought: {step.thought!r}\n"
+            f"observation: {step.observation!r}"
         )
     extra = ""
     if traj.coarse_output is not None:
@@ -584,11 +681,20 @@ def _run_coarse_reasoning_chain_judge(
         "1. identifies_geo_human_features：Thought 须指出具体地理/人文特征；\n"
         "2. narrows_scope_progressively：须逐步收窄到国家/地区，禁止跳步；\n"
         "3. has_reasoning_gap：无依据跳步、本步 Obs 时序倒置、单一弱特征直接结论 → true；\n"
-        "4. thought_action_aligned：每步 Thought 须解释为何调用该 Action；\n"
+        "4. thought_action_aligned：每步 Thought 须解释为何调用该 Action，"
+        "且工具意图与 action.tool 一致；\n"
         "5. coarse_scope_within_role：结论仅国家/地区级，不得最终精准 POI/坐标；\n"
-        "6. 允许 zoom_inspect/ocr/sun_position_calc 及适配的动态特征观察 Tool；"
-        "禁止 web_search/map_query/reverse_image_search/submit_answer；\n"
-        "7. prompt 不含真值坐标。\n"
+        "6. feature_driven_narrowing：每次关键收窄须由画面/Obs 特征驱动；"
+        "提及并使用 user_query 地点本身不违规，但不得作为唯一证据；\n"
+        "7. clues_only_as_auxiliary：已知线索仅为辅助；把线索当最终答案做地图/"
+        "卫星验证 → false；\n"
+        "8. regions_are_administrative_and_consistent：possible_regions 须为同层级"
+        "规范行政区；「中原/华北平原南缘」等地带 → false；\n"
+        "9. 允许 zoom_inspect/ocr/sun_position_calc 及适配的单图特征观察动态 Tool；"
+        "禁止 web_search/map_query/reverse_image_search/submit_answer/compare_images*；\n"
+        "10. Thought 与 Observation 已分字段列出：勿把 Obs 中的视频 UI/水印文字"
+        "误判为 Thought 元叙事；若 Thought 本身复述片头/平台标签则判不合格；\n"
+        "11. prompt 不含真值坐标。\n"
         f"{fewshot_block_for_role(AgentRole.COARSE)}\n"
         f"user_query: {traj.user_query!r}\n"
         f"steps:\n" + "\n".join(steps_brief) + extra
@@ -601,8 +707,9 @@ def _detect_coarse_reasoning_failures(
     *,
     run_llm: bool = True,
 ) -> tuple[list[str], list[str]]:
-    """COARSE 专项：禁止 Tool + 递进链裁判。返回 (hard, soft)。"""
+    """COARSE 专项：禁止 Tool + 薄链 + 递进链裁判。返回 (hard, soft)。"""
     hard = _detect_coarse_forbidden_tools(traj)
+    hard.extend(_detect_coarse_thin_trajectory(traj))
     soft: list[str] = []
     if not run_llm:
         return hard, soft
@@ -618,6 +725,12 @@ def _detect_coarse_reasoning_failures(
             hard.append("COARSE 缺少具体地理/人文特征识别")
         if not result.coarse_scope_within_role:
             hard.append("COARSE 结论超出国家/地区边界")
+        if not result.feature_driven_narrowing:
+            hard.append("COARSE 收窄未由地理/人文特征驱动")
+        if not result.clues_only_as_auxiliary:
+            hard.append("COARSE 已知线索被用作唯一收窄依据")
+        if not result.regions_are_administrative_and_consistent:
+            hard.append("COARSE possible_regions 非规范行政区或粒度混用")
         hard.extend(result.issues[:5])
     except Exception as exc:  # noqa: BLE001
         soft.append(f"COARSE 递进链 LLM-as-judge 调用失败: {exc}")

@@ -19,6 +19,7 @@ from pipeline.schemas import (
 from pipeline.stage4_observe import (
     ObservationSynthesisExhausted,
     generate_observations,
+    resolve_image_for_step,
 )
 from pipeline.tools.base import execute_action
 
@@ -350,3 +351,113 @@ def test_unknown_tool_error(env_registry: Path, tmp_path: Path) -> None:
     )
     assert result.status == "error"
     assert "未知 tool" in (result.error_message or "")
+
+
+def test_resolve_image_for_step_picks_nearest_keyframe(tmp_path: Path) -> None:
+    f0 = tmp_path / "t0.000.jpg"
+    f5 = tmp_path / "t5.000.jpg"
+    f10 = tmp_path / "t10.000.jpg"
+    for p in (f0, f5, f10):
+        p.write_bytes(b"x")
+    step = NormalizedStep(
+        move=Move(
+            start_time=4.5,
+            end_time=5.5,
+            narration="n",
+            screen_action="放大",
+            visible_clues=[],
+            agent_role=AgentRole.COARSE,
+        ),
+        thought_draft="t",
+        actions=[Action(tool="zoom_inspect", params={"bbox": [0, 0, 1, 1]})],
+        normalization_mode=NormalizationMode.MATCHED,
+        matched_tool_confidence=0.9,
+        fallback_reason=None,
+    )
+    chosen = resolve_image_for_step(
+        step,
+        image_path=str(f0),
+        keyframes=[str(f0), str(f5), str(f10)],
+    )
+    assert Path(chosen).name == "t5.000.jpg"
+
+
+def test_generate_observations_uses_per_step_keyframes(
+    env_registry: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import cv2
+    import numpy as np
+
+    frames = []
+    for t in (0.0, 8.0):
+        p = tmp_path / f"t{t:.3f}.jpg"
+        img = np.zeros((32, 32, 3), dtype=np.uint8)
+        assert cv2.imwrite(str(p), img)
+        frames.append(str(p))
+    seen: list[str] = []
+
+    class _Obs:
+        def model_dump(self, mode: str = "json") -> dict[str, Any]:
+            return {
+                "status": "success",
+                "error_message": None,
+                "description": "scene hills",
+            }
+
+    def fake_structured(
+        prompt: str,
+        response_model: type,
+        images: list[str] | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        _ = prompt, response_model, kwargs
+        seen.extend(images or [])
+        return _Obs()
+
+    monkeypatch.setattr("pipeline.tools.base.call_structured", fake_structured)
+    steps = [
+        NormalizedStep(
+            move=Move(
+                start_time=0.0,
+                end_time=1.0,
+                narration="早",
+                screen_action="放大",
+                visible_clues=[],
+                agent_role=AgentRole.COARSE,
+            ),
+            thought_draft="a",
+            actions=[Action(tool="zoom_inspect", params={"bbox": [0.2, 0.2, 0.3, 0.3]})],
+            normalization_mode=NormalizationMode.MATCHED,
+            matched_tool_confidence=0.9,
+            fallback_reason=None,
+        ),
+        NormalizedStep(
+            move=Move(
+                start_time=7.5,
+                end_time=8.5,
+                narration="晚",
+                screen_action="放大",
+                visible_clues=[],
+                agent_role=AgentRole.COARSE,
+            ),
+            thought_draft="b",
+            actions=[Action(tool="zoom_inspect", params={"bbox": [0.5, 0.5, 0.3, 0.3]})],
+            normalization_mode=NormalizationMode.MATCHED,
+            matched_tool_confidence=0.9,
+            fallback_reason=None,
+        ),
+    ]
+    results = generate_observations(
+        steps,
+        frames[0],
+        AgentRole.COARSE,
+        keyframes=frames,
+        registry_path=str(env_registry),
+        use_cache=False,
+    )
+    assert len(results) == 2
+    assert len(seen) == 2
+    # 两步应基于不同源帧裁剪（路径不同）
+    assert seen[0] != seen[1]

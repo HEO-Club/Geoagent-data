@@ -9,7 +9,11 @@ import pytest
 
 from pipeline.config import clear_settings_cache
 from pipeline.schemas import Action, AgentRole, ObservationSource
-from pipeline.tools.base import execute_action, sanitize_narration_for_obs
+from pipeline.tools.base import (
+    execute_action,
+    observation_contains_video_overlay,
+    sanitize_narration_for_obs,
+)
 
 
 @pytest.fixture()
@@ -348,3 +352,182 @@ def test_coarse_synth_prompt_uses_sanitized_narration(
     assert "许昌" not in narr_line
     assert "阴影朝北" in narr_line
     assert "Do NOT copy city names" in prompts[0]
+    assert "H9" in prompts[0] or "overlays" in prompts[0]
+
+
+def _write_solid_jpeg(path: Path, *, w: int = 64, h: int = 64) -> None:
+    import cv2
+    import numpy as np
+
+    img = np.zeros((h, w, 3), dtype=np.uint8)
+    img[:, :] = (40, 80, 120)
+    assert cv2.imwrite(str(path), img)
+
+
+def test_observation_overlay_detector_generic() -> None:
+    hits = observation_contains_video_overlay(
+        {
+            "status": "success",
+            "description": "top-left youtube channel logo watermark visible",
+        }
+    )
+    assert hits
+    # 裸平台名不足以判 overlay（避免检索摘要误杀）
+    bare = observation_contains_video_overlay(
+        {
+            "status": "success",
+            "snippets": ["youtube video of stone railing hills"],
+        }
+    )
+    assert not bare
+    clean = observation_contains_video_overlay(
+        {"status": "success", "description": "stone railing and distant hills"}
+    )
+    assert not clean
+
+
+def test_web_search_skips_overlay_gate(
+    env_registry: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """非画面 Tool 即使摘要含平台名也不触发 H9 重试。"""
+    img = tmp_path / "frame.jpg"
+    _write_solid_jpeg(img)
+    n = {"i": 0}
+
+    class _Obs:
+        def model_dump(self, mode: str = "json") -> dict[str, Any]:
+            return {
+                "status": "success",
+                "error_message": None,
+                "results": [
+                    {
+                        "title": "youtube travel clip",
+                        "snippet": "mentions youtube as source site",
+                        "url": "https://example.com/a",
+                    }
+                ],
+            }
+
+    def fake_structured(
+        prompt: str,
+        response_model: type,
+        images: list[str] | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        _ = prompt, response_model, images, kwargs
+        n["i"] += 1
+        return _Obs()
+
+    monkeypatch.setattr("pipeline.tools.base.call_structured", fake_structured)
+    result = execute_action(
+        Action(
+            tool="web_search",
+            params={"query": "stone railing hills", "purpose": "precise_lookup"},
+        ),
+        str(img),
+        AgentRole.FINE,
+        narration="检索地貌",
+        registry_path=str(env_registry),
+        use_cache=False,
+    )
+    assert result.status == "success"
+    assert n["i"] == 1
+
+
+def test_zoom_crops_image_before_synth(
+    env_registry: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    img = tmp_path / "frame.jpg"
+    _write_solid_jpeg(img, w=100, h=100)
+    seen_images: list[str] = []
+
+    class _Obs:
+        def model_dump(self, mode: str = "json") -> dict[str, Any]:
+            return {
+                "status": "success",
+                "error_message": None,
+                "description": "stone railing detail",
+            }
+
+    def fake_structured(
+        prompt: str,
+        response_model: type,
+        images: list[str] | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        _ = prompt, response_model, kwargs
+        seen_images.extend(images or [])
+        return _Obs()
+
+    monkeypatch.setattr("pipeline.tools.base.call_structured", fake_structured)
+    result = execute_action(
+        Action(tool="zoom_inspect", params={"bbox": [0.1, 0.1, 0.4, 0.4]}),
+        str(img),
+        AgentRole.COARSE,
+        narration="放大栏杆",
+        registry_path=str(env_registry),
+        use_cache=False,
+    )
+    assert result.status == "success"
+    assert seen_images
+    assert seen_images[0] != str(img.resolve()) or "_cropped" in seen_images[0] or "cropped" in seen_images[0]
+
+
+def test_overlay_observation_triggers_retry(
+    env_registry: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    img = tmp_path / "frame.jpg"
+    _write_solid_jpeg(img)
+    n = {"i": 0}
+
+    class _Obs:
+        def __init__(self, payload: dict[str, Any]) -> None:
+            self._payload = payload
+
+        def model_dump(self, mode: str = "json") -> dict[str, Any]:
+            return self._payload
+
+    def fake_structured(
+        prompt: str,
+        response_model: type,
+        images: list[str] | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        _ = response_model, images, kwargs
+        n["i"] += 1
+        if n["i"] == 1:
+            assert "H9" in prompt or "overlays" in prompt
+            return _Obs(
+                {
+                    "status": "success",
+                    "error_message": None,
+                    "description": "screen shows bilibili watermark at corner",
+                }
+            )
+        assert "Previous Observation was rejected" in prompt or "H9 violation" in prompt
+        return _Obs(
+            {
+                "status": "success",
+                "error_message": None,
+                "description": "open hills and a stone railing",
+            }
+        )
+
+    monkeypatch.setattr("pipeline.tools.base.call_structured", fake_structured)
+    result = execute_action(
+        Action(tool="zoom_inspect", params={"bbox": [0.0, 0.0, 1.0, 1.0]}),
+        str(img),
+        AgentRole.COARSE,
+        narration="看地貌",
+        registry_path=str(env_registry),
+        use_cache=False,
+    )
+    assert result.status == "success"
+    assert n["i"] == 2
+    assert "bilibili" not in str(result.observation)

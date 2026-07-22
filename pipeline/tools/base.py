@@ -12,6 +12,7 @@ import diskcache
 from pydantic import BaseModel, Field, ValidationError
 
 from pipeline.config import get_settings
+from pipeline.image_utils import crop_image_by_bbox
 from pipeline.llm import call_structured
 from pipeline.schemas import (
     Action,
@@ -23,7 +24,31 @@ from pipeline.schemas import (
 from pipeline.tools.registry import load_registry
 from pipeline.tools.validation import validate_action_params, validate_observation
 
-PROMPT_VERSION = "obs_synth_v2"
+PROMPT_VERSION = "obs_synth_v3"
+
+# 仅对画面观察类 Tool 做 H9 门禁（web_search/map_query 结果常合法提及平台名）
+_FRAME_OVERLAY_TOOLS: frozenset[str] = frozenset(
+    {"zoom_inspect", "ocr", "sun_position_calc", "reverse_image_search"}
+)
+
+# 视频 overlay / 元信息类别（通用结构启发式，非单视频标题黑名单）
+_OVERLAY_CATEGORY_RES: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"水印|片头|标题卡|烧录字幕|进度条|频道(?:名|标识|水印|logo)|up主|创作者标签",
+        re.I,
+    ),
+    re.compile(r"\b(?:watermark|title\s*card|burn(?:ed)?[- ]?in|channel\s*logo)\b", re.I),
+    # 平台名须与 UI/水印共现，避免检索摘要误杀
+    re.compile(
+        r"(?:bilibili|youtube|tiktok|抖音|小红书|instagram).{0,12}"
+        r"(?:水印|logo|角标|ui|界面|标题卡|片头)"
+        r"|(?:水印|logo|角标|ui|界面|标题卡|片头).{0,12}"
+        r"(?:bilibili|youtube|tiktok|抖音|小红书|instagram)",
+        re.I,
+    ),
+    re.compile(r"难度\s*\d+\s*★|\d+\s*star(?:s)?\b|难度角标", re.I),
+    re.compile(r"平台\s*(?:logo|ui|水印)", re.I),
+)
 
 # 中文地名/行政区/道路等后缀短语（COARSE 旁白消毒）
 _PLACE_SUFFIX_RE = re.compile(
@@ -62,6 +87,36 @@ def sanitize_narration_for_obs(agent_role: AgentRole, narration: str) -> str:
         text = _FIRST_PERSON_RE.sub(" ", text)
     text = re.sub(r"\s+", " ", text).strip(" ，,。.;；")
     return text
+
+
+def observation_contains_video_overlay(observation: dict[str, Any]) -> list[str]:
+    """通用启发式：Observation 是否含视频 overlay/元信息类别。
+
+    返回命中的类别说明列表；空列表表示未检出。不做单视频标题黑名单删除。
+    """
+    if not observation:
+        return []
+    blob = json.dumps(observation, ensure_ascii=False)
+    hits: list[str] = []
+    for pat in _OVERLAY_CATEGORY_RES:
+        if pat.search(blob):
+            hits.append(pat.pattern)
+    return hits
+
+
+def _resolve_synth_image(tool: ToolDefinition, params: dict[str, Any], image_path: str) -> str:
+    """zoom_inspect/ocr 按 bbox 裁图后送模；其余用原图。"""
+    if tool.name not in ("zoom_inspect", "ocr"):
+        return image_path
+    bbox = params.get("bbox")
+    if not isinstance(bbox, list) or len(bbox) != 4:
+        return image_path
+    settings = get_settings()
+    return crop_image_by_bbox(
+        image_path,
+        [float(x) for x in bbox],
+        cache_dir=str(Path(settings.CACHE_DIR)),
+    )
 
 
 def _tool_schema_hash(tool: ToolDefinition) -> str:
@@ -165,8 +220,10 @@ def _synthesize_observation(
     image_path: str,
     narration: str,
     agent_role: AgentRole,
+    *,
+    retry_feedback: str = "",
 ) -> dict[str, Any]:
-    """H 规则：LLM 按 observation_fields 逐字段合成（关键帧 + 消毒旁白）。"""
+    """H 规则：LLM 按 observation_fields 逐字段合成（关键帧/裁剪图 + 消毒旁白）。"""
     model_cls = _build_observation_model(tool)
     field_lines = []
     for f in tool.observation_fields:
@@ -179,6 +236,12 @@ def _synthesize_observation(
         if agent_role == AgentRole.COARSE
         else ""
     )
+    feedback = ""
+    if retry_feedback.strip():
+        feedback = (
+            "Previous Observation was rejected. Fix these issues and regenerate:\n"
+            f"{retry_feedback.strip()}\n"
+        )
     prompt = (
         "You synthesize a tool Observation from the image, sanitized step narration, "
         "and action params.\n"
@@ -194,9 +257,16 @@ def _synthesize_observation(
         "Do NOT copy city names, POI names, or precise locations from Narration "
         "into Observation fields.\n"
         "- Place names in Observation may only come from Action params "
-        "(e.g. query) or clearly visible text in the image when the tool "
-        "semantically extracts text.\n"
+        "(e.g. query) or clearly visible scene text (road signs/shop signs) "
+        "when the tool semantically extracts text.\n"
+        "- H9: NEVER include video production overlays: intro/title cards, "
+        "platform/channel watermarks or logos, difficulty/star badges, "
+        "progress bars, burned-in subtitles, creator tags, or non-scene UI. "
+        "Describe only in-scene geography/architecture/nature/real signage. "
+        "For OCR, ignore corner watermarks and top title bars; if only overlay "
+        "text is visible, return empty texts / status=empty.\n"
         f"{role_hint}"
+        f"{feedback}"
         f"AgentRole: {agent_role.value}\n"
         f"Tool: {tool.name}\nDescription: {tool.description}\n"
         f"Params: {json.dumps(params, ensure_ascii=False)}\n"
@@ -256,11 +326,12 @@ def execute_action(
         )
 
     narr = sanitize_narration_for_obs(agent_role, narration or "")
+    synth_image = _resolve_synth_image(tool, params, image_path)
     model_name = settings.LLM_MODEL
     key = _cache_key(
         tool=tool,
         params=params,
-        image_path=image_path,
+        image_path=synth_image,
         narration=narr,
         model_name=model_name,
         prompt_version=PROMPT_VERSION,
@@ -275,6 +346,7 @@ def execute_action(
             )
 
     last_error: str | None = None
+    retry_feedback = ""
     result = ObservationExecutionResult(
         action=normalized_action,
         observation=None,
@@ -286,8 +358,35 @@ def execute_action(
     for _ in range(max(1, settings.OBS_SYNTH_MAX_RETRY)):
         try:
             raw_obs = _synthesize_observation(
-                tool, params, image_path, narr, agent_role
+                tool,
+                params,
+                synth_image,
+                narr,
+                agent_role,
+                retry_feedback=retry_feedback,
             )
+            overlay_hits = (
+                observation_contains_video_overlay(raw_obs)
+                if tool.name in _FRAME_OVERLAY_TOOLS
+                else []
+            )
+            if overlay_hits:
+                retry_feedback = (
+                    "H9 violation: Observation must not contain video overlays "
+                    "(title cards, platform watermarks/logos, difficulty badges, "
+                    "burned-in subtitles, creator tags, non-scene UI). "
+                    "Describe only in-scene geography/architecture/nature/signage."
+                )
+                last_error = "observation contains video overlay"
+                result = ObservationExecutionResult(
+                    action=normalized_action,
+                    observation=None,
+                    source=ObservationSource.LLM_SYNTHESIZED,
+                    status="error",
+                    error_message=last_error,
+                    cache_hit=False,
+                )
+                continue
             obs = validate_observation(tool, raw_obs)
             status = str((obs or {}).get("status", "success"))
             if status not in ("success", "empty", "error"):
@@ -304,6 +403,7 @@ def execute_action(
             break
         except (ValidationError, Exception) as exc:  # noqa: BLE001
             last_error = str(exc)
+            retry_feedback = f"Schema/validation error: {last_error}"
             result = ObservationExecutionResult(
                 action=normalized_action,
                 observation=None,

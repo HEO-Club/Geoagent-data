@@ -446,6 +446,10 @@ def run_one_video(
         {
             "steps": _serialize_role_map(steps_by_role),
             "image_path": image_path,
+            "keyframes": {
+                r.value: list(keyframes_by_role.get(r) or [])
+                for r in (AgentRole.COARSE, AgentRole.FINE, AgentRole.VERIFIER)
+            },
         }
     )
     entry4 = _get_stage_entry(manifest, stage)
@@ -466,6 +470,7 @@ def run_one_video(
                     steps_by_role.get(role) or [],
                     image_path,
                     role,
+                    keyframes=keyframes_by_role.get(role) or [],
                 )
             payload = _serialize_role_map(observations_by_role)
             _dump_json(out_path4, payload)

@@ -192,11 +192,11 @@ class TestMatchedAndComposed:
         )
         assert len(steps) == 1
         step = steps[0]
+        # COARSE：web_search 分解为有画面依据的训练 Tool
         assert step.normalization_mode is NormalizationMode.MATCHED
         assert len(step.actions) == 1
-        assert step.actions[0].tool == "web_search"
-        assert step.actions[0].params["purpose"] == "broad_discovery"
-        assert step.actions[0].params.get("top_k") == 3  # default 补齐
+        assert step.actions[0].tool == "zoom_inspect"
+        assert "bbox" in step.actions[0].params
         assert step.matched_tool_confidence == 0.91
         assert step.fallback_reason is None
 
@@ -223,15 +223,16 @@ class TestMatchedAndComposed:
             [_move(screen_action="OCR 路牌并搜索文字")],
             AgentRole.COARSE,
         )
+        # 分解为 zoom（检索/视觉）+ ocr（文字语义）
         assert steps[0].normalization_mode is NormalizationMode.COMPOSED
-        assert [a.tool for a in steps[0].actions] == ["ocr", "web_search"]
+        assert [a.tool for a in steps[0].actions] == ["zoom_inspect", "ocr"]
 
     def test_agent_permission_recovers_via_heuristic_web_search(
         self,
         tmp_registry: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """COARSE 误选 map_query 时，启发式降级为 web_search，避免空坍缩。"""
+        """COARSE 误选 map_query 时，启发式后分解为训练 Tool，避免空坍缩。"""
 
         def _fake(*_a: Any, **_k: Any) -> _MatchLLMResponse:
             return _MatchLLMResponse(
@@ -252,8 +253,7 @@ class TestMatchedAndComposed:
         )
         assert steps[0].normalization_mode is NormalizationMode.MATCHED
         assert len(steps[0].actions) == 1
-        assert steps[0].actions[0].tool == "web_search"
-        assert steps[0].actions[0].params["purpose"] == "broad_discovery"
+        assert steps[0].actions[0].tool == "zoom_inspect"
         assert steps[0].matched_tool_confidence == 0.55
 
     def test_web_search_wrong_purpose_recovers_via_heuristic(
@@ -284,8 +284,7 @@ class TestMatchedAndComposed:
         )
         assert mode is NormalizationMode.MATCHED
         assert len(actions) == 1
-        assert actions[0].tool == "web_search"
-        assert actions[0].params["purpose"] == "broad_discovery"
+        assert actions[0].tool == "zoom_inspect"
         assert reason is None
 
 
@@ -459,8 +458,7 @@ class TestToolRegisteredAndFallback:
             AgentRole.COARSE,
         )
         assert steps[0].normalization_mode is NormalizationMode.MATCHED
-        assert steps[0].actions[0].tool == "web_search"
-        assert steps[0].actions[0].params["purpose"] == "broad_discovery"
+        assert steps[0].actions[0].tool == "zoom_inspect"
 
 
 class TestNoObservation:
@@ -490,3 +488,97 @@ class TestNoObservation:
         assert "observation" not in dumped
         assert "actions" in dumped
         assert dumped["normalization_mode"] == "matched"
+
+
+class TestCoarseTrainingDecompose:
+    def test_compare_images_decomposes_without_spurious_ocr(
+        self,
+        tmp_registry: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """比对语义 → zoom；无文字语义不加 OCR。"""
+
+        def _fake(*_a: Any, **_k: Any) -> _MatchLLMResponse:
+            return _MatchLLMResponse(
+                decision="matched",
+                actions=[
+                    _ProposedAction(
+                        tool="compare_images_for_geolocation",
+                        params={"image_a": "a", "image_b": "b"},
+                    )
+                ],
+                confidence=0.8,
+            )
+
+        monkeypatch.setattr("pipeline.stage3_normalize.call_structured", _fake)
+        steps = normalize_to_steps(
+            [
+                _move(
+                    screen_action="对比卫星图与老照片桥梁跨度",
+                    narration="看看桥和河面宽度",
+                )
+            ],
+            AgentRole.COARSE,
+        )
+        tools = [a.tool for a in steps[0].actions]
+        assert "compare_images_for_geolocation" not in tools
+        assert "web_search" not in tools
+        assert "zoom_inspect" in tools
+        assert "ocr" not in tools
+
+    def test_shadow_narration_can_add_sun(
+        self,
+        tmp_registry: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        def _fake(*_a: Any, **_k: Any) -> _MatchLLMResponse:
+            return _MatchLLMResponse(
+                decision="matched",
+                actions=[
+                    _ProposedAction(
+                        tool="web_search",
+                        params={"query": "shadow latitude", "purpose": "broad_discovery"},
+                    )
+                ],
+                confidence=0.8,
+            )
+
+        monkeypatch.setattr("pipeline.stage3_normalize.call_structured", _fake)
+        steps = normalize_to_steps(
+            [
+                _move(
+                    screen_action="根据阴影推算太阳位置",
+                    narration="阴影朝北，估算日照",
+                )
+            ],
+            AgentRole.COARSE,
+        )
+        tools = [a.tool for a in steps[0].actions]
+        assert "sun_position_calc" in tools
+        assert "web_search" not in tools
+
+    def test_fine_keeps_web_search(
+        self,
+        tmp_registry: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """分解守卫仅作用于 COARSE。"""
+
+        def _fake(*_a: Any, **_k: Any) -> _MatchLLMResponse:
+            return _MatchLLMResponse(
+                decision="matched",
+                actions=[
+                    _ProposedAction(
+                        tool="web_search",
+                        params={"query": "q", "purpose": "precise_lookup"},
+                    )
+                ],
+                confidence=0.9,
+            )
+
+        monkeypatch.setattr("pipeline.stage3_normalize.call_structured", _fake)
+        steps = normalize_to_steps(
+            [_move(screen_action="搜索地标", role=AgentRole.FINE)],
+            AgentRole.FINE,
+        )
+        assert steps[0].actions[0].tool == "web_search"

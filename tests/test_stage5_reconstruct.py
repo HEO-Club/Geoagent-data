@@ -29,6 +29,9 @@ from pipeline.stage5_reconstruct import (
     _RewrittenTrajectory,
     _TaoStyleCheck,
     _VerifierOutputBundle,
+    _collapse_consecutive_duplicate_actions,
+    _normalize_coarse_regions,
+    _validate_coarse_projection_richness,
     reconstruct_all_trajectories,
     reconstruct_revision_trajectories,
     reconstruct_single_trajectory,
@@ -301,6 +304,230 @@ def test_coarse_projection_empty_raises(mock_llm: MagicMock) -> None:
         )
 
 
+def test_coarse_projects_out_compare_images(mock_llm: MagicMock) -> None:
+    """投影默认剔除 compare_images*，保留固定 Tool。"""
+    zoom = Action(tool="zoom_inspect", params={"bbox": [0.1, 0.1, 0.4, 0.4]})
+    compare = Action(
+        tool="compare_images_for_geolocation",
+        params={"image_a": "a", "image_b": "b"},
+    )
+    sun = Action(
+        tool="sun_position_calc",
+        params={"shadow_direction_deg": 135.0, "estimated_local_time": "14:30"},
+    )
+    steps = [
+        _step([zoom], thought="看建筑。"),
+        _step([compare], thought="比对卫星。"),
+        _step([sun], thought="算日照。"),
+    ]
+    observations = [
+        _obs(zoom, observation={"status": "success", "error_message": None, "description": "x"}),
+        _obs(
+            compare,
+            observation={"status": "success", "error_message": None, "similarity": 0.9},
+        ),
+        _obs(
+            sun,
+            observation={
+                "status": "success",
+                "error_message": None,
+                "possible_latitude_range": [20.0, 40.0],
+            },
+        ),
+    ]
+    traj = reconstruct_single_trajectory(
+        steps,
+        observations,
+        AgentRole.COARSE,
+        answer_timestamp=100.0,
+        image_path="frame.jpg",
+    )
+    tools = [s.action.tool for s in traj.steps]
+    assert tools == ["zoom_inspect", "sun_position_calc"]
+    assert all("compare_images" not in t for t in tools)
+    # 不应为 compare 调用动态适配 LLM（名称硬排除）
+    assert not any(c["response_model"] is _CoarseToolSuitability for c in mock_llm.calls)
+
+
+def test_coarse_keeps_fixed_tools_when_web_and_compare_present(
+    mock_llm: MagicMock,
+) -> None:
+    """含 web_search + 固定 Tool 时只留三固定允许集中的步。"""
+    zoom = Action(tool="zoom_inspect", params={"bbox": [0.0, 0.0, 1.0, 1.0]})
+    search = Action(
+        tool="web_search",
+        params={"query": "q", "purpose": "broad_discovery"},
+    )
+    ocr = Action(tool="ocr", params={"bbox": [0.2, 0.2, 0.3, 0.3]})
+    traj = reconstruct_single_trajectory(
+        [
+            _step([zoom], thought="看。"),
+            _step([search], thought="搜。"),
+            _step([ocr], thought="读。"),
+        ],
+        [
+            _obs(zoom, observation={"status": "success", "error_message": None, "description": "a"}),
+            _obs(
+                search,
+                observation={
+                    "status": "success",
+                    "error_message": None,
+                    "results": [],
+                },
+            ),
+            _obs(ocr, observation={"status": "success", "error_message": None, "texts": ["x"]}),
+        ],
+        AgentRole.COARSE,
+        answer_timestamp=10.0,
+        image_path="frame.jpg",
+    )
+    assert [s.action.tool for s in traj.steps] == ["zoom_inspect", "ocr"]
+
+
+def test_coarse_sanitizes_illegal_zoom_bbox(mock_llm: MagicMock) -> None:
+    """经纬度式 bbox（绝对值>1.5）纠正为全图框。"""
+    bad = Action(
+        tool="zoom_inspect",
+        params={"bbox": [113.833, 34.0, 113.9, 34.1]},
+    )
+    traj = reconstruct_single_trajectory(
+        [_step([bad], thought="放大。")],
+        [_obs(bad, observation={"status": "success", "error_message": None, "description": "x"})],
+        AgentRole.COARSE,
+        answer_timestamp=10.0,
+        image_path="frame.jpg",
+    )
+    assert traj.steps[0].action.params["bbox"] == [0.0, 0.0, 1.0, 1.0]
+    scaffold = next(
+        c["prompt"] for c in mock_llm.calls if c["response_model"] is _CoarseOutputBundle
+    )
+    assert "113.833" not in scaffold
+    assert "[0.0, 0.0, 1.0, 1.0]" in scaffold
+
+
+def test_coarse_thought_sun_vs_wrong_action_triggers_rewrite(
+    mock_llm: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Thought 说太阳/日照但 Action 非 sun_position_calc → 强制重写。"""
+    bundle_n = {"n": 0}
+
+    def _fake(
+        prompt: str,
+        response_model: type[BaseModel],
+        images: Optional[list[str]] = None,
+        video: Optional[str] = None,
+        model: Optional[str] = None,
+    ) -> BaseModel:
+        _ = images, video, model
+        n_steps = max(prompt.count("### Step "), 1)
+        if response_model is _ExternalHints:
+            return _ExternalHints(hints=[])
+        if response_model is _TaoStyleCheck:
+            return _TaoStyleCheck(is_standard_tao=True, issues=[])
+        if response_model is _CoarseReasoningCheck:
+            # 程序化对齐应在 LLM 链检之前已触发重写；若仍调用则放行
+            return _CoarseReasoningCheck(
+                identifies_geo_human_features=True,
+                narrows_scope_progressively=True,
+                has_reasoning_gap=False,
+                thought_action_aligned=True,
+                issues=[],
+            )
+        if response_model is _CoarseOutputBundle:
+            bundle_n["n"] += 1
+            if bundle_n["n"] == 1:
+                thoughts = ["根据阴影推断太阳位置与日照方向。"] * n_steps
+            else:
+                thoughts = [
+                    "立面阴影朝北偏东，先放大确认建筑细节再收窄范围。"
+                ] * n_steps
+            return _CoarseOutputBundle(thoughts=thoughts, coarse_output=_hyp())
+        raise AssertionError(response_model)
+
+    monkeypatch.setattr("pipeline.stage5_reconstruct.call_structured", _fake)
+    action = Action(tool="zoom_inspect", params={"bbox": [0.1, 0.1, 0.4, 0.4]})
+    traj = reconstruct_single_trajectory(
+        [_step([action], thought="看。")],
+        [_obs(action, observation={"status": "success", "error_message": None, "description": "x"})],
+        AgentRole.COARSE,
+        answer_timestamp=10.0,
+        image_path="frame.jpg",
+    )
+    assert bundle_n["n"] == 2
+    assert "太阳" not in traj.steps[0].thought
+
+
+def test_normalize_coarse_regions_moves_descriptive() -> None:
+    hyp = LocationHypothesis(
+        possible_countries=["中国"],
+        possible_regions=["河南省", "华北平原南缘", "中原地区"],
+        reasoning_summary="特征收窄。",
+        confidence=0.6,
+        key_clues_remaining=[],
+    )
+    fixed, issues = _normalize_coarse_regions(hyp)
+    assert fixed.possible_regions == ["河南省"]
+    assert issues
+    assert "华北平原南缘" in fixed.reasoning_summary
+    assert "中原地区" in fixed.key_clues_remaining
+
+
+def test_coarse_duplicate_fullframe_zoom_raises() -> None:
+    zoom = Action(tool="zoom_inspect", params={"bbox": [0.0, 0.0, 1.0, 1.0]})
+    obs = _obs(
+        zoom,
+        observation={"status": "success", "error_message": None, "description": "same"},
+    )
+    step = _step([zoom])
+    units = [
+        ("d1", zoom, obs, step),
+        ("d2", zoom, obs, step),
+    ]
+    with pytest.raises(ValueError, match="递进可写性不足"):
+        _validate_coarse_projection_richness(units)
+
+
+def test_collapse_consecutive_duplicates_keeps_progressive_chain() -> None:
+    """连续相同 tool+params 折叠后，不同观察目标链可通过可写性门禁。"""
+    zoom_a = Action(tool="zoom_inspect", params={"bbox": [0.0, 0.0, 1.0, 1.0]})
+    zoom_b = Action(tool="zoom_inspect", params={"bbox": [0.0, 0.0, 1.0, 0.45]})
+    ocr = Action(tool="ocr", params={"bbox": [0.15, 0.15, 0.7, 0.35]})
+    obs_a = _obs(
+        zoom_a,
+        observation={
+            "status": "success",
+            "error_message": None,
+            "description": "wide hills",
+        },
+    )
+    obs_b = _obs(
+        zoom_b,
+        observation={
+            "status": "success",
+            "error_message": None,
+            "description": "distant ridge",
+        },
+    )
+    obs_o = _obs(
+        ocr,
+        observation={"status": "success", "error_message": None, "texts": []},
+    )
+    step_a = _step([zoom_a])
+    step_b = _step([zoom_b])
+    step_o = _step([ocr])
+    units = [
+        ("d1", zoom_a, obs_a, step_a),
+        ("d2", zoom_a, obs_a, step_a),
+        ("d3", zoom_a, obs_a, step_a),
+        ("d4", ocr, obs_o, step_o),
+        ("d5", zoom_b, obs_b, step_b),
+        ("d6", zoom_b, obs_b, step_b),
+    ]
+    collapsed = _collapse_consecutive_duplicate_actions(units)
+    assert len(collapsed) == 3
+    _validate_coarse_projection_richness(collapsed)
+
+
 def test_coarse_reasoning_gap_triggers_rewrite(
     mock_llm: MagicMock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -323,13 +550,17 @@ def test_coarse_reasoning_gap_triggers_rewrite(
             return _TaoStyleCheck(is_standard_tao=True, issues=[])
         if response_model is _CoarseReasoningCheck:
             chain_n["n"] += 1
-            # 仅第一次检查；重写后不再检查（与现实现一致）
+            # 第一次失败触发重写；重写后再检一次
+            bad = chain_n["n"] == 1
             return _CoarseReasoningCheck(
-                identifies_geo_human_features=False,
-                narrows_scope_progressively=False,
-                has_reasoning_gap=True,
-                thought_action_aligned=False,
-                issues=["单一弱特征跳步"],
+                identifies_geo_human_features=not bad,
+                narrows_scope_progressively=not bad,
+                has_reasoning_gap=bad,
+                thought_action_aligned=not bad,
+                feature_driven_narrowing=not bad,
+                clues_only_as_auxiliary=True,
+                regions_are_administrative_and_consistent=True,
+                issues=["单一弱特征跳步"] if bad else [],
             )
         if response_model is _CoarseOutputBundle:
             return _CoarseOutputBundle(thoughts=thoughts, coarse_output=_hyp())
@@ -345,7 +576,7 @@ def test_coarse_reasoning_gap_triggers_rewrite(
         image_path="frame.jpg",
     )
     assert traj.coarse_output is not None
-    assert chain_n["n"] == 1
+    assert chain_n["n"] == 2
 
 
 def test_external_hints_go_into_user_query(mock_llm: MagicMock) -> None:

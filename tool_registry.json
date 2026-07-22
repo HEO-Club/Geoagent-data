@@ -561,5 +561,280 @@
       "zoom_inspect",
       "web_search"
     ]
+  },
+  {
+    "name": "overlay_annotation_on_image",
+    "description": "在图像（如老照片或卫星图）上叠加文字标注，用于纠正或强化地形认知（如标注平原、桥梁、山体等关键地理特征），辅助后续精定位推理。",
+    "params": [
+      {
+        "name": "target_image",
+        "type": "string",
+        "required": true,
+        "description": "待标注的图像路径或标识符",
+        "example": "old_photo_001.jpg",
+        "default": null,
+        "enum_values": null
+      },
+      {
+        "name": "annotations",
+        "type": "string_list",
+        "required": true,
+        "description": "需叠加的红色文字标注列表，每项为简短地理特征描述",
+        "example": [
+          "平原",
+          "桥",
+          "山"
+        ],
+        "default": null,
+        "enum_values": null
+      },
+      {
+        "name": "color",
+        "type": "string",
+        "required": false,
+        "description": "标注文字颜色，默认为红色",
+        "example": "red",
+        "default": "red",
+        "enum_values": null
+      }
+    ],
+    "observation_fields": [
+      {
+        "name": "status",
+        "type": "string",
+        "nullable": false,
+        "description": "操作状态：success 或 error",
+        "item_fields": null
+      },
+      {
+        "name": "error_message",
+        "type": "string",
+        "nullable": true,
+        "description": "若操作失败时返回的错误原因，成功时为 null",
+        "item_fields": null
+      },
+      {
+        "name": "annotated_image",
+        "type": "string",
+        "nullable": false,
+        "description": "叠加标注后的图像路径或标识符",
+        "item_fields": null
+      },
+      {
+        "name": "annotation_count",
+        "type": "int",
+        "nullable": false,
+        "description": "成功叠加到图像上的标注数量",
+        "item_fields": null
+      }
+    ],
+    "allowed_agents": [
+      "fine_locator"
+    ],
+    "is_terminal": false,
+    "created_at": "2026-07-21T13:07:46Z",
+    "source_video_timestamp": null,
+    "source_narration": "但是这座桥附近,并没有地势高的地方排除。",
+    "derived_from_existing_tools": [
+      "zoom_inspect"
+    ]
+  },
+  {
+    "name": "analyze_terrain_visual_illusion",
+    "description": "分析图像中地形特征的视觉误差，识别可能被误判的地理特征（如将河岸误认为山脊），辅助精定位阶段的地形认知纠正。",
+    "params": [
+      {
+        "name": "target_image",
+        "type": "string",
+        "required": true,
+        "description": "待分析的图像（老照片或卫星图）",
+        "example": "old_photo_001.jpg",
+        "default": null,
+        "enum_values": null
+      },
+      {
+        "name": "suspected_feature",
+        "type": "string",
+        "required": true,
+        "description": "疑似存在视觉误差的地形特征描述",
+        "example": "斜向上的边被误认为是山脊",
+        "default": null,
+        "enum_values": null
+      },
+      {
+        "name": "analysis_focus",
+        "type": "string_list",
+        "required": false,
+        "description": "需要重点分析的地形特征类型列表",
+        "example": [
+          "ridge",
+          "riverbank",
+          "slope",
+          "valley"
+        ],
+        "default": null,
+        "enum_values": null
+      }
+    ],
+    "observation_fields": [
+      {
+        "name": "status",
+        "type": "string",
+        "nullable": false,
+        "description": "分析状态：success表示成功，error表示失败",
+        "item_fields": null
+      },
+      {
+        "name": "error_message",
+        "type": "string",
+        "nullable": true,
+        "description": "错误信息，仅当status为error时非null",
+        "item_fields": null
+      },
+      {
+        "name": "illusion_detected",
+        "type": "bool",
+        "nullable": false,
+        "description": "是否检测到地形视觉误差，true表示存在误判",
+        "item_fields": null
+      },
+      {
+        "name": "misidentified_feature",
+        "type": "string",
+        "nullable": true,
+        "description": "被误判的地形特征名称，仅当illusion_detected为true时非null",
+        "item_fields": null
+      },
+      {
+        "name": "actual_feature",
+        "type": "string",
+        "nullable": true,
+        "description": "实际对应的地形特征名称，仅当illusion_detected为true时非null",
+        "item_fields": null
+      },
+      {
+        "name": "visual_cues",
+        "type": "string_list",
+        "nullable": false,
+        "description": "支持判断结论的视觉线索列表",
+        "item_fields": null
+      },
+      {
+        "name": "confidence",
+        "type": "float",
+        "nullable": false,
+        "description": "判断置信度，取值范围0到1之间",
+        "item_fields": null
+      },
+      {
+        "name": "geolocation_implication",
+        "type": "string",
+        "nullable": true,
+        "description": "对地理定位的影响说明，仅当存在有效结论时非null",
+        "item_fields": null
+      }
+    ],
+    "allowed_agents": [
+      "fine_locator"
+    ],
+    "is_terminal": false,
+    "created_at": "2026-07-22T01:32:41Z",
+    "source_video_timestamp": null,
+    "source_narration": "因为视觉误差,把这条斜向上的边误认为是山脊,而实际,是河岸边罢了。",
+    "derived_from_existing_tools": [
+      "zoom_inspect",
+      "overlay_annotation_on_image"
+    ]
+  },
+  {
+    "name": "calculate_shooting_direction_and_landmark_position",
+    "description": "根据卫星地图图像，计算并标注拍摄朝向及特定地标（如依山亭）的地理位置，辅助精定位推理。",
+    "params": [
+      {
+        "name": "target_image",
+        "type": "string",
+        "required": true,
+        "description": "卫星地图图像路径或标识符。",
+        "example": "satellite_map_001.png",
+        "default": null,
+        "enum_values": null
+      },
+      {
+        "name": "landmark_name",
+        "type": "string",
+        "required": true,
+        "description": "需要标注的地标名称，如'依山亭'。",
+        "example": "依山亭",
+        "default": null,
+        "enum_values": null
+      },
+      {
+        "name": "reference_features",
+        "type": "string_list",
+        "required": false,
+        "description": "辅助判断拍摄朝向或地标位置的参考特征列表，如['圆拱屋顶', '山体走向']。",
+        "example": [
+          "圆拱屋顶",
+          "山体走向"
+        ],
+        "default": null,
+        "enum_values": null
+      }
+    ],
+    "observation_fields": [
+      {
+        "name": "status",
+        "type": "string",
+        "nullable": false,
+        "description": "工具执行状态，如'success'或'error'。",
+        "item_fields": null
+      },
+      {
+        "name": "error_message",
+        "type": "string",
+        "nullable": true,
+        "description": "若执行失败（status为'error'）时返回错误信息，成功时为null。",
+        "item_fields": null
+      },
+      {
+        "name": "shooting_direction_deg",
+        "type": "float",
+        "nullable": true,
+        "description": "推算的拍摄朝向角度（0-360度，正北为0）。当无法判断拍摄朝向时为null。",
+        "item_fields": null
+      },
+      {
+        "name": "landmark_latlng",
+        "type": "latlng",
+        "nullable": true,
+        "description": "地标（如依山亭）的经纬度坐标。当无法定位地标或地标不存在时为null。",
+        "item_fields": null
+      },
+      {
+        "name": "confidence",
+        "type": "float",
+        "nullable": true,
+        "description": "标注结果的置信度（0-1）。当status为'error'或无法完成计算时为null。",
+        "item_fields": null
+      },
+      {
+        "name": "reasoning",
+        "type": "string",
+        "nullable": true,
+        "description": "推理过程说明，如依据哪些特征判断拍摄朝向或地标位置。当status为'error'时为null。",
+        "item_fields": null
+      }
+    ],
+    "allowed_agents": [
+      "fine_locator"
+    ],
+    "is_terminal": false,
+    "created_at": "2026-07-22T01:41:25Z",
+    "source_video_timestamp": null,
+    "source_narration": "然而打开最早零二年的摇杆地图可见,公园里最热门的拍照,打卡地吉木格,其拍摄一侧,并没有圆拱屋顶建筑。",
+    "derived_from_existing_tools": [
+      "zoom_inspect",
+      "overlay_annotation_on_image"
+    ]
   }
 ]

@@ -207,6 +207,117 @@ _MATCH_LLM_MAX_ATTEMPTS = 2
 
 _DEFAULT_ZOOM_BBOX: list[float] = [0.25, 0.25, 0.5, 0.5]
 
+# Agent1 训练轨迹最终保留的固定 Tool（与 stage5 投影对齐）
+_COARSE_TRAINING_TOOLS: frozenset[str] = frozenset(
+    {"zoom_inspect", "ocr", "sun_position_calc"}
+)
+_COARSE_EVIDENCE_ONLY_NAME_RE = re.compile(
+    r"^(?:web_search|map_query|reverse_image_search)$|compare_images|"
+    r"satellite|map_compare|image_pair",
+    re.IGNORECASE,
+)
+_TEXT_EVIDENCE_RE = re.compile(
+    r"ocr|文字|路牌|店招|招牌|字幕文字|标识|牌匾|读字|recognize\s*text",
+    re.I,
+)
+_SUN_EVIDENCE_RE = re.compile(
+    r"太阳|阴影|日照|sun\s*position|shadow|azimuth|altitude",
+    re.I,
+)
+_VISUAL_EVIDENCE_RE = re.compile(
+    r"放大|缩放|zoom|局部|立面|细节|对比|比对|卫星|画面|观察|inspect|compare",
+    re.I,
+)
+
+
+def _is_coarse_evidence_only_tool(tool_name: str) -> bool:
+    """COARSE 在 stage3 可匹配、但 stage5 必剔除的工具。"""
+    return bool(_COARSE_EVIDENCE_ONLY_NAME_RE.search(tool_name))
+
+
+def _coarse_decompose_to_training_actions(
+    screen_action: str,
+    narration: str,
+    tool_by_name: dict[str, ToolDefinition],
+) -> Optional[list[Action]]:
+    """将检索/双图等证据侧语义分解为有图像依据的训练 Tool 组合。
+
+    仅在语义前置条件满足时添加 OCR/sun；禁止无依据凑步。
+    """
+    text = f"{screen_action} {narration}".strip()
+    if not text:
+        return None
+    proposed: list[_ProposedAction] = []
+    needs_visual = bool(
+        _VISUAL_EVIDENCE_RE.search(text)
+        or re.search(r"搜索|search|检索|比对|对比|卫星|地图", text, re.I)
+    )
+    # 视觉/比对/检索 → zoom（不同默认关注区，避免重复全图）
+    if needs_visual and "zoom_inspect" in tool_by_name:
+        bbox = list(_DEFAULT_ZOOM_BBOX)
+        if re.search(r"远|山|背景|horizon|bridge|桥", text, re.I):
+            bbox = [0.0, 0.0, 1.0, 0.45]
+        elif re.search(r"近|栏杆|人物|前景|foreground", text, re.I):
+            bbox = [0.2, 0.35, 0.6, 0.55]
+        proposed.append(
+            _ProposedAction(tool="zoom_inspect", params={"bbox": bbox})
+        )
+    # 仅文本区域语义才加 OCR
+    if _TEXT_EVIDENCE_RE.search(text) and "ocr" in tool_by_name:
+        proposed.append(
+            _ProposedAction(
+                tool="ocr",
+                params={"bbox": [0.15, 0.15, 0.7, 0.35]},
+            )
+        )
+    # 仅阴影/日照语义才加 sun
+    if _SUN_EVIDENCE_RE.search(text) and "sun_position_calc" in tool_by_name:
+        proposed.append(_ProposedAction(tool="sun_position_calc", params={}))
+
+    if not proposed:
+        return None
+    # 去重同 tool
+    seen: set[str] = set()
+    unique: list[_ProposedAction] = []
+    for item in proposed:
+        if item.tool in seen:
+            continue
+        seen.add(item.tool)
+        unique.append(item)
+    try:
+        return _validate_actions(unique, tool_by_name, AgentRole.COARSE)
+    except (ValueError, PermissionError, ValidationError):
+        return None
+
+
+def _apply_coarse_training_guard(
+    actions: list[Action],
+    mode: NormalizationMode,
+    screen_action: str,
+    narration: str,
+    tool_by_name: dict[str, ToolDefinition],
+) -> tuple[list[Action], NormalizationMode, Optional[str]]:
+    """COARSE：证据侧禁止 Tool 优先分解为训练 Tool；失败则保留原证据步。"""
+    if not actions:
+        return actions, mode, None
+    if all(a.tool in _COARSE_TRAINING_TOOLS for a in actions):
+        return actions, mode, None
+    if not any(a.tool not in _COARSE_TRAINING_TOOLS for a in actions):
+        return actions, mode, None
+
+    decomposed = _coarse_decompose_to_training_actions(
+        screen_action, narration, tool_by_name
+    )
+    if decomposed:
+        new_mode = (
+            NormalizationMode.COMPOSED
+            if len(decomposed) >= 2
+            else NormalizationMode.MATCHED
+        )
+        return decomposed, new_mode, None
+    # 无法可靠分解：保留证据侧原始步骤（stage5 投影剔除，不伪装训练步）
+    return actions, mode, None
+
 
 def _looks_toolish(screen_action: str) -> bool:
     """screen_action 是否含明显 Tool 语义（非纯 UI）。"""
@@ -324,7 +435,12 @@ def _heuristic_recovery(
     )
     if not actions:
         return None
-    return actions, NormalizationMode.MATCHED, None, _HEURISTIC_CONFIDENCE
+    mode = NormalizationMode.MATCHED
+    if agent_role == AgentRole.COARSE:
+        actions, mode, _ = _apply_coarse_training_guard(
+            actions, mode, screen_action, narration, tool_by_name
+        )
+    return actions, mode, None, _HEURISTIC_CONFIDENCE
 
 
 def _call_match_llm_with_retry(
@@ -429,6 +545,9 @@ def _call_match_llm(
         "VERIFIER→verification。"
         "\nAgent1 不得使用 reverse_image_search / map_query；"
         "Agent2 不得使用 sun_position_calc。"
+        "\nCOARSE 训练轨迹最终仅保留 zoom_inspect/ocr/sun_position_calc："
+        "优先 composed 这三者表达画面观察；勿为 COARSE 注册 compare_images/"
+        "双图比对类 Tool；仅有文字区域才加 ocr，仅有阴影/日照才加 sun。"
         "\n只输出结构化字段。"
     )
     result = call_structured(prompt, _MatchLLMResponse)
@@ -466,7 +585,12 @@ def _match_or_register_tool_impl(
     except Exception as exc:  # noqa: BLE001 — LLM 失败 → 启发式 → fallback
         recovered = _heuristic_recovery(text, narration, agent_role, tool_by_name)
         if recovered is not None:
-            return recovered
+            actions, mode, reason, conf = recovered
+            if agent_role == AgentRole.COARSE:
+                actions, mode, _ = _apply_coarse_training_guard(
+                    actions, mode, text, narration, tool_by_name
+                )
+            return actions, mode, reason, conf
         return [], NormalizationMode.FALLBACK, f"LLM 决策失败: {exc}", None
 
     mode_map = {
@@ -512,6 +636,10 @@ def _match_or_register_tool_impl(
                     None,
                 )
             actions = _validate_actions(decision.actions, tool_by_name, agent_role)
+            if agent_role == AgentRole.COARSE:
+                actions, mode, _guard_reason = _apply_coarse_training_guard(
+                    actions, mode, text, narration, tool_by_name
+                )
             if confidence is None:
                 confidence = 0.8 if mode is NormalizationMode.MATCHED else 0.7
             return actions, mode, None, confidence
@@ -539,6 +667,30 @@ def _match_or_register_tool_impl(
         return [], NormalizationMode.FALLBACK, "tool_registered 但缺少 new_tool", None
     if _is_pure_ui(text) or not decision.g_flags.not_pure_ui:
         return [], NormalizationMode.FALLBACK, "纯 UI 操作禁止注册新 Tool", None
+
+    # COARSE：禁止注册双图比对类；改为训练 Tool 分解
+    if agent_role == AgentRole.COARSE and _is_coarse_evidence_only_tool(
+        decision.new_tool.name
+    ):
+        decomposed = _coarse_decompose_to_training_actions(
+            text, narration, tool_by_name
+        )
+        if decomposed:
+            new_mode = (
+                NormalizationMode.COMPOSED
+                if len(decomposed) >= 2
+                else NormalizationMode.MATCHED
+            )
+            return decomposed, new_mode, None, confidence or 0.7
+        recovered = _heuristic_recovery(text, narration, agent_role, tool_by_name)
+        if recovered is not None:
+            return recovered
+        return (
+            [],
+            NormalizationMode.FALLBACK,
+            "COARSE 禁止注册 compare_images/检索类新 Tool，且无法分解为训练 Tool",
+            None,
+        )
 
     try:
         new_def = _proposal_to_tool_definition(

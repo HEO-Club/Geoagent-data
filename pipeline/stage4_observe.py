@@ -6,8 +6,9 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Sequence
 
+from pipeline.image_utils import resolve_keyframe_for_time
 from pipeline.schemas import (
     AgentRole,
     NormalizedStep,
@@ -30,11 +31,30 @@ def _is_synthesis_exhausted(result: ObservationExecutionResult) -> bool:
     )
 
 
+def resolve_image_for_step(
+    step: NormalizedStep,
+    *,
+    image_path: str,
+    keyframes: Optional[Sequence[str]] = None,
+) -> str:
+    """按 Move 时间窗从 keyframes 选最近帧；无 keyframes 时回退 image_path。"""
+    if not keyframes:
+        return image_path
+    chosen = resolve_keyframe_for_time(
+        list(keyframes),
+        float(step.move.start_time),
+        float(step.move.end_time),
+        fallback=image_path,
+    )
+    return chosen or image_path
+
+
 def generate_observations(
     normalized_steps: list[NormalizedStep],
     image_path: str,
     agent_role: AgentRole,
     *,
+    keyframes: Optional[Sequence[str]] = None,
     registry_path: Optional[str] = None,
     use_cache: bool = True,
 ) -> list[ObservationExecutionResult]:
@@ -42,15 +62,16 @@ def generate_observations(
 
     thought_only 步（actions=[]）不产生 execution result。
     composed 步可产生多个 ObservationExecutionResult。
-    将 step.move.narration 传入合成上下文（内部按角色消毒）。
+    每步按 Move 时间选择关键帧（keyframes）；将 step.move.narration 传入合成上下文。
 
     若任一非 terminal 合成耗尽，抛 :class:`ObservationSynthesisExhausted`，
     样本不得入库。
 
     Args:
         normalized_steps: stage3 规范化步骤列表。
-        image_path: 当前关键帧图像路径。
+        image_path: 回退图像路径（无可用 keyframe 时使用）。
         agent_role: 调用方 Agent 角色（权限与 purpose 约束）。
+        keyframes: 可选角色关键帧路径列表（文件名含 ``t{sec}``）。
         registry_path: 可选 registry 路径覆盖（测试注入）。
         use_cache: 是否启用 diskcache。
 
@@ -60,11 +81,14 @@ def generate_observations(
     results: list[ObservationExecutionResult] = []
     for step in normalized_steps:
         narration = step.move.narration or ""
+        step_image = resolve_image_for_step(
+            step, image_path=image_path, keyframes=keyframes
+        )
         for action in step.actions:
             results.append(
                 execute_action(
                     action,
-                    image_path,
+                    step_image,
                     agent_role,
                     narration=narration,
                     registry_path=registry_path,

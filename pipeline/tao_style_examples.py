@@ -32,6 +32,8 @@ BAD_THOUGHT_EXAMPLES: tuple[str, ...] = (
     "BAD: 查询结果显示该地点就是郑州黄河文化公园。（本步 Obs 尚未返回）",
     "BAD: 画面有骑楼，所以这就是越南。（单一弱特征跳步到国家）",
     "BAD: 搜索结果显示该地区位于华南。（COARSE 用检索结果直接给地区）",
+    "BAD: 已知线索是许昌，我对卫星图验证就是许昌。（把线索当答案做地图验证）",
+    "BAD: 调用太阳位置计算。（实际 Action 却是 compare_images）",
 )
 
 # 每角色 1 段压缩正例（Thought→Action 一句，不塞全文 JSON）
@@ -44,8 +46,10 @@ _FEWSHOT_BY_ROLE: dict[AgentRole, str] = {
         "再据此排除温带/靠左行驶地区。\n"
         "Action: {\"tool\": \"zoom_inspect\", \"params\": {\"bbox\": [0.0, 0.0, 1.0, 0.25]}}\n"
         "（Agent1 训练轨迹仅用 zoom_inspect/ocr/sun_position_calc"
-        "及适配的动态特征观察 Tool；禁止 web_search/map_query；"
-        "每步须特征→排除/收窄；禁止精确街道坐标作结论。）"
+        "及适配的单图特征观察动态 Tool；禁止 web_search/map_query；"
+        "默认不含 compare_images 等地图比对类动态 Tool；"
+        "每步须特征→排除/收窄；Thought 须与本步 Action 工具一致；"
+        "已知线索仅作候选假设，禁止拿去对卫星图验证；禁止精确街道坐标作结论。）"
     ),
     AgentRole.FINE: (
         "GOOD 示例（FINE）：\n"

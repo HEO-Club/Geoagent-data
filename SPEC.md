@@ -1,7 +1,7 @@
 # 图片地理定位 Agent 训练数据集生成流水线 — 项目规格
 
-版本：2.3.6 | 生成时间：2026-07-21  
-修订说明：v2.3.6 Agent1 Tool 投影（训练轨迹仅 zoom_inspect/ocr/sun_position_calc + 适配动态 Tool；排除 web_search）与递进推理硬裁判。v2.3.5 泄漏语义重定义；v2.3.4 TAO 硬化；v2.3.3 stage3 韧性；v2.3.2 Agent3/Revision；v2.3.1 Observation 合成卫生。
+版本：2.3.8 | 生成时间：2026-07-22  
+修订说明：v2.3.8 Agent1 递进质量（特征主导收窄；regions 行政区规范；Obs 排除视频 overlay；投影后递进可写性；按 Move 选帧与 bbox 裁图）。v2.3.7 空 shard 投影/对齐；v2.3.6 递进推理；v2.3.5 泄漏语义；v2.3.4 TAO 硬化。
 
 ## 0. 给 Cursor 的元指令（先读这一段）
 
@@ -48,12 +48,16 @@
 
 - 输入：原始图片；可选 `user_query` 中的外部给定地名线索（见 1.6）
 - 推理模式：特征识别 → 候选排除/范围收窄 → 下一步验证（演绎，禁止跳步）
+- **主辅关系**：收窄主链必须由地理/人文特征（画面或此前 Observation）驱动；`user_query` 已知线索可参与其附近候选构造与辅助排除，但**不得单独**支撑关键范围收窄
 - **训练轨迹固定允许 tool**：`zoom_inspect` / `ocr` / `sun_position_calc`
 - **训练轨迹禁止 tool**：`web_search` / `map_query` / `reverse_image_search` / `submit_answer`（stage3/4 仍可匹配/合成原始证据；stage5 投影时剔除，不改全局 registry 权限）
-- **动态 Tool**：仅当结构化判定为「直接服务于地理/人文特征观察或演绎推断」时才进入 Agent1 子集
+- **动态 Tool**：仅当结构化判定为「单图地理/人文特征观察或日照/阴影推断」时才进入 Agent1 子集；**默认排除**地图比对类（如 `compare_images*`、含 `image_a`/`image_b` 的双图比对）
+- **stage3 分解**：对将来必被投影剔除的检索/双图 Action，可按 Move 画面语义分解为有依据的固定允许 Tool（仅文本区域加 OCR；仅阴影/日照证据加 sun；禁止为凑步数重复全图 zoom）
 - 输出：`LocationHypothesis`（写入 `Trajectory.coarse_output`）；`reasoning_summary` 须概括「特征 → 排除/收窄 → 候选范围」
+- `possible_regions`：只放同层级、规范行政区域名称；「中原地区」「华北平原南缘」等自然/文化地带只能写入 `reasoning_summary` 或 `key_clues_remaining`
+- **投影后递进可写性**：每步须有不同观察目标与新增证据；禁止重复同 tool+同 params、连续全图 zoom 且无信息增益；不足时 rejected，不在 stage5 合成虚假步
 - handoff：`coarse_handoff=None`，`fine_handoff=None`
-- 禁止：从单一弱特征直接跳到国家/地区；本步 Thought 偷用本步 Observation；以最终精准 POI/坐标作结论
+- 禁止：从单一弱特征直接跳到国家/地区；本步 Thought 偷用本步 Observation；以最终精准 POI/坐标作结论；Thought 声明的工具意图与 `action.tool` 不一致；把 `user_query` 已知线索当作最终答案去做卫星图验证；仅靠线索推进而无特征证据
 
 **Agent2 精定位（FINE）：**
 
@@ -85,7 +89,7 @@
 - **防答案泄漏**：泄漏检查在 **stage6** 完成。拒绝的是**直接使用 GT / 后见之明**，不是「定位到了准确地点」。阶段时间规则见 1.6。
 - **Observation 三条件**：按 schema 由 LLM 合成且风格像真实 API、格式一致（套统一 schema）、逻辑连贯（能支撑紧随其后的 Thought）。禁止调用真实外部 Tool API 生成 Observation。
 - **标准地理定位 TAO**：Thought 必须且只能是图像地理推理体（植被/建筑/文字/阴影/交通等 → 为何调用本步工具）；禁止视频旁白叙事（博主/求助者/粉丝故事、片头标题复述等）。风格规范与短 few-shot 见 `pipeline/tao_style_examples.py`；stage5 强制改写，stage6 以 LLM 形态裁判 hard-fail。
-- **Agent1 递进链**：COARSE 必须体现「特征识别 → 缩小范围」；stage5 投影后做递进链检查并重写 1 次；stage6 独立推理链裁判（不含 GT）对跳步 / Thought-Action 不对齐 hard-fail。
+- **Agent1 递进链**：COARSE 必须体现「特征识别 → 缩小范围」且特征为主、线索为辅；stage5 投影后做递进可写性门禁 + 递进链检查并重写 1 次（重写后再检，仍失败交 stage6）；stage6 对跳步 / Thought-Action 不对齐 / 线索唯一驱动 / regions 不规范 hard-fail。
 - **宁缺毋滥**：验证不通过（推不到真值、跳步、幻觉、非标准 TAO、非递进 COARSE）的样本进入 rejected，不写入最终训练 JSONL。
 - **返工样本是高价值数据**：区分视频内真实纠错（`video_observed`）与系统打回（`system_feedback`），优先收集，不过滤。
 
@@ -100,7 +104,7 @@
   - COARSE 以最终精准 POI/坐标作结论（角色越界）；
   - VERIFIER 把 groundtruth 当作已知正确答案（复述 `fine_handoff` 仍合法）。
 - **不算泄漏**：FINE 任意步（含非终端）基于画面/Obs/`user_query` 推出与 GT 一致的地点或坐标；终端 `submit_answer` 命中 GT；复用 `user_query` 中的外部线索；策略 B（COARSE 出现非最终答案的候选地区）。
-- **外部给定线索**：视频中网友/评论等非推理给出的地名（答案宣布前）由 stage5 抽入 `user_query`（如 `已知线索：河南信阳`），**不写**来源话术；Thought 可使用该线索但不得解释来源。抽取与改写 **不得**读 groundtruth。
+- **外部给定线索**：视频中网友/评论等非推理给出的地名（答案宣布前）由 stage5 抽入 `user_query`（如 `已知线索：…`），**不写**来源话术；Thought 可围绕该线索做附近候选辅助，但不得解释来源，且每次关键收窄须另有画面/Obs 特征依据。抽取与改写 **不得**读 groundtruth。
 - **程序化坐标兜底（窄化）**：COARSE Thought/`coarse_output` 出现坐标 → hard-fail；VERIFIER 在「正确答案/真值」话术下写出近 GT 且非 handoff 的坐标 → hard-fail。**不再**因 FINE 非终端步出现近 GT 坐标而 hard-fail。
 - groundtruth、由 groundtruth 反向解析的地址 **不得进入 stage4/stage5 的任何 LLM prompt**（`user_query` 线索仅来自答案前旁白中的外部给定信息）。
 - **TAO 形态（替代旁白词表扫描）**：stage6 用 LLM 判定轨迹是否为标准图片地理定位 TAO（含旁白叙事体、时序倒置、非地理推理）；`is_standard_geo_tao=false` → hard-fail。判定 prompt **不得**含 groundtruth。
@@ -390,6 +394,14 @@ ALLOWED_VERBS_HINT = {
 # H8: Observation 不得从旁白抄写城市名/POI/精准地点；地名若出现，只允许来自
 #     Action params（如 query）或图像可见文字（且仅当该 Tool 语义需要文本提取时）；
 #     COARSE 的气候/日照/视觉类 Tool 优先填范围/特征，禁止凭旁白编造地点字段
+# H9: 画面观察类 Tool（zoom_inspect/ocr/sun_position_calc/reverse_image_search）的
+#     Observation 不得包含视频制作 overlay（片头/标题卡、平台/频道水印与 logo、
+#     难度/星级角标、进度条、烧录字幕条、创作者标签等非场景 UI）。
+#     仅描述场景内地理/建筑/自然与真实标识；ocr 仅提取场景内路牌/店招等。
+#     合成疑似含 overlay → 带通用问题说明重试；耗尽 → ObservationSynthesisExhausted。
+#     web_search/map_query 等非画面合成不套用 H9 平台名启发式（避免检索摘要误杀）。
+# H10: 合成图像输入：按 Move 时间窗选择最近关键帧（不得全流水线共用首帧）；
+#     zoom_inspect/ocr 在送模前按归一化 bbox 裁图，使不同观察步关注不同区域。
 ```
 
 ### 4.8 初始 Tool 注册表（7 个种子 Tool）
@@ -502,6 +514,9 @@ Observation 一律由 LLM 按 H 规则合成；`submit_answer` 为 terminal，�
 ```python
 class LocationHypothesis(BaseModel):
     possible_countries: list[str]
+    # possible_regions：同层级规范行政区域（省/州/直辖市等）；可为空（仅收窄到国家）。
+    # 自然/文化地带（如「中原地区」）不得写入本字段，应进 reasoning_summary /
+    # key_clues_remaining。stage5/stage6 以语义规则校验，不维护全球硬编码枚举表。
     possible_regions: list[str]
     reasoning_summary: str
     confidence: float = Field(ge=0, le=1)
@@ -910,6 +925,17 @@ def normalize_to_steps(
 def sanitize_narration_for_obs(agent_role: AgentRole, narration: str) -> str:
     """按角色消毒旁白：COARSE 剥离地名/POI/坐标短语；FINE/VERIFIER 轻度剥离坐标。"""
 
+def crop_image_by_bbox(
+    image_path: str,
+    bbox: list[float],
+    *,
+    cache_dir: Optional[str] = None,
+) -> str:
+    """按归一化 bbox [x,y,w,h] 或 [x1,y1,x2,y2] 裁图，返回裁剪图路径；非法框则返回原图。"""
+
+def observation_contains_video_overlay(observation: dict) -> list[str]:
+    """通用启发式：检测 Observation 是否含视频 overlay/元信息类别（非 BV 专用黑名单）。"""
+
 def execute_action(
     action: Action,
     image_path: str,
@@ -921,12 +947,12 @@ def execute_action(
     1. 查 registry；检查 allowed_agents 与 purpose 约束
     2. validate_action_params
     3. terminal → status=skipped，observation/source=None
-    4. 非 terminal → 消毒 narration 后按 H 规则 LLM 合成 Observation
-       （输入含 schema、params、image、消毒旁白），validate_observation，
-       失败重试 OBS_SYNTH_MAX_RETRY
+    4. 非 terminal → 消毒 narration；zoom_inspect/ocr 按 bbox 裁图后按 H 规则合成；
+       若合成含视频 overlay（H9）或 validate_observation 失败 → 带问题说明重试
+       OBS_SYNTH_MAX_RETRY
     5. diskcache：key 至少包含
-       tool_name, tool_schema_hash, normalized_params_hash, image_content_hash,
-       narration_hash（消毒后）, model_name, prompt_version
+       tool_name, tool_schema_hash, normalized_params_hash, image_content_hash
+       （裁剪后图像）, narration_hash（消毒后）, model_name, prompt_version
     """
 ```
 
@@ -936,14 +962,24 @@ def execute_action(
 class ObservationSynthesisExhausted(RuntimeError):
     """非 terminal Action 的 Observation 合成在重试耗尽后仍失败。"""
 
+def resolve_image_for_step(
+    step: NormalizedStep,
+    *,
+    image_path: str,
+    keyframes: Optional[list[str]] = None,
+) -> str:
+    """按 Move 时间窗从 keyframes 选最近帧；无 keyframes 时回退 image_path。"""
+
 def generate_observations(
     normalized_steps: list[NormalizedStep],
     image_path: str,
     agent_role: AgentRole,
+    *,
+    keyframes: Optional[list[str]] = None,
 ) -> list[ObservationExecutionResult]:
     """
     展开 normalized_steps 中的全部 Action，逐个 execute_action。
-    将 step.move.narration 传入合成上下文（内部按角色消毒）。
+    每步按 Move 时间选择关键帧（keyframes）；将 step.move.narration 传入合成上下文。
     若任一非 terminal 合成耗尽（status=error 且 source=llm_synthesized 且 observation=None），
     抛 ObservationSynthesisExhausted（样本不得入库）。
     返回 ObservationExecutionResult 列表。
@@ -971,12 +1007,16 @@ def reconstruct_single_trajectory(
     组装 T→A→O，用 LLM 改写为标准图片地理定位 TAO 前向推理链
     （prompt 含 pipeline/tao_style_examples 短 few-shot；禁止旁白叙事体）。
     Agent1：在全量 Action/Obs 对齐后做 Tool 投影——固定保留
-    zoom_inspect/ocr/sun_position_calc；硬排除 web_search 等；动态 Tool
-    经结构化适配判定后可选保留。投影为空则失败。
-    改写后做 TAO 形态 +（COARSE）递进链 LLM 检查，失败重写 1 次；仍失败交 stage6。
-    从答案前旁白抽取外部给定地名线索写入 user_query（不含来源话术）。
+    zoom_inspect/ocr/sun_position_calc；硬排除 web_search 等与
+    compare_images/双图比对类；动态 Tool 经结构化适配判定后可选保留。
+    投影时纠正非法 zoom_inspect bbox；投影为空或递进可写性不足则失败。
+    改写后做 TAO 形态 + Thought–Action 对齐 + 特征主导递进链 + regions 规范检查，
+    失败重写 1 次并复检；仍失败交 stage6。
+    从答案前旁白抽取外部给定地名线索写入 user_query（不含来源话术）；
+    线索可辅助附近候选，但收窄须由特征证据驱动。
     禁止将 groundtruth / 真值地名 / 反向地理编码地址写入 prompt。
-    Agent1 → 填写 coarse_output=LocationHypothesis（递进推理摘要）
+    Agent1 → 填写 coarse_output=LocationHypothesis（递进推理摘要；
+              possible_regions 仅规范行政区）
     Agent2 → 最后一步 submit_answer，填写 fine_output=SubmitAnswerResult；
               证据足够时可尽早精确定位假设。
     Agent3 → 填写 verifier_output=VerificationResult；把 fine_handoff 当候选验证。
@@ -1031,8 +1071,11 @@ def verify_and_score(
     groundtruth 仅在本阶段使用。
     判定顺序：TAO 形态 LLM 裁判（不含 GT）→ 泄漏（LLM+坐标兜底）→
     角色专项（COARSE 覆盖+递进链裁判 / FINE 距离 / VERIFIER 一致性）→ 合理性 soft judge。
-    Agent1：LocationHypothesis 是否覆盖真值国家/地区；递进链裁判（无 GT）对跳步/
-            Thought-Action 不对齐 hard-fail；禁止轨迹含 web_search 等投影禁止 Tool
+    Agent1：LocationHypothesis 是否覆盖真值国家/一级行政区（regions 非空时）；
+            递进链裁判（无 GT）对跳步 / Thought-Action 不对齐 / 线索唯一驱动 /
+            regions 非行政区或粒度混用 / 薄链（重复全图无增益）hard-fail；
+            禁止轨迹含 web_search/compare_images* 等投影禁止 Tool；
+            提及并使用 user_query 地点本身 ≠ 违规（须另有特征证据）
     Agent2：距离误差；超过 DISTANCE_ERROR_THRESHOLD_KM → hard fail
     Agent3：verdict 与误差一致性；泄漏判定允许复述 fine_handoff 候选
     泄漏：整链判断是否直接使用 GT/后见之明；命中最终地点 ≠ 泄漏

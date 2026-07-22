@@ -7,6 +7,7 @@ LLM 改写前向推理 Thought，并产出角色结构化输出；
 
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from typing import Any, Optional
@@ -45,6 +46,22 @@ _COARSE_FIXED_TOOLS: frozenset[str] = frozenset(
 )
 _COARSE_FORBIDDEN_SEED_TOOLS: frozenset[str] = frozenset(
     {"web_search", "map_query", "reverse_image_search", "submit_answer"}
+)
+# 双图/地图比对类：投影直接排除，不做 LLM 适配
+_COARSE_MAP_COMPARE_NAME_RE = re.compile(
+    r"compare_images|satellite|map_compare|image_pair", re.IGNORECASE
+)
+_COARSE_MAP_COMPARE_PARAM_NAMES: frozenset[str] = frozenset(
+    {"image_a", "image_b", "reference_image", "candidate_map"}
+)
+# Thought 提及工具意图 → 期望 action.tool（轻量对齐）
+_THOUGHT_TOOL_INTENT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"ocr|光学字符|文字识别|读(?:取)?(?:文字|招牌|路牌)", re.I), "ocr"),
+    (
+        re.compile(r"sun_position|太阳位置|日照|阴影方向|太阳高度", re.I),
+        "sun_position_calc",
+    ),
+    (re.compile(r"zoom_inspect|放大(?:查看|观察|确认)|拉近", re.I), "zoom_inspect"),
 )
 
 
@@ -95,6 +112,9 @@ class _CoarseReasoningCheck(BaseModel):
     narrows_scope_progressively: bool
     has_reasoning_gap: bool
     thought_action_aligned: bool
+    feature_driven_narrowing: bool = True
+    clues_only_as_auxiliary: bool = True
+    regions_are_administrative_and_consistent: bool = True
     issues: list[str] = Field(default_factory=list)
 
 
@@ -106,7 +126,11 @@ _SYSTEM_PROMPTS: dict[AgentRole, str] = {
     AgentRole.COARSE: (
         "你是粗定位 Agent（COARSE）。识别地理/人文特征，用地理常识演绎与排除，"
         "按「特征识别 → 候选排除/范围收窄 → 下一步验证」逐步缩小到国家/地区。"
+        "收窄主链必须由画面或此前 Observation 的地理/人文特征驱动；"
+        "user_query 已知线索可辅助其附近候选，但不得单独支撑关键收窄；"
         "Thought 必须指出具体特征并说明支持/排除哪些范围；禁止跳步；"
+        "Thought 声明的工具意图必须与本步 Action 一致；"
+        "possible_regions 只写同层级规范行政区域；"
         "禁止视频旁白叙事；禁止最终精确坐标/POI；不得使用 web_search。"
     ),
     AgentRole.FINE: (
@@ -173,8 +197,30 @@ def _expand_action_units(
     return units
 
 
+def _is_map_compare_dynamic_tool(tool_name: str) -> bool:
+    """名称或 schema 表明为双图/卫星地图比对 → True（应排除出 Agent1）。"""
+    if _COARSE_MAP_COMPARE_NAME_RE.search(tool_name):
+        return True
+    registry = load_registry()
+    tool = registry.get(tool_name)
+    if tool is None:
+        return False
+    param_names = {p.name for p in tool.params}
+    if param_names & _COARSE_MAP_COMPARE_PARAM_NAMES:
+        return True
+    desc = (tool.description or "").lower()
+    if any(
+        k in desc
+        for k in ("卫星", "satellite", "双图", "两张图", "地图比对", "候选地图")
+    ):
+        return True
+    return False
+
+
 def _judge_dynamic_tool_for_coarse(tool_name: str) -> bool:
     """判定非种子动态 Tool 是否适合 Agent1 演绎推理；失败则 fail-closed。"""
+    if _is_map_compare_dynamic_tool(tool_name):
+        return False
     registry = load_registry()
     tool = registry.get(tool_name)
     if tool is None:
@@ -187,9 +233,9 @@ def _judge_dynamic_tool_for_coarse(tool_name: str) -> bool:
     ) or "(none)"
     prompt = (
         "判断该 Tool 是否适合进入 Agent1（粗定位）训练轨迹。\n"
-        "适合条件：直接服务于地理/人文特征观察或演绎推断"
-        "（如视觉细节、文字、阴影/日照、植被/建筑比对）。\n"
-        "不适合：检索网页、地图查询、提交答案、依赖外部答案库等。\n"
+        "适合条件：单图地理/人文特征观察或日照/阴影推断"
+        "（如视觉细节、文字、阴影方向）。\n"
+        "明确拒绝：候选地图比对验证、双图对比、卫星图匹配、网页检索、提交答案。\n"
         f"name: {tool.name}\n"
         f"description: {tool.description}\n"
         f"params: [{param_desc}]\n"
@@ -203,13 +249,41 @@ def _judge_dynamic_tool_for_coarse(tool_name: str) -> bool:
     return bool(result.suitable_for_coarse_reasoning)
 
 
+def _sanitize_zoom_bbox_in_units(
+    units: list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]],
+) -> list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]]:
+    """纠正 zoom_inspect 非法 bbox（绝对值>1.5 视为非归一化图像框 → 全图框）。"""
+    out: list[
+        tuple[str, Action, ObservationExecutionResult, NormalizedStep]
+    ] = []
+    for draft, action, obs, step in units:
+        if action.tool != "zoom_inspect":
+            out.append((draft, action, obs, step))
+            continue
+        bbox = action.params.get("bbox")
+        if (
+            isinstance(bbox, list)
+            and len(bbox) == 4
+            and all(isinstance(x, (int, float)) for x in bbox)
+            and any(abs(float(x)) > 1.5 for x in bbox)
+        ):
+            fixed = Action(
+                tool=action.tool,
+                params={**action.params, "bbox": [0.0, 0.0, 1.0, 1.0]},
+            )
+            out.append((draft, fixed, obs, step))
+        else:
+            out.append((draft, action, obs, step))
+    return out
+
+
 def _project_coarse_units(
     units: list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]],
 ) -> list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]]:
     """将全量 COARSE Action/Obs 投影为 Agent1 训练子集。
 
     固定保留 zoom_inspect/ocr/sun_position_calc；硬排除 web_search 等种子禁止 Tool；
-    动态 Tool 经结构化适配判定后可选保留。保持原序与 A/O 对齐。
+    默认排除 compare_images/双图比对类；其余动态 Tool 经结构化适配判定后可选保留。
     """
     projected: list[
         tuple[str, Action, ObservationExecutionResult, NormalizedStep]
@@ -222,7 +296,8 @@ def _project_coarse_units(
             projected.append(unit)
             continue
         if name in _COARSE_FORBIDDEN_SEED_TOOLS or name in SEED_TOOL_NAMES:
-            # 其他种子 Tool（含禁止列表）一律不进训练轨迹
+            continue
+        if _is_map_compare_dynamic_tool(name):
             continue
         if name not in suitability_cache:
             suitability_cache[name] = _judge_dynamic_tool_for_coarse(name)
@@ -231,9 +306,190 @@ def _project_coarse_units(
     if not projected:
         raise ValueError(
             "COARSE Tool 投影后无可重构 Action 步"
-            "（仅剩 web_search 等禁止 Tool 或无适配动态 Tool）"
+            "（仅剩 web_search/compare_images 等禁止 Tool 或无适配动态 Tool）"
         )
-    return projected
+    sanitized = _sanitize_zoom_bbox_in_units(projected)
+    collapsed = _collapse_consecutive_duplicate_actions(sanitized)
+    _validate_coarse_projection_richness(collapsed)
+    return collapsed
+
+
+def _action_fingerprint(action: Action) -> str:
+    """tool + 规范化 params 指纹，用于重复步检测。"""
+    return f"{action.tool}|{json.dumps(action.params, sort_keys=True, ensure_ascii=False, default=str)}"
+
+
+def _collapse_consecutive_duplicate_actions(
+    units: list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]],
+) -> list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]]:
+    """折叠连续相同 tool+params（去冗余，不合成新步）。"""
+    if not units:
+        return units
+    out: list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]] = [
+        units[0]
+    ]
+    for unit in units[1:]:
+        if _action_fingerprint(unit[1]) == _action_fingerprint(out[-1][1]):
+            continue
+        out.append(unit)
+    return out
+
+
+def _is_fullframe_zoom(action: Action) -> bool:
+    """zoom_inspect 且 bbox 为近似全图框。"""
+    if action.tool != "zoom_inspect":
+        return False
+    bbox = action.params.get("bbox")
+    if not isinstance(bbox, list) or len(bbox) != 4:
+        return False
+    try:
+        vals = [float(x) for x in bbox]
+    except (TypeError, ValueError):
+        return False
+    # [0,0,1,1] xyxy 或 [0,0,1,1] 当作 xywh 也近似全图
+    if all(abs(vals[i] - [0.0, 0.0, 1.0, 1.0][i]) < 0.05 for i in range(4)):
+        return True
+    if (
+        abs(vals[0]) < 0.05
+        and abs(vals[1]) < 0.05
+        and abs(vals[2] - 1.0) < 0.05
+        and abs(vals[3] - 1.0) < 0.05
+    ):
+        return True
+    return False
+
+
+def _obs_brief_text(obs: ObservationExecutionResult) -> str:
+    """Observation 简要文本，用于信息增益粗检。"""
+    if obs.status == "skipped" or obs.observation is None:
+        return ""
+    return json.dumps(obs.observation, ensure_ascii=False, sort_keys=True)
+
+
+def _validate_coarse_projection_richness(
+    units: list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]],
+) -> None:
+    """投影后递进可写性门禁：禁止重复 Action、连续全图 zoom 且无新增证据。"""
+    if not units:
+        raise ValueError("COARSE 投影后递进可写性不足：无步骤")
+
+    fps = [_action_fingerprint(a) for _d, a, _o, _s in units]
+    if len(fps) >= 2 and len(set(fps)) == 1:
+        raise ValueError(
+            "COARSE 投影后递进可写性不足：全部步骤为相同 tool+params，无法形成递进"
+        )
+
+    # 连续重复指纹
+    for i in range(1, len(fps)):
+        if fps[i] == fps[i - 1]:
+            raise ValueError(
+                f"COARSE 投影后递进可写性不足：Step {i} 与 Step {i + 1} "
+                "重复相同 tool+params"
+            )
+
+    full_zooms = [
+        (i, units[i])
+        for i in range(len(units))
+        if _is_fullframe_zoom(units[i][1])
+    ]
+    if len(full_zooms) >= 2:
+        # 连续全图 zoom：要求 Observation 有可见差异
+        for j in range(1, len(full_zooms)):
+            i_prev, u_prev = full_zooms[j - 1]
+            i_cur, u_cur = full_zooms[j]
+            if i_cur != i_prev + 1:
+                continue
+            prev_txt = _obs_brief_text(u_prev[2])
+            cur_txt = _obs_brief_text(u_cur[2])
+            if not prev_txt or not cur_txt or prev_txt == cur_txt:
+                raise ValueError(
+                    "COARSE 投影后递进可写性不足：连续全图 zoom_inspect "
+                    "且 Observation 无新增证据"
+                )
+
+
+# 描述性地带/非行政区：不得进入 possible_regions（通用语义，非地名枚举表）
+_DESCRIPTIVE_REGION_RE = re.compile(
+    r"(?:平原|丘陵|山地|山区|盆地|高原|沿海|内陆|南缘|北缘|东缘|西缘|"
+    r"过渡带|一带|周边|附近|中原|华北|华南|华东|华西|江南|塞北|"
+    r"温带|亚热带|热带|季风气候)",
+    re.I,
+)
+_ADMIN_HINT_RE = re.compile(
+    r"(?:省|市|州|盟|自治区|特别行政区|县|区|旗|共和国|王国|"
+    r"Province|State|County|Prefecture|Region|Territory)\b|"
+    r"省$|市$|州$|县$|区$",
+    re.I,
+)
+
+
+def _is_descriptive_region(name: str) -> bool:
+    """判定是否为自然/文化地带描述（非规范行政区）。"""
+    text = (name or "").strip()
+    if not text:
+        return True
+    # 先判定描述性地带（避免「地区」被「区」行政后缀误吃）
+    if _DESCRIPTIVE_REGION_RE.search(text):
+        return True
+    if "地区" in text and "自治区" not in text:
+        return True
+    if _ADMIN_HINT_RE.search(text):
+        return False
+    return False
+
+
+def _normalize_coarse_regions(
+    hyp: LocationHypothesis,
+) -> tuple[LocationHypothesis, list[str]]:
+    """将描述性地带移出 possible_regions，并入 reasoning/key_clues。"""
+    admin: list[str] = []
+    descriptive: list[str] = []
+    for r in hyp.possible_regions:
+        if _is_descriptive_region(r):
+            descriptive.append(r)
+        else:
+            admin.append(r)
+    if not descriptive:
+        return hyp, []
+    summary = hyp.reasoning_summary or ""
+    for d in descriptive:
+        if d not in summary:
+            summary = (summary + f" 地形/地带线索：{d}。").strip()
+    clues = list(hyp.key_clues_remaining)
+    for d in descriptive:
+        if d not in clues:
+            clues.append(d)
+    fixed = hyp.model_copy(
+        update={
+            "possible_regions": admin,
+            "reasoning_summary": summary,
+            "key_clues_remaining": clues,
+        }
+    )
+    return fixed, [
+        f"possible_regions 含描述性地带已迁移: {', '.join(descriptive)}"
+    ]
+
+
+def _detect_thought_action_mismatches(
+    thoughts: list[str],
+    units: list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]],
+) -> list[str]:
+    """Thought 明确点名某工具意图但 action.tool 不符 → issues。"""
+    issues: list[str] = []
+    for i, (thought, (_d, action, _o, _s)) in enumerate(
+        zip(thoughts, units, strict=True), start=1
+    ):
+        for pattern, expected_tool in _THOUGHT_TOOL_INTENT_PATTERNS:
+            if not pattern.search(thought):
+                continue
+            if action.tool != expected_tool:
+                issues.append(
+                    f"Step {i} Thought 意图指向 {expected_tool}，"
+                    f"实际 Action 为 {action.tool}"
+                )
+                break
+    return issues
 
 
 def _format_unit_for_prompt(
@@ -290,7 +546,15 @@ def _build_scaffold_prompt(
     if agent_role == AgentRole.COARSE:
         lines.append(
             "8. COARSE：每步须「特征识别 → 排除/收窄 → 为何调用本工具」；"
-            "不得跳步；不得用 web_search；结论仅国家/地区级；"
+            "每次关键收窄必须引用画面或此前 Observation 的独立地理/人文证据；"
+            "user_query 地点线索可参与附近候选辅助，但不得作为唯一收窄依据；"
+            "Thought 声明的工具意图必须与本步 action.tool 一致"
+            "（提 OCR/太阳/日照则对应 ocr/sun_position_calc）；"
+            "禁止拿线索去卫星图验证；"
+            "zoom_inspect.bbox 须为图像归一化坐标 [0,1]（非经纬度）；"
+            "不得跳步；不得用 web_search/compare_images；结论仅国家/地区级；"
+            "possible_regions 只填同层级规范行政区（省/州/直辖市等），"
+            "「中原/华北平原南缘」等地带写入 reasoning_summary；"
             "coarse_output.reasoning_summary 须概括特征→排除/收窄→候选范围。"
         )
     if user_query:
@@ -403,18 +667,25 @@ def _check_coarse_reasoning(
         "1. identifies_geo_human_features：Thought 是否指出画面或此前 Obs 的具体地理/人文特征；",
         "2. narrows_scope_progressively：是否逐步排除/收窄范围，而非跳步到国家/地区；",
         "3. has_reasoning_gap：是否存在无依据跳步、本步 Obs 时序倒置、单一弱特征直接结论；",
-        "4. thought_action_aligned：每步 Thought 是否解释为何调用该 Action；",
-        "5. coarse_output.reasoning_summary 须概括特征→排除/收窄→候选范围。",
-        "\n## Steps",
+        "4. thought_action_aligned：每步 Thought 须解释为何调用该 Action，"
+        "且声明的工具意图与 action.tool 一致；",
+        "5. feature_driven_narrowing：每次关键收窄是否由视觉/Obs 特征驱动"
+        "（提及 user_query 地点本身不违规，但特征须为独立证据）；",
+        "6. clues_only_as_auxiliary：已知线索是否仅为辅助假设，而非唯一收窄依据；"
+        "禁止拿线索去做卫星/地图验证；",
+        "7. regions_are_administrative_and_consistent：possible_regions 是否为"
+        "同层级规范行政区；「中原/华北平原南缘」等地带应判为不合格；",
+        "8. coarse_output.reasoning_summary 须概括特征→排除/收窄→候选范围。",
+        "\n## Steps（Thought 与 Observation 分列，勿把 Obs 内容误判为 Thought）",
     ]
     for i, (thought, (_d, action, obs, _s)) in enumerate(
         zip(thoughts, units, strict=True), start=1
     ):
         obs_brief = None if obs.status == "skipped" else obs.observation
-        lines.append(
-            f"Step {i}: tool={action.tool}; thought={thought!r}; "
-            f"observation={obs_brief!r}"
-        )
+        lines.append(f"### Step {i}")
+        lines.append(f"tool: {action.tool}")
+        lines.append(f"thought: {thought!r}")
+        lines.append(f"observation: {obs_brief!r}")
     if coarse_output is not None:
         lines.append(f"\ncoarse_output: {coarse_output.model_dump_json()}")
     return call_structured("\n".join(lines), _CoarseReasoningCheck)
@@ -443,6 +714,16 @@ def _needs_tao_rewrite(
         issues.append(f"TAO 形态自检调用失败: {exc}")
 
     if agent_role == AgentRole.COARSE:
+        mismatches = _detect_thought_action_mismatches(thoughts, units)
+        if mismatches:
+            issues.extend(mismatches)
+            need = True
+        if coarse_output is not None:
+            _fixed, region_issues = _normalize_coarse_regions(coarse_output)
+            # 仅报告；规范化在 reconstruct 路径写回
+            if region_issues:
+                issues.extend(region_issues)
+                need = True
         try:
             chain = _check_coarse_reasoning(thoughts, units, coarse_output)
             if (
@@ -450,10 +731,19 @@ def _needs_tao_rewrite(
                 or not chain.narrows_scope_progressively
                 or chain.has_reasoning_gap
                 or not chain.thought_action_aligned
+                or not chain.feature_driven_narrowing
+                or not chain.clues_only_as_auxiliary
+                or not chain.regions_are_administrative_and_consistent
             ):
                 issues.extend(chain.issues or ["COARSE 递进推理链不合格"])
                 if chain.has_reasoning_gap:
                     issues.append("存在推理跳步")
+                if not chain.feature_driven_narrowing:
+                    issues.append("收窄未由地理/人文特征驱动")
+                if not chain.clues_only_as_auxiliary:
+                    issues.append("已知线索被用作唯一收窄依据")
+                if not chain.regions_are_administrative_and_consistent:
+                    issues.append("possible_regions 非规范行政区或粒度混用")
                 need = True
         except Exception as exc:  # noqa: BLE001
             issues.append(f"COARSE 递进链自检调用失败: {exc}")
@@ -889,12 +1179,14 @@ def reconstruct_single_trajectory(
         bundle = call_structured(
             prompt
             + "\n\n请输出改写后的 thoughts，以及最终 LocationHypothesis（coarse_output）。"
-            "reasoning_summary 须概括特征→排除/收窄→候选范围。",
+            "reasoning_summary 须概括特征→排除/收窄→候选范围；"
+            "possible_regions 仅填同层级规范行政区。",
             _CoarseOutputBundle,
             images=[image_path],
         )
         thoughts = bundle.thoughts
         coarse_output = bundle.coarse_output
+        coarse_output, _ = _normalize_coarse_regions(coarse_output)
         need, issues = _needs_tao_rewrite(
             thoughts, units, agent_role, coarse_output=coarse_output
         )
@@ -903,12 +1195,19 @@ def reconstruct_single_trajectory(
             bundle = call_structured(
                 prompt
                 + f"\n\n上次输出不符合标准地理定位 TAO / 递进推理：{issue_txt}\n"
-                "请重新改写 thoughts（必须符合风格规范与递进链），并给出 LocationHypothesis。",
+                "请重新改写 thoughts（必须符合风格规范与特征主导递进链），"
+                "并给出 LocationHypothesis（regions 仅规范行政区）。",
                 _CoarseOutputBundle,
                 images=[image_path],
             )
             thoughts = bundle.thoughts
             coarse_output = bundle.coarse_output
+            coarse_output, _ = _normalize_coarse_regions(coarse_output)
+            # 重写后再检一次；仍不合格交 stage6（不再无限重试）
+            _need2, _issues2 = _needs_tao_rewrite(
+                thoughts, units, agent_role, coarse_output=coarse_output
+            )
+            _ = _need2, _issues2
     elif agent_role == AgentRole.FINE:
         rewritten = call_structured(
             prompt + "\n\n请仅输出与各 Step 一一对应的改写 thoughts。",
