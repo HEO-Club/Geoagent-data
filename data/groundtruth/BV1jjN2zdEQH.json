@@ -1,0 +1,13 @@
+{
+  "video_id": "BV1jjN2zdEQH",
+  "query": "滨河东路,城关区,兰州",
+  "latitude": 36.0696749,
+  "longitude": 103.8467961,
+  "formatted_address": "兰州城关滨河东路（近水广场近似）",
+  "place_type": "primary",
+  "status": "success",
+  "answer_timestamp": 409.9,
+  "source": "manual_approx",
+  "needs_review": true,
+  "manual_note": "兰州城关滨河东路（近水广场近似）"
+}

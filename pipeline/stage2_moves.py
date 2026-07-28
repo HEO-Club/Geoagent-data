@@ -1,9 +1,8 @@
-"""stage2：按时间重叠对齐 TranscriptSegment 与 TimedScreenAction，构建 Move。"""
+"""stage2：以 TimedScreenAction 会话为主轴合并旁白，构建粗粒度 Move。"""
 
 from __future__ import annotations
 
 import re
-from typing import Optional
 
 from pipeline.schemas import (
     AgentRole,
@@ -14,12 +13,23 @@ from pipeline.schemas import (
     VideoInput,
 )
 
-# 语气 / 转折语义边界（切分 Move 的旁白单元）
-_BOUNDARY_SPLIT_RE = re.compile(
-    r"(?<=[。！？；!?;])|"
-    r"(?=(?:但是|不过|然而|接着|然后|接下来|另外|此外|所以|因此|"
-    r"but\s+|however\s+|next\s+|then\s+|so\s+))",
-    re.IGNORECASE,
+# 纯 UI / 社交噪声（无地理训练价值）
+_NON_TRAINABLE_UI_RE = re.compile(
+    r"置顶|消息列表|聊天记录|弹幕|点赞|评论区|播放器|进度条|"
+    r"滚动(?:页面|条)?|移动鼠标|切换(?:浏览器)?标签|拖拽窗口|"
+    r"点击空白|hover",
+    re.I,
+)
+_GEO_SIGNAL_RE = re.compile(
+    r"高地|平原|山脉?|桥|河|江|湖|海岸|峡谷|丘陵|盆地|地形|地貌|"
+    r"地理|空间关系|位置关系|卫星|地图|排除|候选|附近|收窄|"
+    r"俯视|远景|背景|河岸|纠正|误认|排查|对比|屋顶|植被|建筑|"
+    r"拍摄地|拍摄|哪里拍|公里|不远|平原|山区|定位",
+    re.I,
+)
+_SETUP_ONLY_RE = re.compile(
+    r"沟通|求助|网友|粉丝|聊天|家乡|籍贯|离家|回忆|半年|故事",
+    re.I,
 )
 
 
@@ -52,44 +62,48 @@ def _filter_actions_by_range(
     ]
 
 
-def _split_segment_by_semantics(seg: TranscriptSegment) -> list[TranscriptSegment]:
-    """按语气/转折把单条文字稿切成更小语义单元；时间按字符比例分配。"""
-    text = seg.text.strip()
-    if not text:
-        return []
-
-    parts = [p.strip() for p in _BOUNDARY_SPLIT_RE.split(text) if p and p.strip()]
-    if len(parts) <= 1:
-        return [TranscriptSegment(start=seg.start, end=seg.end, text=text)]
-
-    total_chars = sum(len(p) for p in parts)
-    duration = max(seg.end - seg.start, 1e-6)
-    cursor = float(seg.start)
-    result: list[TranscriptSegment] = []
-    for i, part in enumerate(parts):
-        if i == len(parts) - 1:
-            part_end = float(seg.end)
+def _join_narration_parts(parts: list[tuple[float, str]]) -> str:
+    """按时间序拼接旁白；中文句子间不强制插空格。"""
+    texts = [t.strip() for _, t in sorted(parts, key=lambda x: x[0]) if t.strip()]
+    if not texts:
+        return ""
+    out = texts[0]
+    for t in texts[1:]:
+        if out and t and out[-1] not in "。！？；!?;\n" and t[0] not in "，,。！？":
+            out += t
         else:
-            part_end = cursor + duration * (len(part) / total_chars)
-        result.append(TranscriptSegment(start=cursor, end=part_end, text=part))
-        cursor = part_end
-    return result
+            out += t
+    return out
 
 
-def _best_overlapping_action(
-    unit_start: float,
-    unit_end: float,
-    actions: list[TimedScreenAction],
-) -> Optional[TimedScreenAction]:
-    """按时间重叠选取最佳屏幕操作；不得按下标配对。"""
-    best: Optional[TimedScreenAction] = None
-    best_ov = 0.0
-    for act in actions:
-        ov = _overlap(unit_start, unit_end, act.start_time, act.end_time)
-        if ov > best_ov:
-            best_ov = ov
-            best = act
-    return best
+def is_non_trainable_move(
+    narration: str,
+    screen_action: str | None,
+    visible_clues: list[str] | None = None,
+) -> bool:
+    """判断 Move 是否无地理训练价值（置顶/纯聊天/纯社交开场等）。
+
+    有明确地理信号时即使夹杂 UI 词也保留。
+    """
+    narr = (narration or "").strip()
+    screen = (screen_action or "").strip()
+    clues = " ".join(visible_clues or [])
+    blob = f"{narr} {screen} {clues}"
+    if not blob.strip():
+        return True
+    if _GEO_SIGNAL_RE.search(blob):
+        return False
+    if _NON_TRAINABLE_UI_RE.search(screen) or _NON_TRAINABLE_UI_RE.search(clues):
+        return True
+    if _NON_TRAINABLE_UI_RE.search(narr) and not _GEO_SIGNAL_RE.search(narr):
+        return True
+    # 纯社交开场：有求助/聊天话术、无地貌/地图断言
+    if narr and _SETUP_ONLY_RE.search(narr) and not _GEO_SIGNAL_RE.search(narr):
+        if not screen or _NON_TRAINABLE_UI_RE.search(screen) or _SETUP_ONLY_RE.search(
+            screen
+        ):
+            return True
+    return False
 
 
 def build_moves(
@@ -98,74 +112,73 @@ def build_moves(
     agent_role: AgentRole,
     time_range: tuple[float, float],
 ) -> list[Move]:
-    """按时间重叠对齐 TranscriptSegment 与 TimedScreenAction，
-    再按语气/转折等语义边界切分 Move。
+    """以每条 TimedScreenAction 为核合并重叠旁白为 1 个 Move（宁粗无碎）。
 
-    不得按列表下标一一配对。
+    无 SA 覆盖的旁白按原 TranscriptSegment 保留，默认不按语气/转折细切。
+    剔除置顶/纯聊天等无地理训练价值段。不得按列表下标一一配对。
     """
     start, end = time_range
     if end < start:
         raise ValueError(f"非法 time_range: {time_range}")
 
-    in_range_segs = _filter_by_range(transcript_segment, time_range)
-    in_range_actions = _filter_actions_by_range(screen_actions, time_range)
-
-    # 语义边界切分
-    units: list[TranscriptSegment] = []
-    for seg in sorted(in_range_segs, key=lambda s: s.start):
-        units.extend(_split_segment_by_semantics(seg))
+    in_range_segs = sorted(
+        _filter_by_range(transcript_segment, time_range),
+        key=lambda s: s.start,
+    )
+    in_range_actions = sorted(
+        _filter_actions_by_range(screen_actions, time_range),
+        key=lambda a: a.start_time,
+    )
 
     moves: list[Move] = []
-    for unit in units:
-        # 裁剪到 agent 时间区间
-        u_start = max(float(unit.start), start)
-        u_end = min(float(unit.end), end)
-        if u_end <= u_start:
-            continue
+    covered_seg_indices: set[int] = set()
 
-        matched = _best_overlapping_action(u_start, u_end, in_range_actions)
-        screen_action: Optional[str] = None
-        clues: list[str] = []
-        if matched is not None:
-            screen_action = matched.description
-            clues = list(matched.visible_clues)
-
-        moves.append(
-            Move(
-                start_time=u_start,
-                end_time=u_end,
-                narration=unit.text.strip(),
-                screen_action=screen_action,
-                visible_clues=clues,
-                agent_role=agent_role,
-            )
-        )
-
-    # 无旁白但有屏幕操作：仍产出 Move（narration 为空串），避免丢失操作
-    covered_actions: set[int] = set()
-    for i, act in enumerate(in_range_actions):
-        for mv in moves:
-            if (
-                mv.screen_action == act.description
-                and _overlap(mv.start_time, mv.end_time, act.start_time, act.end_time) > 0
-            ):
-                covered_actions.add(i)
-                break
-
-    for i, act in enumerate(in_range_actions):
-        if i in covered_actions:
-            continue
+    for act in in_range_actions:
         a_start = max(float(act.start_time), start)
         a_end = min(float(act.end_time), end)
         if a_end <= a_start:
+            continue
+        narr_parts: list[tuple[float, str]] = []
+        for i, seg in enumerate(in_range_segs):
+            if _overlap(float(seg.start), float(seg.end), a_start, a_end) <= 0:
+                continue
+            covered_seg_indices.add(i)
+            narr_parts.append((float(seg.start), seg.text))
+        narration = _join_narration_parts(narr_parts)
+        clues = list(act.visible_clues)
+        if is_non_trainable_move(narration, act.description, clues):
             continue
         moves.append(
             Move(
                 start_time=a_start,
                 end_time=a_end,
-                narration="",
+                narration=narration,
                 screen_action=act.description,
-                visible_clues=list(act.visible_clues),
+                visible_clues=clues,
+                agent_role=agent_role,
+            )
+        )
+
+    # 无屏幕操作覆盖的旁白：整段保留，不细切；仍过滤无用段
+    for i, seg in enumerate(in_range_segs):
+        if i in covered_seg_indices:
+            continue
+        u_start = max(float(seg.start), start)
+        u_end = min(float(seg.end), end)
+        if u_end <= u_start:
+            continue
+        text = (seg.text or "").strip()
+        if not text:
+            continue
+        if is_non_trainable_move(text, None, []):
+            continue
+        moves.append(
+            Move(
+                start_time=u_start,
+                end_time=u_end,
+                narration=text,
+                screen_action=None,
+                visible_clues=[],
                 agent_role=agent_role,
             )
         )

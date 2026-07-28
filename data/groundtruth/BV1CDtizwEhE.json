@@ -1,0 +1,12 @@
+{
+  "video_id": "BV1CDtizwEhE",
+  "query": "天津津湾广场",
+  "latitude": 39.1303448,
+  "longitude": 117.2011885,
+  "formatted_address": "津湾广场, 解放北路, 承德道社区, 小白楼街道, 和平区, 天津市, 300040, 中国",
+  "place_type": "station",
+  "status": "success",
+  "answer_timestamp": 205.8,
+  "source": "prep_groundtruth+manual_query",
+  "needs_review": true
+}

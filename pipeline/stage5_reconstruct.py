@@ -1,19 +1,47 @@
 """stage5：三 Agent 主轨迹与 revision 轨迹重构。
 
+生成范式：逐步因果生成（teacher-forced rollout）→ polish 润色 →
+轻量硬校验 → 固定 rubric judge best-of-k 拒绝采样。
+第 t 步 Thought 的上下文只包含前 t-1 步完整 T/A/O 与本步 Action，
+不含本步 Observation 与任何后续信息，从构造上保证不预知、不跳步。
+
 本阶段禁止访问 groundtruth；函数签名不得包含 groundtruth。
-LLM 改写前向推理 Thought，并产出角色结构化输出；
 若 FINE 脚手架缺少 terminal submit_answer，则基于证据合成该步（仍禁止 GT）。
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import re
 import uuid
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field, ValidationError
 
+from pipeline.coarse_tool_policy import (
+    COARSE_CORE_TOOLS,
+    is_coarse_allowed_tool,
+    is_coarse_forbidden_tool,
+)
+from pipeline.config import get_settings
+from pipeline.evidence_routing import (
+    CoarseEvidenceLedger,
+    CoarseStepKind,
+    CandidateUpdateEntry,
+    RangeUpdateKind,
+    VideoChainContext,
+    build_candidate_updates_from_facts,
+    embed_video_context,
+    fact_update_fingerprint,
+    format_working_scope_user_query,
+    obs_fingerprint,
+    parse_evidence_intent,
+    parse_video_context,
+    sanitize_revision_input_for_coarse_shard,
+    sanitize_verification_for_coarse_prompt,
+    strip_evidence_intent,
+)
 from pipeline.llm import call_structured
 from pipeline.schemas import (
     Action,
@@ -40,61 +68,66 @@ from pipeline.tools.validation import validate_action_params
 # LLM 结构化输出（仅本模块内部使用）
 # ---------------------------------------------------------------------------
 
-# Agent1 训练轨迹 Tool 投影
-_COARSE_FIXED_TOOLS: frozenset[str] = frozenset(
-    {"zoom_inspect", "ocr", "sun_position_calc"}
-)
-_COARSE_FORBIDDEN_SEED_TOOLS: frozenset[str] = frozenset(
-    {"web_search", "map_query", "reverse_image_search", "submit_answer"}
-)
-# 双图/地图比对类：投影直接排除，不做 LLM 适配
-_COARSE_MAP_COMPARE_NAME_RE = re.compile(
-    r"compare_images|satellite|map_compare|image_pair", re.IGNORECASE
-)
-_COARSE_MAP_COMPARE_PARAM_NAMES: frozenset[str] = frozenset(
-    {"image_a", "image_b", "reference_image", "candidate_map"}
-)
-# Thought 提及工具意图 → 期望 action.tool（轻量对齐）
-_THOUGHT_TOOL_INTENT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"ocr|光学字符|文字识别|读(?:取)?(?:文字|招牌|路牌)", re.I), "ocr"),
+# Agent1 训练轨迹 Tool 投影（与 coarse_tool_policy 对齐）
+_COARSE_FIXED_TOOLS: frozenset[str] = COARSE_CORE_TOOLS
+# Thought 中出现、但非本步 Action 的异工具话术
+_FOREIGN_TOOL_RHETORIC: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("web_search", re.compile(r"\bweb_search\b|网页搜索|打开搜索引擎", re.I)),
+    ("map_query", re.compile(r"\bmap_query\b|地理编码|解析坐标查询", re.I)),
     (
-        re.compile(r"sun_position|太阳位置|日照|阴影方向|太阳高度", re.I),
-        "sun_position_calc",
+        "reverse_image_search",
+        re.compile(r"\breverse_image_search\b|以图搜图", re.I),
     ),
-    (re.compile(r"zoom_inspect|放大(?:查看|观察|确认)|拉近", re.I), "zoom_inspect"),
+)
+_CORE_TOOL_SATELLITE_MISMATCH_RE = re.compile(
+    r"调用\s*(?:web_search|map_query|卫星检索|网页搜索)|"
+    r"调取\s*\d{4}\s*年?\s*(?:遥感|卫星)\s*(?:地图|影像)?\s*(?:接口|API|服务)?",
+    re.I,
 )
 
+logger = logging.getLogger(__name__)
 
-class _RewrittenTrajectory(BaseModel):
-    """LLM 改写后的逐步 Thought（与可展开 Action 步一一对应）。"""
+
+class TrajectoryQualityRejected(RuntimeError):
+    """best-of-k 全部候选低于 STAGE5_JUDGE_THRESHOLD：该角色轨迹废弃，不入库。"""
+
+
+class _StepThought(BaseModel):
+    """逐步因果生成：单步 Thought。"""
+
+    thought: str = Field(min_length=1)
+
+
+class _PolishedThoughts(BaseModel):
+    """polish 润色后的整链 thoughts（必须与步数等长）。"""
 
     thoughts: list[str] = Field(min_length=1)
 
 
-class _CoarseOutputBundle(BaseModel):
-    """Agent1：改写 Thought + LocationHypothesis。"""
+class _FaithfulnessCheck(BaseModel):
+    """polish 前后忠实性对比：列出事实/结论被改动的步序号（1-based）。"""
 
-    thoughts: list[str] = Field(min_length=1)
-    coarse_output: LocationHypothesis
-
-
-class _VerifierOutputBundle(BaseModel):
-    """Agent3：改写 Thought + VerificationResult（把 fine_handoff 当候选）。"""
-
-    thoughts: list[str] = Field(min_length=1)
-    verifier_output: VerificationResult
+    unfaithful_steps: list[int] = Field(default_factory=list)
 
 
-class _TaoStyleCheck(BaseModel):
-    """stage5 改写后的 TAO 形态自检。"""
+class _TrajectoryJudgement(BaseModel):
+    """固定 rubric 的轨迹质量评分（无 groundtruth）。"""
 
-    is_standard_tao: bool
+    score: float = Field(ge=0.0, le=1.0)
     issues: list[str] = Field(default_factory=list)
 
 
 class _ExternalHints(BaseModel):
-    """从答案前旁白抽取的外部给定地名线索（非推理、非真值）。"""
+    """从答案前旁白抽取的线索分类（不含真值；FINE 仍可用）。"""
 
+    given_clues: list[str] = Field(
+        default_factory=list,
+        description="问题设置阶段外部给定的软先验地名",
+    )
+    candidate_hypotheses: list[str] = Field(
+        default_factory=list,
+        description="推理过程首次出现的待证候选，不得注入 Agent1 user_query",
+    )
     hints: list[str] = Field(default_factory=list)
 
 
@@ -105,44 +138,29 @@ class _CoarseToolSuitability(BaseModel):
     reason: str = ""
 
 
-class _CoarseReasoningCheck(BaseModel):
-    """stage5 COARSE 递进推理链自检。"""
-
-    identifies_geo_human_features: bool
-    narrows_scope_progressively: bool
-    has_reasoning_gap: bool
-    thought_action_aligned: bool
-    feature_driven_narrowing: bool = True
-    clues_only_as_auxiliary: bool = True
-    regions_are_administrative_and_consistent: bool = True
-    issues: list[str] = Field(default_factory=list)
-
-
 # ---------------------------------------------------------------------------
-# 角色提示（不含任何真值坐标 / 地名）
+# 角色提示：面向推理期的简洁角色指令（训练样本 system prompt；不含内部术语与禁令墙）
 # ---------------------------------------------------------------------------
 
 _SYSTEM_PROMPTS: dict[AgentRole, str] = {
     AgentRole.COARSE: (
-        "你是粗定位 Agent（COARSE）。识别地理/人文特征，用地理常识演绎与排除，"
-        "按「特征识别 → 候选排除/范围收窄 → 下一步验证」逐步缩小到国家/地区。"
-        "收窄主链必须由画面或此前 Observation 的地理/人文特征驱动；"
-        "user_query 已知线索可辅助其附近候选，但不得单独支撑关键收窄；"
-        "Thought 必须指出具体特征并说明支持/排除哪些范围；禁止跳步；"
-        "Thought 声明的工具意图必须与本步 Action 一致；"
-        "possible_regions 只写同层级规范行政区域；"
-        "禁止视频旁白叙事；禁止最终精确坐标/POI；不得使用 web_search。"
+        "你是图片地理定位的粗定位 Agent。根据图像与用户给出的线索逐步收集证据："
+        "每一步先写 Thought（基于已有观察说明当前判断与本步要验证什么），"
+        "再给出 Action（工具调用）。依据每次 Observation 逐步排除或收窄候选区域，"
+        "最终输出 LocationHypothesis（可能的国家与行政区、推理摘要、置信度、"
+        "剩余线索）。不要给出精确 POI 或坐标。"
     ),
     AgentRole.FINE: (
-        "你是精定位 Agent（FINE）。在粗定位假设基础上收窄到具体地点；"
-        "缩小范围无上限——若画面、Observation 或 user_query 线索已足够，"
-        "可尽早提出较精确地点/坐标假设并核实。"
-        "Thought 必须是标准图片地理定位推理；最后一步必须 submit_answer。"
-        "禁止旁白叙事、后见之明与无依据粘贴真值；不要在 Thought 中解释线索来源。"
+        "你是图片地理定位的精定位 Agent。在粗定位假设的基础上，"
+        "逐步调用工具验证并收窄到具体地点；证据足够时可尽早提出精确地点假设。"
+        "每一步先写 Thought 再给出 Action，"
+        "最后一步必须调用 submit_answer 提交坐标、地点名与置信度。"
     ),
     AgentRole.VERIFIER: (
-        "你是验证 Agent（VERIFIER）。把候选 SubmitAnswerResult 与图像特征交叉验证。"
-        "Thought 必须是标准验证推理；可复述候选，不得把真值当作已知答案。"
+        "你是图片地理定位的验证 Agent。将候选定位结果与图像特征交叉验证："
+        "调用地图与检索工具核对候选坐标、地名与画面证据是否自洽，"
+        "每一步先写 Thought 再给出 Action，最终输出 VerificationResult"
+        "（pass/fail、失败项与建议复查点）。"
     ),
 }
 
@@ -197,30 +215,12 @@ def _expand_action_units(
     return units
 
 
-def _is_map_compare_dynamic_tool(tool_name: str) -> bool:
-    """名称或 schema 表明为双图/卫星地图比对 → True（应排除出 Agent1）。"""
-    if _COARSE_MAP_COMPARE_NAME_RE.search(tool_name):
-        return True
-    registry = load_registry()
-    tool = registry.get(tool_name)
-    if tool is None:
-        return False
-    param_names = {p.name for p in tool.params}
-    if param_names & _COARSE_MAP_COMPARE_PARAM_NAMES:
-        return True
-    desc = (tool.description or "").lower()
-    if any(
-        k in desc
-        for k in ("卫星", "satellite", "双图", "两张图", "地图比对", "候选地图")
-    ):
-        return True
-    return False
-
-
 def _judge_dynamic_tool_for_coarse(tool_name: str) -> bool:
-    """判定非种子动态 Tool 是否适合 Agent1 演绎推理；失败则 fail-closed。"""
-    if _is_map_compare_dynamic_tool(tool_name):
+    """判定未入允许清单的动态 Tool 是否适合 Agent1；失败则 fail-closed。"""
+    if is_coarse_forbidden_tool(tool_name):
         return False
+    if is_coarse_allowed_tool(tool_name):
+        return True
     registry = load_registry()
     tool = registry.get(tool_name)
     if tool is None:
@@ -233,9 +233,10 @@ def _judge_dynamic_tool_for_coarse(tool_name: str) -> bool:
     ) or "(none)"
     prompt = (
         "判断该 Tool 是否适合进入 Agent1（粗定位）训练轨迹。\n"
-        "适合条件：单图地理/人文特征观察或日照/阴影推断"
-        "（如视觉细节、文字、阴影方向）。\n"
-        "明确拒绝：候选地图比对验证、双图对比、卫星图匹配、网页检索、提交答案。\n"
+        "适合：单图/双图地理特征观察、画面内地图或卫星布局比对、"
+        "地形/阴影推断（服务区域级排除，非精确 POI）。\n"
+        "明确拒绝：web_search、map_query（解析坐标/标准地址）、"
+        "reverse_image_search、submit_answer。\n"
         f"name: {tool.name}\n"
         f"description: {tool.description}\n"
         f"params: [{param_desc}]\n"
@@ -282,8 +283,8 @@ def _project_coarse_units(
 ) -> list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]]:
     """将全量 COARSE Action/Obs 投影为 Agent1 训练子集。
 
-    固定保留 zoom_inspect/ocr/sun_position_calc；硬排除 web_search 等种子禁止 Tool；
-    默认排除 compare_images/双图比对类；其余动态 Tool 经结构化适配判定后可选保留。
+    保留核心三工具与视觉地图/卫星允许集；硬排除 web_search/map_query/RIS/submit；
+    其余动态 Tool 经结构化适配判定后可选保留。
     """
     projected: list[
         tuple[str, Action, ObservationExecutionResult, NormalizedStep]
@@ -292,12 +293,10 @@ def _project_coarse_units(
     for unit in units:
         _draft, action, _obs, _step = unit
         name = action.tool
-        if name in _COARSE_FIXED_TOOLS:
+        if is_coarse_allowed_tool(name):
             projected.append(unit)
             continue
-        if name in _COARSE_FORBIDDEN_SEED_TOOLS or name in SEED_TOOL_NAMES:
-            continue
-        if _is_map_compare_dynamic_tool(name):
+        if is_coarse_forbidden_tool(name) or name in SEED_TOOL_NAMES:
             continue
         if name not in suitability_cache:
             suitability_cache[name] = _judge_dynamic_tool_for_coarse(name)
@@ -306,11 +305,28 @@ def _project_coarse_units(
     if not projected:
         raise ValueError(
             "COARSE Tool 投影后无可重构 Action 步"
-            "（仅剩 web_search/compare_images 等禁止 Tool 或无适配动态 Tool）"
+            "（仅剩禁止 Tool 或无适配动态 Tool）"
         )
     sanitized = _sanitize_zoom_bbox_in_units(projected)
-    collapsed = _collapse_consecutive_duplicate_actions(sanitized)
+    usable, ui_removed = _filter_unusable_ui_units(sanitized)
+    usable = _drop_noninformative_empty_units(usable)
+    if not usable:
+        raise ValueError(
+            "COARSE 投影后无可重构 Action 步"
+            "（UI/overlay/empty Observation 剔除后证据不足）"
+        )
+    collapsed = _collapse_consecutive_duplicate_actions(usable)
+    collapsed = _collapse_semantic_fact_clusters(collapsed)
     _validate_coarse_projection_richness(collapsed)
+    # 将 UI 剔除信息挂到首步草稿旁注，供账本消费（不改公共 schema）
+    if ui_removed and collapsed:
+        draft0, a0, o0, s0 = collapsed[0]
+        collapsed[0] = (
+            f"{draft0}\n<<<UI_REMOVED_STEPS:{ui_removed}>>>",
+            a0,
+            o0,
+            s0,
+        )
     return collapsed
 
 
@@ -319,20 +335,200 @@ def _action_fingerprint(action: Action) -> str:
     return f"{action.tool}|{json.dumps(action.params, sort_keys=True, ensure_ascii=False, default=str)}"
 
 
+_UI_OBS_RE = re.compile(
+    r"聊天|消息|置顶|弹幕|播放器|进度条|标题卡|片头|点赞|评论区|"
+    r"微信|界面|字幕|overlay|粉丝|难度\s*\d",
+    re.I,
+)
+
+
+def _is_ui_overlay_observation(obs: ObservationExecutionResult) -> bool:
+    """判定 Observation 是否主要为 UI/overlay（不可用作地理证据）。"""
+    if obs.status in ("skipped", "error"):
+        return False
+    text = _obs_brief_text(obs)
+    if not text:
+        return False
+    # empty 且明确无场景地理 → 不算 UI 污染，视为证据不足占位
+    if obs.status == "empty":
+        return False
+    return bool(_UI_OBS_RE.search(text))
+
+
+def _filter_unusable_ui_units(
+    units: list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]],
+) -> tuple[
+    list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]],
+    list[int],
+]:
+    """剔除 UI/overlay Observation 步；返回保留列表与被剔除的 1-based 原序号。"""
+    kept: list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]] = []
+    removed: list[int] = []
+    for i, unit in enumerate(units, start=1):
+        if _is_ui_overlay_observation(unit[2]):
+            removed.append(i)
+            continue
+        kept.append(unit)
+    return kept, removed
+
+
+def _is_geo_evidence_unit(
+    unit: tuple[str, Action, ObservationExecutionResult, NormalizedStep],
+) -> bool:
+    """empty 步是否仍有地理训练增益（应保留在投影链中）。"""
+    from pipeline.evidence_routing import ContentType
+    from pipeline.stage2_moves import is_non_trainable_move
+
+    draft, _action, _obs, step = unit
+    intent = parse_evidence_intent(draft)
+    if intent is not None:
+        if (
+            intent.content_type is ContentType.INTERFACE_ONLY
+            and not intent.target_features
+            and not intent.source_concepts
+            and not intent.source_claims
+        ):
+            return False
+        if intent.source_claims or intent.target_features or intent.source_concepts:
+            return True
+        if intent.step_kind in (CoarseStepKind.OBSERVE, CoarseStepKind.UPDATE):
+            return True
+    move = step.move
+    if is_non_trainable_move(
+        move.narration,
+        move.screen_action,
+        list(move.visible_clues or []),
+    ):
+        return False
+    return bool((move.screen_action or "").strip() or (move.narration or "").strip())
+
+
+def _drop_noninformative_empty_units(
+    units: list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]],
+) -> list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]]:
+    """去掉无地理增益的 empty；保留 success、error 与有地理增益的 empty。
+
+    不得因存在 success 就掏空失败/未命中步（避免 TAO 中间环断链）。
+    若过滤后为空，则保留最多 2 步供 stage5 明确拒样。
+    """
+    out: list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]] = []
+    for unit in units:
+        _draft, _action, obs, _step = unit
+        if obs.status == "success":
+            out.append(unit)
+            continue
+        if obs.status == "error":
+            out.append(unit)
+            continue
+        if obs.status == "empty":
+            if _is_geo_evidence_unit(unit):
+                out.append(unit)
+            continue
+        # skipped 等其它状态：保留以维持链完整
+        out.append(unit)
+    if out:
+        return out
+    fixed_empty = [u for u in units if u[1].tool in _COARSE_FIXED_TOOLS][:2]
+    return fixed_empty or units[:2]
+
+
+def _intent_candidate_update_signature(draft: str) -> str:
+    """候选状态增量签名：仅 UPDATE 步计入；纯 observe 视为无增量。"""
+    intent = parse_evidence_intent(draft)
+    if intent is None:
+        return ""
+    if intent.step_kind is not CoarseStepKind.UPDATE:
+        return ""
+    kind = intent.step_kind.value
+    return fact_update_fingerprint(
+        list(intent.video_fact_ids),
+        intent.subject_scope,
+        kind,
+    )
+
+
+def _has_new_candidate_delta(prev_draft: str, curr_draft: str) -> bool:
+    """当前步相对前步是否有新的 exclude/narrow/shift/correct 类增量。"""
+    curr_sig = _intent_candidate_update_signature(curr_draft)
+    if not curr_sig:
+        return False
+    prev_sig = _intent_candidate_update_signature(prev_draft)
+    return curr_sig != prev_sig
+
+
 def _collapse_consecutive_duplicate_actions(
     units: list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]],
 ) -> list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]]:
-    """折叠连续相同 tool+params（去冗余，不合成新步）。"""
+    """折叠连续同 tool+params 且无新候选增量的步骤（即使 Obs 字面不同）。
+
+    保留首步 Obs；被折叠步写入旁注。有 exclude/narrow 等状态增量则保留。
+    """
     if not units:
         return units
     out: list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]] = [
         units[0]
     ]
+    collapsed_notes: list[str] = []
     for unit in units[1:]:
-        if _action_fingerprint(unit[1]) == _action_fingerprint(out[-1][1]):
+        prev = out[-1]
+        same_action = _action_fingerprint(unit[1]) == _action_fingerprint(prev[1])
+        same_obs = obs_fingerprint(
+            None if unit[2].status == "skipped" else unit[2].observation
+        ) == obs_fingerprint(
+            None if prev[2].status == "skipped" else prev[2].observation
+        )
+        if same_action and same_obs:
+            continue
+        if same_action and not _has_new_candidate_delta(prev[0], unit[0]):
+            collapsed_notes.append(
+                "<<<collapsed: same Action params without candidate delta>>>"
+            )
             continue
         out.append(unit)
+    if collapsed_notes and out:
+        draft, action, obs, step = out[-1]
+        # 旁注挂在当前链末保留步，供调试；生成 Thought 前会消毒
+        note = collapsed_notes[-1]
+        if note not in draft:
+            out[-1] = (f"{draft}\n{note}", action, obs, step)
     return out
+
+
+def _unit_fact_cluster_key(
+    draft: str,
+) -> str:
+    """语义簇指纹：video_fact_ids + subject_scope + update_kind。"""
+    intent = parse_evidence_intent(draft)
+    if intent is None:
+        return strip_evidence_intent(draft)[:80]
+    kind = (
+        intent.step_kind.value
+        if intent.step_kind is not None
+        else CoarseStepKind.OBSERVE.value
+    )
+    return fact_update_fingerprint(
+        list(intent.video_fact_ids),
+        intent.subject_scope,
+        kind,
+    )
+
+
+def _collapse_semantic_fact_clusters(
+    units: list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]],
+) -> list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]]:
+    """相同事实簇且无新候选状态增量时合并（即使 bbox/措辞不同）。"""
+    if not units:
+        return units
+    out: list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]] = []
+    seen_keys: set[str] = set()
+    for unit in units:
+        draft, action, obs, step = unit
+        key = _unit_fact_cluster_key(draft)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        out.append(unit)
+    return out if out else units[:1]
 
 
 def _is_fullframe_zoom(action: Action) -> bool:
@@ -366,26 +562,61 @@ def _obs_brief_text(obs: ObservationExecutionResult) -> str:
     return json.dumps(obs.observation, ensure_ascii=False, sort_keys=True)
 
 
+def _intent_target_key(draft: str) -> str:
+    """从 thought_draft 取观察目标键（用于 richness）。"""
+    intent = parse_evidence_intent(draft)
+    if intent is None:
+        return strip_evidence_intent(draft)[:80]
+    feats = ",".join(intent.target_features)
+    return f"{intent.target_object}|{feats}|{intent.suggested_bbox}"
+
+
 def _validate_coarse_projection_richness(
     units: list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]],
 ) -> None:
-    """投影后递进可写性门禁：禁止重复 Action、连续全图 zoom 且无新增证据。"""
+    """投影后递进可写性：Action 目标、Obs 增益与线索覆盖。
+
+    同 bbox 不等于同一步；不同 bbox 也不自动代表新增证据。
+    """
     if not units:
         raise ValueError("COARSE 投影后递进可写性不足：无步骤")
 
-    fps = [_action_fingerprint(a) for _d, a, _o, _s in units]
-    if len(fps) >= 2 and len(set(fps)) == 1:
-        raise ValueError(
-            "COARSE 投影后递进可写性不足：全部步骤为相同 tool+params，无法形成递进"
+    # 连续同 Action 且无候选增量 → 应已被折叠；若仍出现则失败
+    for i in range(1, len(units)):
+        same_a = _action_fingerprint(units[i][1]) == _action_fingerprint(
+            units[i - 1][1]
         )
-
-    # 连续重复指纹
-    for i in range(1, len(fps)):
-        if fps[i] == fps[i - 1]:
+        same_o = obs_fingerprint(
+            None if units[i][2].status == "skipped" else units[i][2].observation
+        ) == obs_fingerprint(
+            None
+            if units[i - 1][2].status == "skipped"
+            else units[i - 1][2].observation
+        )
+        no_delta = not _has_new_candidate_delta(units[i - 1][0], units[i][0])
+        if same_a and (same_o or no_delta):
             raise ValueError(
                 f"COARSE 投影后递进可写性不足：Step {i} 与 Step {i + 1} "
-                "重复相同 tool+params"
+                "重复相同 tool+params 且无候选增量"
             )
+
+    fps = [_action_fingerprint(a) for _d, a, _o, _s in units]
+    obs_fps = [
+        obs_fingerprint(None if o.status == "skipped" else o.observation)
+        for _d, _a, o, _s in units
+    ]
+    if len(fps) >= 2 and len(set(fps)) == 1 and len(set(obs_fps)) == 1:
+        raise ValueError(
+            "COARSE 投影后递进可写性不足：全部步骤为相同 tool+params 且 Obs 无差异"
+        )
+
+    # 目标键 + Obs 信息增益：至少应有两类观察目标或两类 Obs
+    targets = {_intent_target_key(d) for d, _a, _o, _s in units}
+    meaningful_obs = [fp for fp in obs_fps if fp]
+    if len(units) >= 3 and len(targets) == 1 and len(set(meaningful_obs)) <= 1:
+        raise ValueError(
+            "COARSE 投影后递进可写性不足：多步共享同一观察目标且 Observation 无信息增益"
+        )
 
     full_zooms = [
         (i, units[i])
@@ -393,7 +624,6 @@ def _validate_coarse_projection_richness(
         if _is_fullframe_zoom(units[i][1])
     ]
     if len(full_zooms) >= 2:
-        # 连续全图 zoom：要求 Observation 有可见差异
         for j in range(1, len(full_zooms)):
             i_prev, u_prev = full_zooms[j - 1]
             i_cur, u_cur = full_zooms[j]
@@ -408,90 +638,6 @@ def _validate_coarse_projection_richness(
                 )
 
 
-# 描述性地带/非行政区：不得进入 possible_regions（通用语义，非地名枚举表）
-_DESCRIPTIVE_REGION_RE = re.compile(
-    r"(?:平原|丘陵|山地|山区|盆地|高原|沿海|内陆|南缘|北缘|东缘|西缘|"
-    r"过渡带|一带|周边|附近|中原|华北|华南|华东|华西|江南|塞北|"
-    r"温带|亚热带|热带|季风气候)",
-    re.I,
-)
-_ADMIN_HINT_RE = re.compile(
-    r"(?:省|市|州|盟|自治区|特别行政区|县|区|旗|共和国|王国|"
-    r"Province|State|County|Prefecture|Region|Territory)\b|"
-    r"省$|市$|州$|县$|区$",
-    re.I,
-)
-
-
-def _is_descriptive_region(name: str) -> bool:
-    """判定是否为自然/文化地带描述（非规范行政区）。"""
-    text = (name or "").strip()
-    if not text:
-        return True
-    # 先判定描述性地带（避免「地区」被「区」行政后缀误吃）
-    if _DESCRIPTIVE_REGION_RE.search(text):
-        return True
-    if "地区" in text and "自治区" not in text:
-        return True
-    if _ADMIN_HINT_RE.search(text):
-        return False
-    return False
-
-
-def _normalize_coarse_regions(
-    hyp: LocationHypothesis,
-) -> tuple[LocationHypothesis, list[str]]:
-    """将描述性地带移出 possible_regions，并入 reasoning/key_clues。"""
-    admin: list[str] = []
-    descriptive: list[str] = []
-    for r in hyp.possible_regions:
-        if _is_descriptive_region(r):
-            descriptive.append(r)
-        else:
-            admin.append(r)
-    if not descriptive:
-        return hyp, []
-    summary = hyp.reasoning_summary or ""
-    for d in descriptive:
-        if d not in summary:
-            summary = (summary + f" 地形/地带线索：{d}。").strip()
-    clues = list(hyp.key_clues_remaining)
-    for d in descriptive:
-        if d not in clues:
-            clues.append(d)
-    fixed = hyp.model_copy(
-        update={
-            "possible_regions": admin,
-            "reasoning_summary": summary,
-            "key_clues_remaining": clues,
-        }
-    )
-    return fixed, [
-        f"possible_regions 含描述性地带已迁移: {', '.join(descriptive)}"
-    ]
-
-
-def _detect_thought_action_mismatches(
-    thoughts: list[str],
-    units: list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]],
-) -> list[str]:
-    """Thought 明确点名某工具意图但 action.tool 不符 → issues。"""
-    issues: list[str] = []
-    for i, (thought, (_d, action, _o, _s)) in enumerate(
-        zip(thoughts, units, strict=True), start=1
-    ):
-        for pattern, expected_tool in _THOUGHT_TOOL_INTENT_PATTERNS:
-            if not pattern.search(thought):
-                continue
-            if action.tool != expected_tool:
-                issues.append(
-                    f"Step {i} Thought 意图指向 {expected_tool}，"
-                    f"实际 Action 为 {action.tool}"
-                )
-                break
-    return issues
-
-
 def _format_unit_for_prompt(
     index: int,
     thought_draft: str,
@@ -504,81 +650,294 @@ def _format_unit_for_prompt(
         obs_repr = None
     else:
         obs_repr = obs.observation
+    draft_clean = strip_evidence_intent(thought_draft)
+    intent = parse_evidence_intent(thought_draft)
+    intent_line = ""
+    kind = "observe"
+    if intent is not None:
+        kind = intent.step_kind.value
+        intent_line = (
+            f"evidence_intent: step_kind={kind} "
+            f"target={intent.target_object!r} "
+            f"features={intent.target_features} "
+            f"video_fact_ids={intent.video_fact_ids} "
+            f"source_claims={intent.source_claims} "
+            f"relation={intent.expected_spatial_relation!r}\n"
+        )
     return (
-        f"### Step {index}\n"
-        f"thought_draft: {thought_draft}\n"
+        f"### Step {index} [{kind}]\n"
+        f"{intent_line}"
+        f"thought_draft: {draft_clean}\n"
         f"action: tool={action.tool} params={action.params!r}\n"
         f"observation_status: {obs.status}\n"
         f"observation: {obs_repr!r}\n"
     )
 
 
-def _build_scaffold_prompt(
-    agent_role: AgentRole,
+def _video_context_from_units(
     units: list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]],
+) -> Optional[VideoChainContext]:
+    """从首个含嵌入标记的 ThoughtDraft 解析 VideoChainContext。"""
+    for draft, _a, _o, _s in units:
+        ctx = parse_video_context(draft)
+        if ctx is not None:
+            return ctx
+    return None
+
+
+def _build_coarse_evidence_ledger(
+    units: list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]],
+    *,
+    given_clues: list[str],
+    candidate_hypotheses: list[str],
+) -> CoarseEvidenceLedger:
+    """在生成 Thought 前构建内部证据账本。"""
+    from pipeline.evidence_routing import (
+        SpatialRelationEntry,
+        VisualFactEntry,
+        source_concepts_from_facts,
+    )
+
+    facts: list[VisualFactEntry] = []
+    relations: list[SpatialRelationEntry] = []
+    ui_steps: list[int] = []
+    source_concepts: list[str] = []
+    video_fact_claims: dict[str, str] = {}
+    ctx = _video_context_from_units(units)
+    raw_clues = list(given_clues)
+    working_scope: Optional[str] = None
+    video_facts: list[Any] = []
+    if ctx is not None:
+        raw_clues = [c.text for c in ctx.raw_given_clues]
+        given_clues = list(raw_clues)
+        if ctx.working_scope is not None:
+            working_scope = ctx.working_scope.region
+        source_concepts = source_concepts_from_facts(
+            ctx.video_facts,
+            working_scope=ctx.working_scope,
+            raw_clues=ctx.raw_given_clues,
+        )
+        video_fact_claims = {
+            fact.fact_id: fact.quote
+            for fact in ctx.video_facts
+            if fact.kind != "stall"
+        }
+        candidate_hypotheses = list(ctx.candidate_hypotheses)
+        video_facts = list(ctx.video_facts)
+
+    step_map: dict[str, list[int]] = {}
+    annotation_updates: list[CandidateUpdateEntry] = []
+    for i, (draft, action, obs, _step) in enumerate(units, start=1):
+        if "<<<UI_REMOVED_STEPS:" in draft:
+            m = re.search(r"<<<UI_REMOVED_STEPS:(\[[^\]]*\])>>>", draft)
+            if m:
+                try:
+                    ui_steps = [int(x) for x in json.loads(m.group(1))]
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    ui_steps = []
+        intent = parse_evidence_intent(draft)
+        if intent is not None:
+            for tok in intent.source_concepts:
+                if tok and tok not in source_concepts:
+                    source_concepts.append(tok)
+            for fid in intent.video_fact_ids:
+                step_map.setdefault(fid, []).append(i)
+            if intent.step_kind is CoarseStepKind.UPDATE:
+                annotation_updates.append(
+                    CandidateUpdateEntry(
+                        kind=RangeUpdateKind.EXCLUDE,
+                        old_candidates=[],
+                        new_candidates=[],
+                        excluded=[],
+                        evidence_steps=[i],
+                        video_fact_ids=list(intent.video_fact_ids),
+                        exclusion_reason="",
+                        subject_scope=intent.subject_scope,
+                        spatial_anchor=intent.spatial_anchor,
+                    )
+                )
+        brief = _obs_brief_text(obs)
+        if not brief or obs.status in ("empty", "error", "skipped"):
+            continue
+        summary = brief[:240]
+        vf_ids: list[str] = []
+        if intent is not None and intent.target_features:
+            summary = (
+                f"{intent.target_object}: {','.join(intent.target_features)}; "
+                f"obs={brief[:160]}"
+            )
+            vf_ids = list(intent.video_fact_ids)
+        facts.append(
+            VisualFactEntry(
+                step_index=i,
+                summary=summary,
+                source_tool=action.tool,
+                video_fact_ids=vf_ids,
+            )
+        )
+        if intent is not None and intent.expected_spatial_relation:
+            relations.append(
+                SpatialRelationEntry(
+                    description=intent.expected_spatial_relation,
+                    supporting_fact_steps=[i],
+                    subject_scope=intent.subject_scope,
+                    spatial_anchor=intent.spatial_anchor,
+                )
+            )
+
+    # Obs 全 empty 时仍可用逐视频来源声明播种 visual_facts，避免无图确认时直接断链
+    if not facts and video_fact_claims:
+        for i, (draft, action, _obs, _step) in enumerate(units, start=1):
+            intent = parse_evidence_intent(draft)
+            if intent is None or not intent.source_claims:
+                continue
+            facts.append(
+                VisualFactEntry(
+                    step_index=i,
+                    summary="; ".join(intent.source_claims)[:240],
+                    source_tool=action.tool,
+                    video_fact_ids=list(intent.video_fact_ids),
+                )
+            )
+            if intent.expected_spatial_relation:
+                relations.append(
+                    SpatialRelationEntry(
+                        description=intent.expected_spatial_relation,
+                        supporting_fact_steps=[i],
+                        subject_scope=intent.subject_scope,
+                        spatial_anchor=intent.spatial_anchor,
+                    )
+                )
+
+    candidate_updates = build_candidate_updates_from_facts(
+        video_facts,
+        evidence_steps=step_map,
+    )
+    if not candidate_updates and annotation_updates:
+        candidate_updates = annotation_updates
+
+    return CoarseEvidenceLedger(
+        raw_given_clues=raw_clues,
+        working_scope=working_scope,
+        given_clues=list(given_clues) if given_clues else raw_clues,
+        candidate_hypotheses=list(candidate_hypotheses),
+        visual_facts=facts,
+        spatial_relations=relations,
+        candidate_updates=candidate_updates,
+        collapsed_evidence=[],
+        unusable_ui_steps=ui_steps,
+        source_concepts=source_concepts,
+        video_fact_claims=video_fact_claims,
+    )
+
+
+# 内部脚手架标记与事实 ID：不得出现在生成 prompt 的参考段与任何产出文本中
+_INTERNAL_ID_RE = re.compile(r"\bvf\d+_\d+_[a-z_]+\b")
+_INTERNAL_MARKER_RE = re.compile(r"<<<.*?>>>", re.DOTALL)
+
+
+def _sanitize_intent_reference(draft: str) -> str:
+    """thought_draft → 该步意图参考：剥离内部标记、事实 ID 与多余空白。
+
+    参考只说明「本步要验证什么」，供逐步生成使用；禁止照抄进 Thought。
+    """
+    text = strip_evidence_intent(draft or "")
+    text = _INTERNAL_MARKER_RE.sub("", text)
+    text = _INTERNAL_ID_RE.sub("", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:300]
+
+
+def _align_intent_reference_to_action(reference: str, tool_name: str) -> str:
+    """按本步 Action.tool 改写意图参考：去掉异工具话术，标明本步工具。"""
+    text = reference or ""
+    text = re.sub(
+        r"web_search|以图搜图|打开网页|网页搜索|搜索引擎|google\s*maps",
+        "观察",
+        text,
+        flags=re.I,
+    )
+    if tool_name in COARSE_CORE_TOOLS:
+        text = re.sub(
+            r"(?:调用|调取)\s*(?:卫星|遥感)(?:检索|接口|API|服务)?",
+            "查看画面",
+            text,
+            flags=re.I,
+        )
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return f"本步工具为 {tool_name}；说明为何调用它。"
+    return f"本步工具为 {tool_name}；观察目标：{text}"[:300]
+
+
+def _thought_mentions_tool(thought: str, tool_name: str) -> bool:
+    """Thought 是否体现本步 tool（snake_case 或常见中文动机词）。"""
+    if re.search(
+        re.escape(tool_name).replace("_", r"[_ ]?"), thought, re.I
+    ):
+        return True
+    aliases: dict[str, re.Pattern[str]] = {
+        "zoom_inspect": re.compile(r"放大|缩放|局部观察|细看|inspect", re.I),
+        "ocr": re.compile(r"OCR|读字|识别文字|路牌|店招", re.I),
+        "sun_position_calc": re.compile(r"太阳|阴影|日照|方位角", re.I),
+        "compare_images_for_geolocation": re.compile(r"比对|对比.*图", re.I),
+        "lookup_historical_satellite_map": re.compile(
+            r"历史卫星|遥感|卫星地图|历史影像", re.I
+        ),
+        "lookup_historical_map_layout": re.compile(r"历史地图|地图布局", re.I),
+        "annotate_geographic_environment_on_image": re.compile(
+            r"标注|地理环境", re.I
+        ),
+        "detect_terrain_features": re.compile(r"地形|地貌特征", re.I),
+        "analyze_terrain_ambiguity": re.compile(r"地形|视觉误差|误判", re.I),
+        "analyze_terrain_visual_illusion": re.compile(
+            r"视觉错觉|视觉误差|误认", re.I
+        ),
+        "find_specific_features_in_satellite_map": re.compile(
+            r"卫星.*特征|地物匹配", re.I
+        ),
+    }
+    pat = aliases.get(tool_name)
+    return bool(pat and pat.search(thought))
+
+
+def _thought_action_mismatch_issues(thought: str, tool_name: str) -> list[str]:
+    """检测 Thought 是否提及非本步 Action 的工具话术，或未引出本步 tool。"""
+    issues: list[str] = []
+    for foreign, pat in _FOREIGN_TOOL_RHETORIC:
+        if foreign != tool_name and pat.search(thought):
+            issues.append(f"mentions_foreign_tool:{foreign}")
+    if tool_name in COARSE_CORE_TOOLS and _CORE_TOOL_SATELLITE_MISMATCH_RE.search(
+        thought
+    ):
+        issues.append("core_tool_with_satellite_api_rhetoric")
+    if not _thought_mentions_tool(thought, tool_name):
+        issues.append(f"missing_tool_motivation:{tool_name}")
+    return issues
+
+
+def _context_header_lines(
+    agent_role: AgentRole,
     answer_timestamp: float,
     *,
+    user_query: str,
     coarse_handoff: Optional[LocationHypothesis],
     fine_handoff: Optional[SubmitAnswerResult],
     revision_context: Optional[RevisionContext],
-    user_query: Optional[str] = None,
-) -> str:
-    """构造轨迹改写 prompt；强制标准地理定位 TAO，禁止旁白叙事。"""
+) -> list[str]:
+    """逐步生成与角色输出共用的上下文头（不含 groundtruth）。"""
     lines = [
-        "请将下列脚手架改写为标准图片地理定位 ReAct 推理链。",
-        "输出的 thoughts 必须且只能是标准地理定位 TAO Thought（见下方风格规范）。",
-        "要求：",
-        "1. thoughts 列表长度必须与 Step 数量完全一致；",
-        "2. Thought 可使用该步及之前 Observation，以及 user_query 中的已知线索；",
-        "3. 禁止后见之明；禁止无图像/Obs/user_query 依据地粘贴真值；",
-        "4. Thought 主语是画面/线索，禁止照抄旁白或博主/求助者/粉丝叙事；",
-        "5. thought_draft 仅为可选短线索，禁止复述其中的故事或人称；",
-        "6. 本步 Thought 不得把本步 Observation 当作已知；",
-        "7. 可使用 user_query 中的地名线索，但不要在 Thought 里解释线索来源"
-        "（禁止「网友说/评论说」等）。",
         f"agent_role: {agent_role.value}",
+        f"user_query（任务与已知线索）: {user_query}",
         f"answer_timestamp: {answer_timestamp}",
     ]
-    if agent_role == AgentRole.FINE:
-        lines.append(
-            "8. FINE：缩小范围无上限；证据足够时可尽早写出较精确地点/坐标假设。"
-        )
-    if agent_role == AgentRole.COARSE:
-        lines.append(
-            "8. COARSE：每步须「特征识别 → 排除/收窄 → 为何调用本工具」；"
-            "每次关键收窄必须引用画面或此前 Observation 的独立地理/人文证据；"
-            "user_query 地点线索可参与附近候选辅助，但不得作为唯一收窄依据；"
-            "Thought 声明的工具意图必须与本步 action.tool 一致"
-            "（提 OCR/太阳/日照则对应 ocr/sun_position_calc）；"
-            "禁止拿线索去卫星图验证；"
-            "zoom_inspect.bbox 须为图像归一化坐标 [0,1]（非经纬度）；"
-            "不得跳步；不得用 web_search/compare_images；结论仅国家/地区级；"
-            "possible_regions 只填同层级规范行政区（省/州/直辖市等），"
-            "「中原/华北平原南缘」等地带写入 reasoning_summary；"
-            "coarse_output.reasoning_summary 须概括特征→排除/收窄→候选范围。"
-        )
-    if user_query:
-        lines.append(f"user_query（任务与已知线索）: {user_query}")
-    lines.extend(
-        [
-            "\n## 风格规范与示例",
-            fewshot_block_for_role(agent_role),
-        ]
-    )
     if agent_role in (AgentRole.COARSE, AgentRole.FINE):
-        lines.append(
-            "时间规则：COARSE/FINE 默认只使用 answer_timestamp 之前的证据。"
-        )
+        lines.append("时间规则：只使用 answer_timestamp 之前的证据。")
     else:
         lines.append(
             "时间规则：VERIFIER 可使用答案宣布后的验证片段，"
-            "但博主直接宣布答案的语句不能作为验证证据。"
+            "但直接宣布答案的语句不能作为验证证据。"
         )
-        lines.append(
-            "验证深度：须交叉核对 fine_handoff 与地图/检索 Observation 及图像特征，"
-            "再给出 VerificationResult。"
-        )
-
     if coarse_handoff is not None:
         lines.append(f"coarse_handoff: {coarse_handoff.model_dump_json()}")
     if fine_handoff is not None:
@@ -594,16 +953,94 @@ def _build_scaffold_prompt(
             f"target={revision_context.target_agent.value}"
         )
         if revision_context.verification_result is not None:
-            lines.append(
-                "previous_verification: "
-                f"{revision_context.verification_result.model_dump_json()}"
-            )
+            if agent_role == AgentRole.COARSE:
+                sanitized = sanitize_verification_for_coarse_prompt(
+                    revision_context.verification_result
+                )
+                lines.append(
+                    "previous_verification(abstract codes only): "
+                    f"{json.dumps(sanitized, ensure_ascii=False)}"
+                )
+            else:
+                lines.append(
+                    "previous_verification: "
+                    f"{revision_context.verification_result.model_dump_json()}"
+                )
         if revision_context.video_segment is not None:
             lines.append(f"video_segment: {revision_context.video_segment!r}")
+    return lines
 
-    lines.append("\n## Scaffold")
-    for i, (thought, action, obs, _step) in enumerate(units, start=1):
-        lines.append(_format_unit_for_prompt(i, thought, action, obs))
+
+def _obs_repr_for_prompt(
+    action: Action,
+    obs: ObservationExecutionResult,
+) -> Optional[dict[str, Any]]:
+    """步骤 Observation 在 prompt 中的表示；terminal 步为 None。"""
+    if obs.status == "skipped" or action.tool == "submit_answer":
+        return None
+    return obs.observation
+
+
+def _prior_steps_block(
+    thoughts: list[str],
+    units: list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]],
+) -> str:
+    """已完成的前序步骤 → prompt 文本（完整 T/A/O）。"""
+    if not thoughts:
+        return "（无，本步是第一步）"
+    lines: list[str] = []
+    for i, (thought, (_d, action, obs, _s)) in enumerate(
+        zip(thoughts, units, strict=False), start=1
+    ):
+        lines.append(f"### 已完成 Step {i}")
+        lines.append(f"Thought: {thought}")
+        lines.append(f"Action: tool={action.tool} params={action.params!r}")
+        lines.append(f"Observation: {_obs_repr_for_prompt(action, obs)!r}")
+    return "\n".join(lines)
+
+
+def _build_step_prompt(
+    agent_role: AgentRole,
+    header_lines: list[str],
+    prior_thoughts: list[str],
+    units: list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]],
+    step_index: int,
+) -> str:
+    """第 step_index 步（0-based）的逐步生成 prompt。
+
+    上下文只含前序完整 T/A/O 与本步 Action + 消毒意图参考；
+    不含本步 Observation 与任何后续步信息。
+    """
+    draft, action, _obs, _step = units[step_index]
+    total = len(units)
+    reference = _align_intent_reference_to_action(
+        _sanitize_intent_reference(draft), action.tool
+    )
+    lines = [
+        f"你正在为一个图片地理定位 Agent 撰写第 {step_index + 1}/{total} 步的 Thought。",
+        *header_lines,
+        "\n## 已完成的前序步骤",
+        _prior_steps_block(prior_thoughts, units),
+        "\n## 本步将执行的 Action（已确定，不可更改）",
+        f"tool={action.tool} params={action.params!r}",
+        "\n## 本步意图参考（仅说明观察目标；禁止照抄，禁止当作已知结论）\n"
+        f"{reference}",
+    ]
+    lines.extend(
+        [
+            "\n## 要求",
+            "1. Thought 只能基于 user_query、图像与前序 Observation 已出现的信息；",
+            f"2. 必须说明为何调用本步工具 `{action.tool}`（1~3 句）；"
+            "动机必须与该 tool 一致；",
+            "3. 禁止提及未出现在本步 Action 的工具名"
+            "（尤其 web_search / map_query / reverse_image_search）；"
+            f"当本步为 `{action.tool}` 时，勿写成正在调用其它检索/卫星 API；",
+            "4. 禁止提前写出本步工具将返回的内容；",
+            "5. 禁止旁白叙事（博主/网友/视频等字眼）与来源话术；",
+            "6. 禁止出现内部编号或标记。",
+            "只输出本步 Thought。",
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -621,146 +1058,251 @@ def _narration_overlap_ratio(thought: str, narration: str) -> float:
     return len(ba & bb) / len(ba | bb)
 
 
-def _thoughts_too_similar_to_narration(
-    thoughts: list[str],
-    units: list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]],
-    *,
-    threshold: float = 0.55,
-) -> bool:
-    """任一改写 Thought 与对应步旁白高度重叠则 True。"""
-    for thought, (_draft, _action, _obs, step) in zip(thoughts, units, strict=True):
-        narr = (step.move.narration or "").strip()
-        if narr and _narration_overlap_ratio(thought, narr) >= threshold:
-            return True
-    return False
-
-
-def _check_tao_style(
-    thoughts: list[str],
-    units: list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]],
+def _generate_thoughts_stepwise(
     agent_role: AgentRole,
-) -> _TaoStyleCheck:
-    """LLM 判定改写 Thought 是否为标准地理定位 TAO。"""
-    lines = [
-        "判定下列改写后的 thoughts 是否为标准图片地理定位 TAO。",
-        fewshot_block_for_role(agent_role),
-        f"agent_role: {agent_role.value}",
-        "\n## Rewritten thoughts",
-    ]
-    for i, (thought, (_d, action, _o, _s)) in enumerate(
-        zip(thoughts, units, strict=True), start=1
-    ):
-        lines.append(f"Step {i} tool={action.tool}: {thought}")
-    return call_structured("\n".join(lines), _TaoStyleCheck)
+    units: list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]],
+    header_lines: list[str],
+    image_path: str,
+) -> list[str]:
+    """逐步因果生成：第 t 步只见前 t-1 步完整 T/A/O 与本步 Action。"""
+    thoughts: list[str] = []
+    for idx in range(len(units)):
+        tool_name = units[idx][1].tool
+        prompt = _build_step_prompt(agent_role, header_lines, thoughts, units, idx)
+        result = call_structured(prompt, _StepThought, images=[image_path])
+        thought = result.thought.strip()
+        mismatch = _thought_action_mismatch_issues(thought, tool_name)
+        if mismatch:
+            retry_prompt = (
+                prompt
+                + "\n\n## 上次 Thought 被拒原因\n"
+                + f"与本步 Action tool=`{tool_name}` 不对齐：{mismatch}。\n"
+                + f"请重写：只解释为何调用 `{tool_name}`，不要提其它工具；"
+                "禁止复述任何工具返回结果或 Observation 事实"
+                "（本提示不提供本步 Observation）。\n"
+            )
+            result = call_structured(
+                retry_prompt, _StepThought, images=[image_path]
+            )
+            thought = result.thought.strip()
+        thoughts.append(thought)
+    return thoughts
 
 
-def _check_coarse_reasoning(
+def _trajectory_text_block(
     thoughts: list[str],
     units: list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]],
-    coarse_output: Optional[LocationHypothesis],
-) -> _CoarseReasoningCheck:
-    """LLM 判定 COARSE 是否为严密递进推理链（不含 GT）。"""
-    lines = [
-        "判定下列 COARSE 轨迹是否为严密的「特征识别 → 缩小范围」递进链。",
-        fewshot_block_for_role(AgentRole.COARSE),
-        "判定要点：",
-        "1. identifies_geo_human_features：Thought 是否指出画面或此前 Obs 的具体地理/人文特征；",
-        "2. narrows_scope_progressively：是否逐步排除/收窄范围，而非跳步到国家/地区；",
-        "3. has_reasoning_gap：是否存在无依据跳步、本步 Obs 时序倒置、单一弱特征直接结论；",
-        "4. thought_action_aligned：每步 Thought 须解释为何调用该 Action，"
-        "且声明的工具意图与 action.tool 一致；",
-        "5. feature_driven_narrowing：每次关键收窄是否由视觉/Obs 特征驱动"
-        "（提及 user_query 地点本身不违规，但特征须为独立证据）；",
-        "6. clues_only_as_auxiliary：已知线索是否仅为辅助假设，而非唯一收窄依据；"
-        "禁止拿线索去做卫星/地图验证；",
-        "7. regions_are_administrative_and_consistent：possible_regions 是否为"
-        "同层级规范行政区；「中原/华北平原南缘」等地带应判为不合格；",
-        "8. coarse_output.reasoning_summary 须概括特征→排除/收窄→候选范围。",
-        "\n## Steps（Thought 与 Observation 分列，勿把 Obs 内容误判为 Thought）",
-    ]
+) -> str:
+    """完整轨迹 → prompt 文本（polish / 角色输出 / judge 共用）。"""
+    lines: list[str] = []
     for i, (thought, (_d, action, obs, _s)) in enumerate(
         zip(thoughts, units, strict=True), start=1
     ):
-        obs_brief = None if obs.status == "skipped" else obs.observation
         lines.append(f"### Step {i}")
-        lines.append(f"tool: {action.tool}")
-        lines.append(f"thought: {thought!r}")
-        lines.append(f"observation: {obs_brief!r}")
-    if coarse_output is not None:
-        lines.append(f"\ncoarse_output: {coarse_output.model_dump_json()}")
-    return call_structured("\n".join(lines), _CoarseReasoningCheck)
+        lines.append(f"Thought: {thought}")
+        lines.append(f"Action: tool={action.tool} params={action.params!r}")
+        lines.append(f"Observation: {_obs_repr_for_prompt(action, obs)!r}")
+    return "\n".join(lines)
 
 
-def _needs_tao_rewrite(
+def _polish_thoughts(
+    agent_role: AgentRole,
     thoughts: list[str],
     units: list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]],
-    agent_role: AgentRole,
-    *,
-    coarse_output: Optional[LocationHypothesis] = None,
-) -> tuple[bool, list[str]]:
-    """字面旁白重叠、TAO 形态失败或 COARSE 递进链失败 → 需要重写。"""
-    issues: list[str] = []
-    need = False
-    if _thoughts_too_similar_to_narration(thoughts, units):
-        issues.append("Thought 与旁白字面高度重叠")
-        need = True
-    try:
-        check = _check_tao_style(thoughts, units, agent_role)
-        if not check.is_standard_tao:
-            issues.extend(check.issues or ["非标准地理定位 TAO"])
-            need = True
-    except Exception as exc:  # noqa: BLE001
-        # 形态检查失败不强制重写；交给 stage6
-        issues.append(f"TAO 形态自检调用失败: {exc}")
+) -> list[str]:
+    """整链润色：只改措辞与衔接；忠实性对比失败的步回退为润色前文本。
 
+    polish / 忠实性调用失败或条数不符时整体回退，不阻断流程。
+    """
+    n = len(units)
+    polish_prompt = (
+        "请对下列图片地理定位推理链的 Thought 逐步润色：改善措辞、步间衔接与"
+        "流畅度，使其读起来是自然的第一人称地理推理。\n"
+        "严禁：改动事实、结论、候选地点、工具意图；增删步骤；调换顺序；"
+        "引入新信息或内部编号。\n"
+        f"输出 thoughts 必须恰好 {n} 条，与步骤一一对应。\n\n"
+        "## 风格示例\n"
+        f"{fewshot_block_for_role(agent_role)}\n\n"
+        "## 待润色轨迹\n"
+        f"{_trajectory_text_block(thoughts, units)}"
+    )
+    try:
+        polished = call_structured(polish_prompt, _PolishedThoughts)
+    except Exception:  # noqa: BLE001
+        return list(thoughts)
+    cleaned = [(t or "").strip() for t in polished.thoughts]
+    if len(cleaned) != n or any(not t for t in cleaned):
+        return list(thoughts)
+
+    pairs = "\n".join(
+        f"### Step {i}\n润色前: {orig}\n润色后: {new}"
+        for i, (orig, new) in enumerate(zip(thoughts, cleaned, strict=True), start=1)
+    )
+    faith_prompt = (
+        "对比每一步润色前后的 Thought，找出「润色后」新增、删除或改变了"
+        "事实/结论/候选地点/工具意图的步骤（仅措辞与衔接变化不算）。\n"
+        "在 unfaithful_steps 中列出这些步骤的序号（1-based）；全部忠实则为空列表。\n\n"
+        f"{pairs}"
+    )
+    try:
+        check = call_structured(faith_prompt, _FaithfulnessCheck)
+    except Exception:  # noqa: BLE001
+        return list(thoughts)
+    out = list(cleaned)
+    for step_no in check.unfaithful_steps:
+        if 1 <= step_no <= n:
+            out[step_no - 1] = thoughts[step_no - 1]
+    return out
+
+
+def _hard_check_issues(
+    thoughts: list[str],
+    units: list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]],
+    *,
+    obs_overlap_threshold: float = 0.6,
+    narration_overlap_threshold: float = 0.55,
+) -> list[str]:
+    """轻量程序化硬校验：内部 ID 泄漏 / 本步 Observation 复述 / 旁白复述。"""
+    issues: list[str] = []
+    for i, (thought, (_d, _action, obs, step)) in enumerate(
+        zip(thoughts, units, strict=True), start=1
+    ):
+        if _INTERNAL_ID_RE.search(thought) or _INTERNAL_MARKER_RE.search(thought):
+            issues.append(f"internal_id_leak: Step {i}")
+        obs_text = _obs_brief_text(obs)
+        if (
+            obs_text
+            and _narration_overlap_ratio(thought, obs_text)
+            >= obs_overlap_threshold
+        ):
+            issues.append(f"thought_observation_redundancy: Step {i}")
+        narr = (step.move.narration or "").strip()
+        if (
+            narr
+            and _narration_overlap_ratio(thought, narr)
+            >= narration_overlap_threshold
+        ):
+            issues.append(f"narration_copy: Step {i}")
+    return issues
+
+
+_JUDGE_RUBRIC = (
+    "按以下固定 rubric 对轨迹整体打分（score ∈ [0,1]）；"
+    "Agent1/COARSE 优先「可用可学」入库，勿因轻微瑕疵整段判废：\n"
+    "A. 递进性：每一步应推进定位（建立可用证据或排除/收窄候选）。"
+    "**严重**：无增益地重复同 tool+params，或连续空转 zoom（Observation 无新证据）；"
+    "投影已折叠后的短链不算空转；\n"
+    "B. 因果与对齐：Thought 只基于此前已出现的信息，动机与本步 Action 一致，"
+    "无预知本步结果、无跳步；Action 与 Observation 模态应一致"
+    "（如 zoom_inspect 不应表现为独立卫星 API 调用）；"
+    "短语已在视频来源事实中出现、但前序 Obs 尚未建立时，判「链内过早/预知」，"
+    "勿写成「无视频来源」；\n"
+    "C. 来源接地：事实性描述可由工作范围/前序 Observation/视频来源事实支撑；"
+    "若短语可被上方「视频来源事实」清单蕴含，**不得**判「无视频来源/凭空发明」；"
+    "无来源仅适用于清单与前序 Obs 均无法支撑的属性；"
+    "Obs 多写了画面未见、但旁白或来源事实已有的地名，属**轻微瑕疵**，不单独判严重；\n"
+    "D. 结论闭包：最终输出从推理链已建立的候选中得出，无首次跳入的新地点；\n"
+    "E. 语言：自然流畅的第一人称地理推理，无旁白叙事体、内部编号与模板腔。"
+    "ASR/字幕个别错字不单独判严重。\n"
+    "评分基准：五项全部良好 ≥0.8；一项存在严重问题 ≤0.4；"
+    "两项以上严重问题 ≤0.2；"
+    "**仅因**轻微 Obs 过写或 ASR/字幕错字 → **不应** ≤0.4。"
+    "issues 逐条写明扣分原因。"
+)
+
+
+def _judge_evidence_block(ledger: CoarseEvidenceLedger) -> str:
+    """judge 用视频来源事实清单（核对来源接地；不进入生成 prompt）。"""
+    lines = [
+        "## 视频来源事实（仅供核对来源接地；轨迹文本中不应出现这些编号）",
+        f"working_scope: {ledger.working_scope or '（无）'}",
+        f"given_clues: {ledger.given_clues}",
+        f"candidate_hypotheses(待证，非证据): {ledger.candidate_hypotheses}",
+    ]
+    for fid, quote in ledger.video_fact_claims.items():
+        lines.append(f"- {fid}: {quote}")
+    return "\n".join(lines)
+
+
+def _judge_trajectory(
+    agent_role: AgentRole,
+    thoughts: list[str],
+    units: list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]],
+    *,
+    user_query: str,
+    coarse_output: Optional[LocationHypothesis] = None,
+    fine_output: Optional[SubmitAnswerResult] = None,
+    verifier_output: Optional[VerificationResult] = None,
+    evidence_ledger: Optional[CoarseEvidenceLedger] = None,
+) -> _TrajectoryJudgement:
+    """固定 rubric 的轨迹质量评分（无 groundtruth）。"""
+    lines = [
+        "你是训练数据质量裁判。评估下列图片地理定位 Agent 轨迹。",
+        _JUDGE_RUBRIC,
+        f"agent_role: {agent_role.value}",
+        f"user_query: {user_query}",
+    ]
+    if evidence_ledger is not None:
+        lines.append(_judge_evidence_block(evidence_ledger))
+    lines.append("\n## 轨迹")
+    lines.append(_trajectory_text_block(thoughts, units))
+    if coarse_output is not None:
+        lines.append(f"\nfinal coarse_output: {coarse_output.model_dump_json()}")
+    if fine_output is not None:
+        lines.append(f"\nfinal fine_output: {fine_output.model_dump_json()}")
+    if verifier_output is not None:
+        lines.append(
+            f"\nfinal verifier_output: {verifier_output.model_dump_json()}"
+        )
+    return call_structured("\n".join(lines), _TrajectoryJudgement)
+
+
+def _generate_role_output(
+    agent_role: AgentRole,
+    thoughts: list[str],
+    units: list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]],
+    header_lines: list[str],
+    image_path: str,
+) -> tuple[Optional[LocationHypothesis], Optional[VerificationResult]]:
+    """由完整 TAO 生成角色结构化输出（FINE 从末步 submit_answer 程序化抽取）。"""
+    if agent_role == AgentRole.FINE:
+        return None, None
+    context = "\n".join(
+        [
+            *header_lines,
+            "\n## 完整推理链",
+            _trajectory_text_block(thoughts, units),
+        ]
+    )
     if agent_role == AgentRole.COARSE:
-        mismatches = _detect_thought_action_mismatches(thoughts, units)
-        if mismatches:
-            issues.extend(mismatches)
-            need = True
-        if coarse_output is not None:
-            _fixed, region_issues = _normalize_coarse_regions(coarse_output)
-            # 仅报告；规范化在 reconstruct 路径写回
-            if region_issues:
-                issues.extend(region_issues)
-                need = True
-        try:
-            chain = _check_coarse_reasoning(thoughts, units, coarse_output)
-            if (
-                not chain.identifies_geo_human_features
-                or not chain.narrows_scope_progressively
-                or chain.has_reasoning_gap
-                or not chain.thought_action_aligned
-                or not chain.feature_driven_narrowing
-                or not chain.clues_only_as_auxiliary
-                or not chain.regions_are_administrative_and_consistent
-            ):
-                issues.extend(chain.issues or ["COARSE 递进推理链不合格"])
-                if chain.has_reasoning_gap:
-                    issues.append("存在推理跳步")
-                if not chain.feature_driven_narrowing:
-                    issues.append("收窄未由地理/人文特征驱动")
-                if not chain.clues_only_as_auxiliary:
-                    issues.append("已知线索被用作唯一收窄依据")
-                if not chain.regions_are_administrative_and_consistent:
-                    issues.append("possible_regions 非规范行政区或粒度混用")
-                need = True
-        except Exception as exc:  # noqa: BLE001
-            issues.append(f"COARSE 递进链自检调用失败: {exc}")
-    return need, issues
+        prompt = (
+            "根据下列完整推理链输出 LocationHypothesis。\n"
+            "要求：possible_regions 仅填同层级规范行政区；"
+            "命名自然区域写入 reasoning_summary / key_clues_remaining；"
+            "reasoning_summary 概括「工作范围 → 关键证据 → 排除/收窄 → 候选」；"
+            "不得给出精确 POI 或坐标；不得引入推理链之外的新地点。\n\n"
+            f"{context}"
+        )
+        hyp = call_structured(prompt, LocationHypothesis, images=[image_path])
+        return hyp, None
+    prompt = (
+        "根据下列完整验证推理链输出 VerificationResult"
+        "（把 fine_handoff 当作待验证候选，不得当作已知正确答案）。\n"
+        "verdict 必须与推理链中的核对结果一致；"
+        "fail 时写明 failed_checks 与 suggested_recheck。\n\n"
+        f"{context}"
+    )
+    ver = call_structured(prompt, VerificationResult, images=[image_path])
+    return None, ver
 
 
 def _to_trajectory_steps(
     units: list[tuple[str, Action, ObservationExecutionResult, NormalizedStep]],
     thoughts: list[str],
 ) -> list[TrajectoryStep]:
-    """脚手架 + 改写 Thought → TrajectoryStep；terminal 步 observation 均为 None。"""
-    if len(thoughts) != len(units):
-        raise ValueError(
-            f"thoughts 长度 {len(thoughts)} 与 Action 步数 {len(units)} 不一致"
-        )
+    """脚手架 + 生成 Thought → TrajectoryStep；terminal 步 observation 均为 None。"""
     out: list[TrajectoryStep] = []
-    for thought, ( _draft, action, obs, _step) in zip(thoughts, units, strict=True):
+    for thought, (_draft, action, obs, _step) in zip(thoughts, units, strict=True):
         is_terminal = action.tool == "submit_answer" or obs.status == "skipped"
         out.append(
             TrajectoryStep(
@@ -1030,49 +1572,68 @@ def _collect_pre_answer_narrations(
     return out
 
 
-def _extract_external_hints(
+def _extract_clue_buckets(
     narrations: list[str],
     agent_role: AgentRole,
-) -> list[str]:
-    """从旁白抽取外部给定地名线索；失败则返回空列表。不含 groundtruth。"""
+) -> tuple[list[str], list[str]]:
+    """抽取 given_clues 与 candidate_hypotheses；失败则空。不含 groundtruth。"""
     if not narrations:
-        return []
-    # VERIFIER 主任务是验证候选，一般不需要再注入外部线索
+        return [], []
     if agent_role == AgentRole.VERIFIER:
-        return []
+        return [], []
     joined = "\n".join(f"- {n}" for n in narrations[:40])
     prompt = (
-        "从下列视频旁白片段中，抽取「外部给定、非推理得出」的地名/地区线索"
-        "（例如网友、评论、弹幕、求助者直接给出的河南信阳等）。\n"
+        "从下列视频旁白片段中，分类抽取地名线索（不含真值、不编造）。\n"
+        "A. given_clues：问题设置阶段由网友/评论/求助者**直接给出**的软先验地名"
+        "（尚未进入博主地貌纠错/候选排除推理）。\n"
+        "B. candidate_hypotheses：推理过程中**首次由博主演绎提出**的待证候选"
+        "（如纠正后提出的自然区域/城市），不得当作给定线索。\n"
         "规则：\n"
         "1. 只保留地名短语本身，不要保留「网友说/评论说」等来源话术；\n"
         "2. 排除博主宣布最终答案、揭晓坐标的句子；\n"
-        "3. 排除纯视觉推理描述（无明确给定地名）；\n"
-        "4. 若无可抽线索，hints 为空列表；\n"
-        "5. 不得编造旁白中未出现的地名。\n"
+        "3. 排除纯视觉描述（无明确地名）；\n"
+        "4. 两类互斥；若不确定归入 candidate_hypotheses；\n"
+        "5. 可只填 hints（兼容）：将视为 given_clues。\n"
         f"agent_role: {agent_role.value}\n"
         f"narrations:\n{joined}\n"
     )
     try:
         result = call_structured(prompt, _ExternalHints)
     except Exception:  # noqa: BLE001
-        return []
-    cleaned: list[str] = []
-    seen: set[str] = set()
-    for h in result.hints:
-        text = h.strip()
-        if not text or text in seen:
-            continue
-        # 去掉常见来源套话前缀
-        text = re.sub(
-            r"^(?:网友|粉丝|评论|弹幕|有人)(?:说|提到|给出|告诉)[：:，,\s]*",
-            "",
-            text,
-        ).strip()
-        if text and text not in seen:
-            seen.add(text)
-            cleaned.append(text)
-    return cleaned[:8]
+        return [], []
+
+    def _clean(items: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for h in items:
+            text = h.strip()
+            if not text or text in seen:
+                continue
+            text = re.sub(
+                r"^(?:网友|粉丝|评论|弹幕|有人)(?:说|提到|给出|告诉)[：:，,\s]*",
+                "",
+                text,
+            ).strip()
+            if text and text not in seen:
+                seen.add(text)
+                cleaned.append(text)
+        return cleaned[:8]
+
+    given = _clean(list(result.given_clues) or list(result.hints))
+    cands = _clean(list(result.candidate_hypotheses))
+    # 互斥：候选不得重复进入 given
+    given_set = set(given)
+    cands = [c for c in cands if c not in given_set]
+    return given, cands
+
+
+def _extract_external_hints(
+    narrations: list[str],
+    agent_role: AgentRole,
+) -> list[str]:
+    """兼容旧接口：仅返回 given_clues。"""
+    given, _cands = _extract_clue_buckets(narrations, agent_role)
+    return given
 
 
 def _user_query_for_role(
@@ -1081,14 +1642,21 @@ def _user_query_for_role(
     coarse_handoff: Optional[LocationHypothesis],
     fine_handoff: Optional[SubmitAnswerResult],
     external_hints: Optional[list[str]] = None,
+    working_scope_region: Optional[str] = None,
 ) -> str:
-    """构造 user_query（不含 groundtruth；可含外部给定线索）。"""
+    """构造 user_query（不含 groundtruth；COARSE 仅注入有效拍摄地 working_scope）。"""
+    if agent_role == AgentRole.COARSE:
+        if working_scope_region:
+            from pipeline.evidence_routing import WorkingScope
+
+            return format_working_scope_user_query(
+                WorkingScope(region=working_scope_region)
+            )
+        # 无有效拍摄地工作范围：不注入人物属性等 external_hints
+        return "请根据图像进行粗定位，缩小到可能的国家/地区。"
     hint_suffix = ""
     if external_hints:
         hint_suffix = "\n已知线索：" + "；".join(external_hints)
-
-    if agent_role == AgentRole.COARSE:
-        return "请根据图像进行粗定位，缩小到可能的国家/地区。" + hint_suffix
     if agent_role == AgentRole.FINE:
         hyp = coarse_handoff.model_dump_json() if coarse_handoff else "{}"
         return (
@@ -1110,8 +1678,10 @@ def reconstruct_single_trajectory(
     is_revision: bool = False,
     revision_context: Optional[RevisionContext] = None,
 ) -> Trajectory:
-    """组装 T→A→O，用 LLM 改写为前向推理链。
+    """逐步因果生成 → polish → 轻量硬校验 → judge best-of-k 拒绝采样。
 
+    第 t 步 Thought 只见前 t-1 步完整 T/A/O 与本步 Action（不含本步 Observation）。
+    全部候选低于 STAGE5_JUDGE_THRESHOLD → raise TrajectoryQualityRejected。
     禁止将 groundtruth / 真值地名 / 反向地理编码地址写入 prompt。
     Agent1 → coarse_output=LocationHypothesis
     Agent2 → 最后一步 submit_answer，fine_output=SubmitAnswerResult
@@ -1148,105 +1718,141 @@ def reconstruct_single_trajectory(
             answer_timestamp=answer_timestamp,
         )
 
-    # 外部线索从投影前完整旁白抽取；Agent1 scaffold 使用投影后子集
+    # 外部线索：COARSE 仅用 stage3 VideoChainContext（投影前解析，避免首步被剔除丢失）
     narrations = _collect_pre_answer_narrations(units, answer_timestamp)
+    video_ctx: Optional[VideoChainContext] = None
     if agent_role == AgentRole.COARSE:
+        for draft, _a, _o, _s in units:
+            video_ctx = parse_video_context(draft)
+            if video_ctx is not None:
+                break
+        if video_ctx is None:
+            for step in steps:
+                video_ctx = parse_video_context(step.thought_draft)
+                if video_ctx is not None:
+                    break
         units = _project_coarse_units(units)
+        # 投影后若首步无嵌入，则回写 VideoChainContext，保证 user_query/账本可用
+        if video_ctx is not None and units:
+            d0, a0, o0, s0 = units[0]
+            if parse_video_context(d0) is None:
+                units[0] = (embed_video_context(d0, video_ctx), a0, o0, s0)
 
-    external_hints = _extract_external_hints(narrations, agent_role)
+    given_clues: list[str] = []
+    candidate_hypotheses: list[str] = []
+    working_scope_region: Optional[str] = None
+    if agent_role == AgentRole.COARSE and video_ctx is not None:
+        given_clues = [c.text for c in video_ctx.raw_given_clues]
+        candidate_hypotheses = list(video_ctx.candidate_hypotheses)
+        if video_ctx.working_scope is not None:
+            working_scope_region = video_ctx.working_scope.region
+    elif agent_role != AgentRole.COARSE:
+        given_clues, candidate_hypotheses = _extract_clue_buckets(
+            narrations, agent_role
+        )
+    # COARSE 无 video_ctx 时：不再从全部旁白自由重抽地名
+    external_hints = list(given_clues)
     user_query = _user_query_for_role(
         agent_role,
         coarse_handoff=coarse_handoff,
         fine_handoff=fine_handoff,
-        external_hints=external_hints,
+        external_hints=external_hints if agent_role != AgentRole.COARSE else None,
+        working_scope_region=working_scope_region,
     )
-    prompt = _build_scaffold_prompt(
+    evidence_ledger: Optional[CoarseEvidenceLedger] = None
+    if agent_role == AgentRole.COARSE:
+        evidence_ledger = _build_coarse_evidence_ledger(
+            units,
+            given_clues=given_clues,
+            candidate_hypotheses=candidate_hypotheses,
+        )
+        if (
+            not evidence_ledger.visual_facts
+            and not evidence_ledger.video_fact_claims
+            and len(units) > 0
+            and all(
+                u[2].status in ("empty", "error")
+                or _is_ui_overlay_observation(u[2])
+                for u in units
+            )
+        ):
+            raise ValueError(
+                "COARSE 证据不足：无可用 visual_facts 且无 video_fact_claims"
+                "（UI/empty Observation）。"
+                "通常由 stage3 来源抽取失败后的坏链或 stage4 Obs 全部 empty 引起；"
+                "请检查上游日志后 --force-from stage3 重跑。"
+            )
+    header_lines = _context_header_lines(
         agent_role,
-        units,
         answer_timestamp,
+        user_query=user_query,
         coarse_handoff=coarse_handoff,
         fine_handoff=fine_handoff,
         revision_context=revision_context,
-        user_query=user_query,
     )
 
-    # 角色结构化输出
-    coarse_output: Optional[LocationHypothesis] = None
-    fine_output: Optional[SubmitAnswerResult] = None
-    verifier_output: Optional[VerificationResult] = None
+    settings = get_settings()
+    k = max(1, settings.STAGE5_BEST_OF_K)
+    threshold = settings.STAGE5_JUDGE_THRESHOLD
 
-    if agent_role == AgentRole.COARSE:
-        bundle = call_structured(
-            prompt
-            + "\n\n请输出改写后的 thoughts，以及最终 LocationHypothesis（coarse_output）。"
-            "reasoning_summary 须概括特征→排除/收窄→候选范围；"
-            "possible_regions 仅填同层级规范行政区。",
-            _CoarseOutputBundle,
-            images=[image_path],
+    # FINE 的最终答案由末步 submit_answer 固定给出，仅供 judge 参考
+    fine_preview: Optional[SubmitAnswerResult] = None
+    if agent_role == AgentRole.FINE:
+        try:
+            fine_preview = SubmitAnswerResult.model_validate(units[-1][1].params)
+        except ValidationError:
+            fine_preview = None
+
+    best_score = -1.0
+    best_thoughts: Optional[list[str]] = None
+    best_coarse: Optional[LocationHypothesis] = None
+    best_verifier: Optional[VerificationResult] = None
+    attempts_log: list[str] = []
+
+    for attempt in range(1, k + 1):
+        thoughts = _generate_thoughts_stepwise(
+            agent_role, units, header_lines, image_path
         )
-        thoughts = bundle.thoughts
-        coarse_output = bundle.coarse_output
-        coarse_output, _ = _normalize_coarse_regions(coarse_output)
-        need, issues = _needs_tao_rewrite(
-            thoughts, units, agent_role, coarse_output=coarse_output
+        thoughts = _polish_thoughts(agent_role, thoughts, units)
+        hard_issues = _hard_check_issues(thoughts, units)
+        if hard_issues:
+            attempts_log.append(
+                f"候选{attempt} 硬校验不通过: " + "；".join(hard_issues[:5])
+            )
+            continue
+        cand_coarse, cand_verifier = _generate_role_output(
+            agent_role, thoughts, units, header_lines, image_path
         )
-        if need:
-            issue_txt = "；".join(issues[:5])
-            bundle = call_structured(
-                prompt
-                + f"\n\n上次输出不符合标准地理定位 TAO / 递进推理：{issue_txt}\n"
-                "请重新改写 thoughts（必须符合风格规范与特征主导递进链），"
-                "并给出 LocationHypothesis（regions 仅规范行政区）。",
-                _CoarseOutputBundle,
-                images=[image_path],
-            )
-            thoughts = bundle.thoughts
-            coarse_output = bundle.coarse_output
-            coarse_output, _ = _normalize_coarse_regions(coarse_output)
-            # 重写后再检一次；仍不合格交 stage6（不再无限重试）
-            _need2, _issues2 = _needs_tao_rewrite(
-                thoughts, units, agent_role, coarse_output=coarse_output
-            )
-            _ = _need2, _issues2
-    elif agent_role == AgentRole.FINE:
-        rewritten = call_structured(
-            prompt + "\n\n请仅输出与各 Step 一一对应的改写 thoughts。",
-            _RewrittenTrajectory,
-            images=[image_path],
+        judgement = _judge_trajectory(
+            agent_role,
+            thoughts,
+            units,
+            user_query=user_query,
+            coarse_output=cand_coarse,
+            fine_output=fine_preview,
+            verifier_output=cand_verifier,
+            evidence_ledger=evidence_ledger,
         )
-        thoughts = rewritten.thoughts
-        need, issues = _needs_tao_rewrite(thoughts, units, agent_role)
-        if need:
-            issue_txt = "；".join(issues[:5])
-            rewritten = call_structured(
-                prompt
-                + f"\n\n上次输出不符合标准地理定位 TAO：{issue_txt}\n"
-                "请重新改写 thoughts，必须符合风格规范。",
-                _RewrittenTrajectory,
-                images=[image_path],
-            )
-            thoughts = rewritten.thoughts
-    else:
-        bundle_v = call_structured(
-            prompt
-            + "\n\n请输出改写后的 thoughts，以及 VerificationResult（把 fine_handoff 当候选）。",
-            _VerifierOutputBundle,
-            images=[image_path],
+        attempts_log.append(
+            f"候选{attempt} score={judgement.score:.2f}"
+            + ("：" + "；".join(judgement.issues[:3]) if judgement.issues else "")
         )
-        thoughts = bundle_v.thoughts
-        verifier_output = bundle_v.verifier_output
-        need, issues = _needs_tao_rewrite(thoughts, units, agent_role)
-        if need:
-            issue_txt = "；".join(issues[:5])
-            bundle_v = call_structured(
-                prompt
-                + f"\n\n上次输出不符合标准地理定位 TAO：{issue_txt}\n"
-                "请重新改写 thoughts（必须符合风格规范），并给出 VerificationResult。",
-                _VerifierOutputBundle,
-                images=[image_path],
-            )
-            thoughts = bundle_v.thoughts
-            verifier_output = bundle_v.verifier_output
+        if judgement.score > best_score:
+            best_score = judgement.score
+            best_thoughts = thoughts
+            best_coarse = cand_coarse
+            best_verifier = cand_verifier
+
+    if best_thoughts is None or best_score < threshold:
+        raise TrajectoryQualityRejected(
+            f"{agent_role.value} best-of-{k} 全部候选低于阈值 {threshold}："
+            + " | ".join(attempts_log)
+        )
+
+    thoughts = best_thoughts
+    coarse_output: Optional[LocationHypothesis] = best_coarse
+    fine_output: Optional[SubmitAnswerResult] = None
+    verifier_output: Optional[VerificationResult] = best_verifier
 
     traj_steps = _to_trajectory_steps(units, thoughts)
     if agent_role == AgentRole.FINE:
@@ -1264,6 +1870,10 @@ def reconstruct_single_trajectory(
         revision_source = revision_context.source
         if revision_context.source == RevisionSource.SYSTEM_FEEDBACK:
             revision_input = revision_context.verification_result
+            if agent_role == AgentRole.COARSE:
+                revision_input = sanitize_revision_input_for_coarse_shard(
+                    revision_input
+                )
 
     return Trajectory(
         id=traj_id,
@@ -1282,6 +1892,7 @@ def reconstruct_single_trajectory(
         revision_round=revision_round,
         revision_source=revision_source,
         revision_input=revision_input,
+        stage5_judge_score=best_score,
     )
 
 
@@ -1296,6 +1907,8 @@ def reconstruct_all_trajectories(
     Agent1.coarse_output → Agent2.coarse_handoff
     Agent2.fine_output → Agent3.fine_handoff
     Agent3：若视频侧无任何可展开 Action，则基于 fine_handoff 合成验证脚手架。
+
+    COARSE 拒绝采样失败仍抛出；FINE/VERIFIER 失败则跳过该角色（不阻断 COARSE 入库）。
     """
     required = (AgentRole.COARSE, AgentRole.FINE, AgentRole.VERIFIER)
     for role in required:
@@ -1314,34 +1927,47 @@ def reconstruct_all_trajectories(
     if coarse.coarse_output is None:
         raise ValueError("Agent1 未产出 coarse_output")
 
-    fine = reconstruct_single_trajectory(
-        all_steps[AgentRole.FINE],
-        all_observations[AgentRole.FINE],
-        AgentRole.FINE,
-        answer_timestamp,
-        image_path,
-        coarse_handoff=coarse.coarse_output,
-    )
+    result: dict[AgentRole, Trajectory] = {AgentRole.COARSE: coarse}
+
+    try:
+        fine = reconstruct_single_trajectory(
+            all_steps[AgentRole.FINE],
+            all_observations[AgentRole.FINE],
+            AgentRole.FINE,
+            answer_timestamp,
+            image_path,
+            coarse_handoff=coarse.coarse_output,
+        )
+    except TrajectoryQualityRejected as exc:
+        logger.warning("FINE 轨迹废弃（不阻断 COARSE）: %s", exc)
+        return result
+
     if fine.fine_output is None:
-        raise ValueError("Agent2 未产出 fine_output")
+        logger.warning("Agent2 未产出 fine_output；跳过 FINE/VERIFIER")
+        return result
 
-    verifier = reconstruct_single_trajectory(
-        all_steps[AgentRole.VERIFIER],
-        all_observations[AgentRole.VERIFIER],
-        AgentRole.VERIFIER,
-        answer_timestamp,
-        image_path,
-        coarse_handoff=coarse.coarse_output,
-        fine_handoff=fine.fine_output,
-    )
+    result[AgentRole.FINE] = fine
+
+    try:
+        verifier = reconstruct_single_trajectory(
+            all_steps[AgentRole.VERIFIER],
+            all_observations[AgentRole.VERIFIER],
+            AgentRole.VERIFIER,
+            answer_timestamp,
+            image_path,
+            coarse_handoff=coarse.coarse_output,
+            fine_handoff=fine.fine_output,
+        )
+    except TrajectoryQualityRejected as exc:
+        logger.warning("VERIFIER 轨迹废弃（不阻断 COARSE/FINE）: %s", exc)
+        return result
+
     if verifier.verifier_output is None:
-        raise ValueError("Agent3 未产出 verifier_output")
+        logger.warning("Agent3 未产出 verifier_output；跳过 VERIFIER")
+        return result
 
-    return {
-        AgentRole.COARSE: coarse,
-        AgentRole.FINE: fine,
-        AgentRole.VERIFIER: verifier,
-    }
+    result[AgentRole.VERIFIER] = verifier
+    return result
 
 
 def _steps_overlapping_segment(

@@ -28,8 +28,8 @@ from pipeline.schemas import (
 from pipeline.stage0_preprocess import preprocess
 from pipeline.stage1_parse import detect_screen_actions, extract_keyframes
 from pipeline.stage2_moves import build_all_agent_moves
-from pipeline.stage3_normalize import normalize_to_steps
-from pipeline.stage4_observe import generate_observations
+from pipeline.stage3_normalize import normalize_all_agent_steps, normalize_to_steps
+from pipeline.stage4_observe import generate_observations, pick_agent1_representative_image
 from pipeline.stage5_reconstruct import (
     reconstruct_all_trajectories,
     reconstruct_revision_trajectories,
@@ -245,7 +245,13 @@ def _load_role_list(
 ) -> dict[AgentRole, list[Any]]:
     out: dict[AgentRole, list[Any]] = {}
     for key, items in raw.items():
-        role = AgentRole(key)
+        try:
+            role = AgentRole(key)
+        except ValueError:
+            # 跳过非角色键（如 agent1_image_path）
+            continue
+        if not isinstance(items, list):
+            continue
         out[role] = [model_cls.model_validate(x) for x in items]
     return out
 
@@ -418,7 +424,12 @@ def run_one_video(
 
     # ---- stage3 ----
     stage = "stage3"
-    in_hash = _stable_hash(_serialize_role_map(moves_by_role))
+    in_hash = _stable_hash(
+        {
+            "moves": _serialize_role_map(moves_by_role),
+            "answer_timestamp": preprocess_result.answer_timestamp,
+        }
+    )
     entry3 = _get_stage_entry(manifest, stage)
     out_path3 = inter / _STAGE_OUTPUT_FILES[stage]
     if _should_skip_stage(entry3, in_hash) and out_path3.is_file():
@@ -428,11 +439,21 @@ def run_one_video(
         _invalidate_downstream(manifest, stage, cfg)
         _mark_running(manifest, stage, in_hash, cfg)
         try:
-            fn = hooks.get("normalize_to_steps") or normalize_to_steps
-            steps_by_role = {}
-            for role in (AgentRole.COARSE, AgentRole.FINE, AgentRole.VERIFIER):
-                moves = moves_by_role.get(role) or []
-                steps_by_role[role] = fn(moves, role)
+            # 优先语义重路由；测试 hooks 仍可注入单角色 normalize_to_steps
+            if "normalize_all_agent_steps" in hooks:
+                steps_by_role = hooks["normalize_all_agent_steps"](
+                    moves_by_role, preprocess_result.answer_timestamp
+                )
+            elif "normalize_to_steps" in hooks:
+                fn = hooks["normalize_to_steps"]
+                steps_by_role = {}
+                for role in (AgentRole.COARSE, AgentRole.FINE, AgentRole.VERIFIER):
+                    moves = moves_by_role.get(role) or []
+                    steps_by_role[role] = fn(moves, role)
+            else:
+                steps_by_role = normalize_all_agent_steps(
+                    moves_by_role, preprocess_result.answer_timestamp
+                )
             payload = _serialize_role_map(steps_by_role)
             _dump_json(out_path3, payload)
             _mark_completed(manifest, stage, _stable_hash(payload), cfg)
@@ -442,6 +463,14 @@ def run_one_video(
 
     # ---- stage4 ----
     stage = "stage4"
+    # COARSE 可能吸收原 FINE 时间窗 Move：合并答案前全部 keyframe
+    merged_pre_answer_frames: list[str] = []
+    seen_frames: set[str] = set()
+    for role in (AgentRole.COARSE, AgentRole.FINE):
+        for fp in keyframes_by_role.get(role) or []:
+            if fp not in seen_frames:
+                seen_frames.add(fp)
+                merged_pre_answer_frames.append(fp)
     in_hash = _stable_hash(
         {
             "steps": _serialize_role_map(steps_by_role),
@@ -450,14 +479,16 @@ def run_one_video(
                 r.value: list(keyframes_by_role.get(r) or [])
                 for r in (AgentRole.COARSE, AgentRole.FINE, AgentRole.VERIFIER)
             },
+            "merged_pre_answer_frames": merged_pre_answer_frames,
         }
     )
     entry4 = _get_stage_entry(manifest, stage)
     out_path4 = inter / _STAGE_OUTPUT_FILES[stage]
     if _should_skip_stage(entry4, in_hash) and out_path4.is_file():
-        observations_by_role = _load_role_list(
-            _load_json(out_path4), ObservationExecutionResult
-        )
+        raw4 = _load_json(out_path4)
+        observations_by_role = _load_role_list(raw4, ObservationExecutionResult)
+        if isinstance(raw4.get("agent1_image_path"), str) and raw4["agent1_image_path"]:
+            image_path = raw4["agent1_image_path"]
         logger.info("[%s] skip %s", vid, stage)
     else:
         _invalidate_downstream(manifest, stage, cfg)
@@ -466,14 +497,45 @@ def run_one_video(
             fn = hooks.get("generate_observations") or generate_observations
             observations_by_role = {}
             for role in (AgentRole.COARSE, AgentRole.FINE, AgentRole.VERIFIER):
+                role_frames = list(keyframes_by_role.get(role) or [])
+                if role == AgentRole.COARSE and merged_pre_answer_frames:
+                    role_frames = merged_pre_answer_frames
                 observations_by_role[role] = fn(
                     steps_by_role.get(role) or [],
                     image_path,
                     role,
-                    keyframes=keyframes_by_role.get(role) or [],
+                    keyframes=role_frames,
                 )
-            payload = _serialize_role_map(observations_by_role)
-            _dump_json(out_path4, payload)
+            # Agent1 代表图：替换开场 UI 帧
+            if merged_pre_answer_frames:
+                image_path = pick_agent1_representative_image(
+                    observations_by_role.get(AgentRole.COARSE) or [],
+                    steps_by_role.get(AgentRole.COARSE) or [],
+                    keyframes=merged_pre_answer_frames,
+                    fallback=image_path,
+                )
+            payload = {
+                **_serialize_role_map(observations_by_role),
+                "_meta": {"agent1_image_path": image_path},
+            }
+            # 保持原序列化形态：角色 map；meta 另存
+            _dump_json(
+                out_path4,
+                {
+                    **{
+                        r.value: [
+                            x.model_dump(mode="json")
+                            for x in (observations_by_role.get(r) or [])
+                        ]
+                        for r in (
+                            AgentRole.COARSE,
+                            AgentRole.FINE,
+                            AgentRole.VERIFIER,
+                        )
+                    },
+                    "agent1_image_path": image_path,
+                },
+            )
             _mark_completed(manifest, stage, _stable_hash(payload), cfg)
         except Exception as exc:
             _mark_failed(manifest, stage, str(exc), cfg)

@@ -1,0 +1,12 @@
+{
+  "video_id": "BV1SbeqzoE5y",
+  "query": "上海阳谱大桥",
+  "latitude": 31.2571349,
+  "longitude": 121.5414034,
+  "formatted_address": "杨浦大桥, 内环高架路, 引翔港, 大桥街道, 杨浦区, 上海市, 200082, 中国",
+  "place_type": "bridge",
+  "status": "success",
+  "answer_timestamp": 282.67,
+  "source": "prep_groundtruth+manual_query",
+  "needs_review": true
+}

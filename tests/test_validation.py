@@ -169,6 +169,33 @@ def test_terminal_observation_must_be_none() -> None:
         validate_observation(tool, {"status": "success"})
 
 
+def test_observation_alias_coerce_detect_terrain_style() -> None:
+    """category/position 等近义字段应归一为正式名后通过校验。"""
+    tool = REGISTRY["detect_terrain_features"]
+    ok = validate_observation(
+        tool,
+        {
+            "status": "success",
+            "error_message": None,
+            "detected_features": [
+                {
+                    "category": "河流",
+                    "position": [0.1, 0.2, 0.5, 0.6],
+                    "confidence": 0.9,
+                    "description": "宽阔水面",
+                }
+            ],
+            "summary": "可见河与桥",
+        },
+    )
+    assert ok is not None
+    feat = ok["detected_features"][0]
+    assert feat["feature_category"] == "河流"
+    assert feat["bbox"] == [0.1, 0.2, 0.5, 0.6]
+    assert "category" not in feat
+    assert "position" not in feat
+
+
 def test_f1_seed_map_query_param_obs_names_disjoint() -> None:
     tool = REGISTRY["map_query"]
     param_names = {p.name for p in tool.params}

@@ -18,8 +18,14 @@ cp .env.example .env
 # 按需填写 LLM API Key；测试环境保持 ALLOW_REAL_API=false
 ```
 
-默认 LLM 为**通义千问（DashScope）**：在 `.env` 填写 `DASHSCOPE_API_KEY`，保持 `LLM_PROVIDER=qwen`。  
-申请入口：https://bailian.console.aliyun.com/ → API-KEY。默认模型 `qwen3.7-plus`。
+双通道 LLM（均支持多模态图片）：
+
+| 通道 | 用途 | 默认 |
+|------|------|------|
+| `VLM_*` | stage3 之前（转录 / stage1 屏幕操作） | DashScope `qwen3.7-plus`（填 `DASHSCOPE_API_KEY`） |
+| `LLM_*` | stage3+（normalize / Observation / stage5–6） | Moonshot `kimi-k3`（填 `MOONSHOT_API_KEY`；国内默认 `https://api.moonshot.cn/v1`） |
+
+Kimi 申请：https://platform.kimi.ai/ → API Key。`KIMI_REASONING_EFFORT` 建议 `low`。
 
 **Observation 一律由 LLM 按 `tool_registry.json` 中的 schema 合成**（关键帧 + 该步旁白），不调用真实搜索/地图/OCR 等 Tool API。
 

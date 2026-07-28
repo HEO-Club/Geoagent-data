@@ -1,0 +1,12 @@
+{
+  "video_id": "BV1fKMQzUEQx",
+  "query": "云南勐腊",
+  "latitude": 21.6551382,
+  "longitude": 101.4786177,
+  "formatted_address": "勐腊县, 西双版纳傣族自治州, 云南省, 666300, 中国",
+  "place_type": "administrative",
+  "status": "success",
+  "answer_timestamp": 1391.11,
+  "source": "prep_groundtruth+manual_query",
+  "needs_review": true
+}

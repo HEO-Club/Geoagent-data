@@ -261,6 +261,90 @@ def _check_obs_type(field: ObservationField, value: Any, *, loc: tuple[str, ...]
     _raise_validation(f"未知 observation 类型 {t}", loc=loc)
 
 
+# 通用近义字段：正式名 → 可接受的 LLM 别名（不改变 registry 契约名）
+_OBS_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
+    "feature_category": ("category", "type", "label", "feature_type", "feature"),
+    "feature_name": ("name", "label", "feature", "category"),
+    "bbox": ("position", "location", "box", "bounding_box"),
+    "location_bbox": ("bbox", "position", "location", "box", "bounding_box"),
+    "visual_description": ("description", "desc", "text", "detail"),
+    "description": ("desc", "detail", "note", "text"),
+    "summary": ("overview", "overall", "text", "note"),
+    "confidence": ("score", "prob", "probability"),
+    "matched_features": ("features", "matches", "detected_features"),
+    "detected_features": ("features", "matches", "matched_features"),
+    "overall_match_assessment": ("assessment", "overall_assessment", "match_assessment"),
+    "layout_description": ("description", "summary", "layout"),
+    "image_url": ("url", "tile_url", "image"),
+}
+
+
+def _coerce_object_aliases(
+    raw: dict[str, Any],
+    fields: list[ObservationField],
+) -> dict[str, Any]:
+    """将别名键映射到正式字段名，并消化未知额外键。"""
+    allowed = {f.name for f in fields}
+    out: dict[str, Any] = dict(raw)
+    for field in fields:
+        if field.name in out and out[field.name] is not None:
+            continue
+        for alias in _OBS_FIELD_ALIASES.get(field.name, ()):
+            if alias == field.name:
+                continue
+            if alias in out and out[alias] is not None:
+                out[field.name] = out.pop(alias)
+                break
+
+    sink_name: str | None = None
+    for candidate in ("description", "summary", "visual_description", "note"):
+        if candidate in allowed:
+            sink_name = candidate
+            break
+
+    extras = [k for k in list(out.keys()) if k not in allowed]
+    leftover_bits: list[str] = []
+    for key in extras:
+        val = out.pop(key)
+        if val is None:
+            continue
+        if isinstance(val, (str, int, float, bool)):
+            leftover_bits.append(f"{key}={val}")
+        elif isinstance(val, (list, dict)):
+            leftover_bits.append(f"{key}={val!r}"[:120])
+    if leftover_bits and sink_name is not None:
+        existing = out.get(sink_name)
+        suffix = "; ".join(leftover_bits)
+        if isinstance(existing, str) and existing.strip():
+            out[sink_name] = f"{existing.rstrip()}; {suffix}"
+        elif existing is None or existing == "":
+            out[sink_name] = suffix
+    return out
+
+
+def coerce_observation_aliases(
+    tool: ToolDefinition,
+    observation: dict[str, Any],
+) -> dict[str, Any]:
+    """校验前近义字段归一；不改变 registry 正式 observation_fields 名称。"""
+    top_fields = list(tool.observation_fields)
+    out = _coerce_object_aliases(observation, top_fields)
+    for field in top_fields:
+        if field.type != "result_list" or not field.item_fields:
+            continue
+        items = out.get(field.name)
+        if not isinstance(items, list):
+            continue
+        coerced_items: list[Any] = []
+        for item in items:
+            if isinstance(item, dict):
+                coerced_items.append(_coerce_object_aliases(item, list(field.item_fields)))
+            else:
+                coerced_items.append(item)
+        out[field.name] = coerced_items
+    return out
+
+
 def _check_map_query_observation(observation: dict[str, Any]) -> None:
     status = observation.get("status")
     err = observation.get("error_message")
@@ -310,15 +394,17 @@ def validate_observation(
         _raise_validation("非 terminal Tool 的 observation 不得为 None", loc=("observation",))
 
     assert observation is not None
+    # map_query 旧键 latlng：coerce 前硬拒，避免被别名吞掉
+    if tool.name == "map_query" and "latlng" in observation:
+        _raise_validation(
+            "map_query Observation 不得使用 latlng，须使用 resolved_latlng",
+            loc=("observation", "latlng"),
+        )
+
+    observation = coerce_observation_aliases(tool, observation)
     allowed = {f.name for f in tool.observation_fields}
     extra = set(observation) - allowed
     if extra:
-        # 特别拒绝 map_query 旧键（即使不在 schema 中）
-        if tool.name == "map_query" and "latlng" in extra:
-            _raise_validation(
-                "map_query Observation 不得使用 latlng，须使用 resolved_latlng",
-                loc=("observation", "latlng"),
-            )
         _raise_validation(f"observation 含额外字段: {sorted(extra)}", loc=("observation",))
 
     for field in tool.observation_fields:
@@ -368,4 +454,21 @@ def validate_observation(
             out[field.name] = _normalize_latlng_like(val)
         if val is not None and field.type == "bbox":
             out[field.name] = [float(x) for x in val]
+        if val is not None and field.type == "result_list" and field.item_fields:
+            items = out.get(field.name)
+            if isinstance(items, list):
+                norm_items: list[Any] = []
+                for item in items:
+                    if not isinstance(item, dict):
+                        norm_items.append(item)
+                        continue
+                    item_out = dict(item)
+                    for sub in field.item_fields:
+                        sub_val = item_out.get(sub.name)
+                        if sub_val is not None and sub.type == "bbox":
+                            item_out[sub.name] = [float(x) for x in sub_val]
+                        if sub_val is not None and sub.type in ("latlng", "lat_range"):
+                            item_out[sub.name] = _normalize_latlng_like(sub_val)
+                    norm_items.append(item_out)
+                out[field.name] = norm_items
     return out

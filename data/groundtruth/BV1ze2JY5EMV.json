@@ -1,0 +1,12 @@
+{
+  "video_id": "BV1ze2JY5EMV",
+  "query": "淄博淄川马棚村",
+  "latitude": 36.5980657,
+  "longitude": 117.790314,
+  "formatted_address": "马棚村, 济潍高速, 淄川区, 淄博市, 山东省, 中国",
+  "place_type": "bus_stop",
+  "status": "success",
+  "answer_timestamp": 345.46,
+  "source": "prep_groundtruth+manual_query",
+  "needs_review": true
+}

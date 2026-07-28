@@ -735,6 +735,7 @@
       }
     ],
     "allowed_agents": [
+      "coarse_locator",
       "fine_locator"
     ],
     "is_terminal": false,
@@ -835,6 +836,1292 @@
     "derived_from_existing_tools": [
       "zoom_inspect",
       "overlay_annotation_on_image"
+    ]
+  },
+  {
+    "name": "detect_terrain_features",
+    "description": "检测并识别图像中的地理环境特征（如平原、河流、桥梁、山体等），返回各特征的类别与位置信息，用于纠正地形认知与辅助定位推理。",
+    "params": [
+      {
+        "name": "target_image",
+        "type": "string",
+        "required": true,
+        "description": "待分析的目标图像标识（如老照片路径或URL）。",
+        "example": "old_photo_001.jpg",
+        "default": null,
+        "enum_values": null
+      },
+      {
+        "name": "focus_features",
+        "type": "string_list",
+        "required": false,
+        "description": "需要重点检测的地理特征类别列表，如['平原', '河流', '山体', '桥梁']；为空则检测所有可识别特征。",
+        "example": [
+          "平原",
+          "河流",
+          "山体"
+        ],
+        "default": null,
+        "enum_values": null
+      }
+    ],
+    "observation_fields": [
+      {
+        "name": "status",
+        "type": "string",
+        "nullable": false,
+        "description": "执行状态，如 'success' 或 'error'。",
+        "item_fields": null
+      },
+      {
+        "name": "error_message",
+        "type": "string",
+        "nullable": true,
+        "description": "若执行失败（status='error'），描述错误原因；执行成功时为 null。",
+        "item_fields": null
+      },
+      {
+        "name": "detected_features",
+        "type": "result_list",
+        "nullable": false,
+        "description": "检测到的地理特征列表，每个元素包含特征类别、位置与置信度。",
+        "item_fields": [
+          {
+            "name": "feature_category",
+            "type": "string",
+            "nullable": false,
+            "description": "地理特征类别，如 '平原'、'河流'、'山体'、'桥梁' 等。",
+            "item_fields": null
+          },
+          {
+            "name": "bbox",
+            "type": "bbox",
+            "nullable": true,
+            "description": "该特征在图像中的边界框坐标 [x_min, y_min, x_max, y_max]；当特征无法确定具体空间范围（如全局性特征'平原'）时为 null。",
+            "item_fields": null
+          },
+          {
+            "name": "confidence",
+            "type": "float",
+            "nullable": false,
+            "description": "检测置信度，范围 0.0 到 1.0。",
+            "item_fields": null
+          },
+          {
+            "name": "description",
+            "type": "string",
+            "nullable": true,
+            "description": "对该特征的简要描述或补充说明；当无额外信息可补充时为 null。",
+            "item_fields": null
+          }
+        ]
+      },
+      {
+        "name": "summary",
+        "type": "string",
+        "nullable": false,
+        "description": "对图像整体地理环境的总结性描述。",
+        "item_fields": null
+      }
+    ],
+    "allowed_agents": [
+      "coarse_locator"
+    ],
+    "is_terminal": false,
+    "created_at": "2026-07-22T05:10:33Z",
+    "source_video_timestamp": null,
+    "source_narration": "因此,这里是河面,而农田在这里,对面压根就不是地势起伏的山。",
+    "derived_from_existing_tools": []
+  },
+  {
+    "name": "find_specific_features_in_satellite_map",
+    "description": "在卫星遥感地图中查找并定位与参考图像中一致的特定地物（如雕刻扶手、特定建筑），返回匹配位置与视觉相似度评估，用于精定位阶段的地物匹配验证。",
+    "params": [
+      {
+        "name": "target_satellite_image",
+        "type": "string",
+        "required": true,
+        "description": "待分析的卫星遥感地图图像路径或标识符",
+        "example": "satellite_map_zhengzhou_yellow_river_cultural_park.jpg",
+        "default": null,
+        "enum_values": null
+      },
+      {
+        "name": "reference_features",
+        "type": "string_list",
+        "required": true,
+        "description": "需要在卫星地图中查找的特定地物特征列表（如'雕刻扶手', '特定建筑'）",
+        "example": [
+          "雕刻扶手",
+          "特定建筑"
+        ],
+        "default": null,
+        "enum_values": null
+      },
+      {
+        "name": "search_area_bbox",
+        "type": "bbox",
+        "required": false,
+        "description": "限定搜索区域的边界框坐标（可选，用于缩小搜索范围）",
+        "example": [
+          113.5,
+          34.8,
+          113.6,
+          34.9
+        ],
+        "default": null,
+        "enum_values": null
+      }
+    ],
+    "observation_fields": [
+      {
+        "name": "status",
+        "type": "string",
+        "nullable": false,
+        "description": "执行状态：success/error",
+        "item_fields": null
+      },
+      {
+        "name": "error_message",
+        "type": "string",
+        "nullable": true,
+        "description": "错误信息，仅当 status 为 error 时返回，成功时为 null",
+        "item_fields": null
+      },
+      {
+        "name": "matched_features",
+        "type": "result_list",
+        "nullable": false,
+        "description": "匹配到的地物特征列表",
+        "item_fields": [
+          {
+            "name": "feature_name",
+            "type": "string",
+            "nullable": false,
+            "description": "匹配到的地物特征名称",
+            "item_fields": null
+          },
+          {
+            "name": "location_bbox",
+            "type": "bbox",
+            "nullable": false,
+            "description": "该地物在卫星地图中的边界框坐标",
+            "item_fields": null
+          },
+          {
+            "name": "confidence",
+            "type": "float",
+            "nullable": false,
+            "description": "匹配置信度（0.0-1.0）",
+            "item_fields": null
+          },
+          {
+            "name": "visual_description",
+            "type": "string",
+            "nullable": false,
+            "description": "该地物在卫星地图中的视觉外观与形态特征描述",
+            "item_fields": null
+          }
+        ]
+      },
+      {
+        "name": "overall_match_assessment",
+        "type": "string",
+        "nullable": false,
+        "description": "整体匹配评估结论（如'高度匹配', '部分匹配', '未找到匹配'）",
+        "item_fields": null
+      }
+    ],
+    "allowed_agents": [
+      "coarse_locator",
+      "fine_locator"
+    ],
+    "is_terminal": false,
+    "created_at": "2026-07-23T04:16:31Z",
+    "source_video_timestamp": null,
+    "source_narration": "那么我现在只需要在郑州黄河文化公园里,找到这一幕一样雕刻的扶手时,以及与这里一样的建筑。",
+    "derived_from_existing_tools": [
+      "zoom_inspect",
+      "compare_images_for_geolocation"
+    ]
+  },
+  {
+    "name": "annotate_geographic_environment_on_image",
+    "description": "在老照片或目标图像上标注并纠正正确的地理环境特征（如高地桥、平原、山等），用于强化或纠正地形认知，辅助后续定位推理。",
+    "params": [
+      {
+        "name": "target_image",
+        "type": "string",
+        "required": true,
+        "description": "目标图像（如老照片）的标识符或路径。",
+        "example": "old_photo_001.jpg",
+        "default": null,
+        "enum_values": null
+      },
+      {
+        "name": "geographic_features",
+        "type": "string_list",
+        "required": true,
+        "description": "需要在图像上标注的地理环境特征列表，如'高地桥'、'平原'、'山'等。",
+        "example": [
+          "高地桥",
+          "平原",
+          "山"
+        ],
+        "default": null,
+        "enum_values": null
+      },
+      {
+        "name": "annotation_mode",
+        "type": "string",
+        "required": false,
+        "description": "标注模式，如'纠正'或'强化'。",
+        "example": "纠正",
+        "default": "强化",
+        "enum_values": null
+      }
+    ],
+    "observation_fields": [
+      {
+        "name": "status",
+        "type": "string",
+        "nullable": false,
+        "description": "操作状态，如'success'或'error'。",
+        "item_fields": null
+      },
+      {
+        "name": "error_message",
+        "type": "string",
+        "nullable": true,
+        "description": "如果操作失败，返回错误信息。当status为'success'时为null。",
+        "item_fields": null
+      },
+      {
+        "name": "annotated_image_url",
+        "type": "string",
+        "nullable": true,
+        "description": "标注后的图像URL或标识符，用于后续分析。当操作失败时为null。",
+        "item_fields": null
+      },
+      {
+        "name": "annotated_features",
+        "type": "result_list",
+        "nullable": true,
+        "description": "已标注的地理特征列表，包含特征名称和位置信息。当操作失败时为null。",
+        "item_fields": [
+          {
+            "name": "feature_name",
+            "type": "string",
+            "nullable": false,
+            "description": "地理特征名称，如'高地桥'。",
+            "item_fields": null
+          },
+          {
+            "name": "bbox",
+            "type": "bbox",
+            "nullable": true,
+            "description": "该特征在图像中的边界框。当无法精确定位该特征位置时为null。",
+            "item_fields": null
+          }
+        ]
+      }
+    ],
+    "allowed_agents": [
+      "coarse_locator"
+    ],
+    "is_terminal": false,
+    "created_at": "2026-07-23T06:28:46Z",
+    "source_video_timestamp": null,
+    "source_narration": "正确的地理环境,应该是高地桥,平原,而不是高地,桥,高地。",
+    "derived_from_existing_tools": [
+      "detect_terrain_features",
+      "overlay_annotation_on_image"
+    ]
+  },
+  {
+    "name": "lookup_historical_satellite_map",
+    "description": "查询指定年份和区域的遥感/历史卫星地图，用于对比当前地貌与历史布局，辅助精定位阶段的地形与布局验证。",
+    "params": [
+      {
+        "name": "year",
+        "type": "int",
+        "required": true,
+        "description": "遥感地图的查询年份，用于获取对应年份的历史影像",
+        "example": 2002,
+        "default": null,
+        "enum_values": null
+      },
+      {
+        "name": "query",
+        "type": "string",
+        "required": true,
+        "description": "查询地点或区域描述，如公园名称或城市区域",
+        "example": "郑州黄河文化公园",
+        "default": null,
+        "enum_values": null
+      },
+      {
+        "name": "bbox",
+        "type": "bbox",
+        "required": false,
+        "description": "可选的搜索区域边界框，限定查询范围",
+        "example": [
+          113.5,
+          34.8,
+          113.7,
+          35.0
+        ],
+        "default": null,
+        "enum_values": null
+      }
+    ],
+    "observation_fields": [
+      {
+        "name": "status",
+        "type": "string",
+        "nullable": false,
+        "description": "查询状态，如 success 或 error",
+        "item_fields": null
+      },
+      {
+        "name": "error_message",
+        "type": "string",
+        "nullable": true,
+        "description": "错误信息，当 status 为 error 时填写，成功时为 null",
+        "item_fields": null
+      },
+      {
+        "name": "image_url",
+        "type": "string",
+        "nullable": true,
+        "description": "遥感地图图像链接或引用 ID，当 status 为 success 时返回，失败时为 null",
+        "item_fields": null
+      },
+      {
+        "name": "layout_description",
+        "type": "string",
+        "nullable": true,
+        "description": "地图中观察到的布局描述，当成功获取地图时填写，失败时为 null",
+        "item_fields": null
+      },
+      {
+        "name": "matched_features",
+        "type": "string_list",
+        "nullable": true,
+        "description": "识别到的关键地物或布局特征列表，当成功获取地图时填写，失败时为 null",
+        "item_fields": null
+      }
+    ],
+    "allowed_agents": [
+      "coarse_locator",
+      "fine_locator"
+    ],
+    "is_terminal": false,
+    "created_at": "2026-07-23T06:35:20Z",
+    "source_video_timestamp": null,
+    "source_narration": "由此可以基本确定,这是在郑州黄河文化公园拍的照片了。",
+    "derived_from_existing_tools": [
+      "map_query"
+    ]
+  },
+  {
+    "name": "extract_geolocation_clues_from_chat_records",
+    "description": "从聊天记录、老照片等文本或图像信息中提取与地理定位相关的线索（如拍摄地、地名、关键描述等），用于粗定位阶段发现候选地点。",
+    "params": [
+      {
+        "name": "chat_records",
+        "type": "string_list",
+        "required": true,
+        "description": "聊天记录文本列表，每条记录为一段对话内容",
+        "example": [
+          "这张照片是在许昌拍的",
+          "我记得旁边有个大湖"
+        ],
+        "default": null,
+        "enum_values": null
+      },
+      {
+        "name": "target_image",
+        "type": "string",
+        "required": false,
+        "description": "可选的老照片或目标图像路径，用于辅助提取视觉线索",
+        "example": "/path/to/old_photo.jpg",
+        "default": null,
+        "enum_values": null
+      },
+      {
+        "name": "focus_clues",
+        "type": "string_list",
+        "required": false,
+        "description": "希望重点提取的线索类型（如地名、地标、环境特征等）",
+        "example": [
+          "地名",
+          "地标",
+          "环境特征"
+        ],
+        "default": null,
+        "enum_values": null
+      }
+    ],
+    "observation_fields": [
+      {
+        "name": "status",
+        "type": "string",
+        "nullable": false,
+        "description": "提取状态，如 success/error",
+        "item_fields": null
+      },
+      {
+        "name": "error_message",
+        "type": "string",
+        "nullable": true,
+        "description": "错误信息，当 status 为 error 时填写，否则为 null",
+        "item_fields": null
+      },
+      {
+        "name": "extracted_clues",
+        "type": "result_list",
+        "nullable": false,
+        "description": "提取出的地理线索列表",
+        "item_fields": [
+          {
+            "name": "clue_type",
+            "type": "string",
+            "nullable": false,
+            "description": "线索类型，如 location_name/landmark/environment_feature",
+            "item_fields": null
+          },
+          {
+            "name": "content",
+            "type": "string",
+            "nullable": false,
+            "description": "线索内容描述，如具体地名或特征说明",
+            "item_fields": null
+          },
+          {
+            "name": "source",
+            "type": "string",
+            "nullable": false,
+            "description": "线索来源，如 chat_record/image",
+            "item_fields": null
+          },
+          {
+            "name": "confidence",
+            "type": "float",
+            "nullable": false,
+            "description": "线索置信度，0.0-1.0",
+            "item_fields": null
+          }
+        ]
+      },
+      {
+        "name": "candidate_locations",
+        "type": "string_list",
+        "nullable": false,
+        "description": "根据线索推断的候选地点列表",
+        "item_fields": null
+      }
+    ],
+    "allowed_agents": [
+      "coarse_locator"
+    ],
+    "is_terminal": false,
+    "created_at": "2026-07-23T16:18:30Z",
+    "source_video_timestamp": null,
+    "source_narration": "为了找到这张照片的拍摄地,我足足花了半年的时间。",
+    "derived_from_existing_tools": [
+      "ocr",
+      "zoom_inspect"
+    ]
+  },
+  {
+    "name": "lookup_historical_map_layout",
+    "description": "查询指定年份的历史遥感/卫星地图，查看特定区域的地理布局（如公园、道路、水系等），用于粗定位阶段对比历史地貌与当前图像，辅助候选地点发现。",
+    "params": [
+      {
+        "name": "year",
+        "type": "int",
+        "required": true,
+        "description": "指定要查询的历史遥感地图的年份，如2002",
+        "example": 2002,
+        "default": null,
+        "enum_values": null
+      },
+      {
+        "name": "query",
+        "type": "string",
+        "required": true,
+        "description": "查询关键词，描述要查看的区域或地点名称",
+        "example": "郑州黄河文化公园",
+        "default": null,
+        "enum_values": null
+      },
+      {
+        "name": "purpose",
+        "type": "string",
+        "required": true,
+        "description": "查询用途，用于区分粗定位或精定位阶段的地图查询",
+        "example": "broad_discovery",
+        "default": null,
+        "enum_values": null
+      }
+    ],
+    "observation_fields": [
+      {
+        "name": "status",
+        "type": "string",
+        "nullable": false,
+        "description": "查询状态，success 或 error",
+        "item_fields": null
+      },
+      {
+        "name": "error_message",
+        "type": "string",
+        "nullable": true,
+        "description": "错误信息，当 status 为 error 时填写具体原因，否则为 null",
+        "item_fields": null
+      },
+      {
+        "name": "map_image_url",
+        "type": "string",
+        "nullable": true,
+        "description": "返回的历史地图图像 URL，当查询成功且有图像时返回，否则为 null",
+        "item_fields": null
+      },
+      {
+        "name": "layout_description",
+        "type": "string",
+        "nullable": true,
+        "description": "对地图中地理布局的描述（如公园范围、道路、水系等），当查询成功时返回，否则为 null",
+        "item_fields": null
+      },
+      {
+        "name": "matched_location_name",
+        "type": "string",
+        "nullable": true,
+        "description": "匹配到的地点名称，当成功匹配到具体地点时返回，否则为 null",
+        "item_fields": null
+      },
+      {
+        "name": "bbox",
+        "type": "bbox",
+        "nullable": true,
+        "description": "地图覆盖的边界框 [west, south, east, north]，当查询成功时返回，否则为 null",
+        "item_fields": null
+      }
+    ],
+    "allowed_agents": [
+      "coarse_locator"
+    ],
+    "is_terminal": false,
+    "created_at": "2026-07-24T06:03:00Z",
+    "source_video_timestamp": null,
+    "source_narration": "由此可以基本确定,这是在郑州黄河文化公园拍的照片了。",
+    "derived_from_existing_tools": [
+      "lookup_historical_satellite_map",
+      "web_search"
+    ]
+  },
+  {
+    "name": "analyze_terrain_ambiguity",
+    "description": "分析图像中地形特征的模糊性或视觉误差，识别可能被误判的地理特征（如将河岸误认为山脊、沙滩等），辅助粗定位阶段的地形认知纠正。",
+    "params": [
+      {
+        "name": "target_image",
+        "type": "string",
+        "required": true,
+        "description": "待分析的目标图像（如老照片或截图）",
+        "example": "old_photo.jpg",
+        "default": null,
+        "enum_values": null
+      },
+      {
+        "name": "suspected_features",
+        "type": "string_list",
+        "required": true,
+        "description": "疑似存在视觉误差或模糊性的地理特征列表（如'山脊'、'沙滩'、'河岸'等）",
+        "example": [
+          "山",
+          "沙滩",
+          "河岸"
+        ],
+        "default": null,
+        "enum_values": null
+      },
+      {
+        "name": "analysis_focus",
+        "type": "string_list",
+        "required": false,
+        "description": "分析重点关注的视觉线索或上下文信息（如弹幕描述、地貌走势等）",
+        "example": [
+          "弹幕描述",
+          "地貌走势"
+        ],
+        "default": null,
+        "enum_values": null
+      }
+    ],
+    "observation_fields": [
+      {
+        "name": "status",
+        "type": "string",
+        "nullable": false,
+        "description": "分析状态（success/error）",
+        "item_fields": null
+      },
+      {
+        "name": "error_message",
+        "type": "string",
+        "nullable": true,
+        "description": "错误信息，仅当 status 为 error 时返回，否则为 null",
+        "item_fields": null
+      },
+      {
+        "name": "ambiguous_features",
+        "type": "result_list",
+        "nullable": false,
+        "description": "存在模糊性或视觉误差的地理特征列表",
+        "item_fields": [
+          {
+            "name": "feature_name",
+            "type": "string",
+            "nullable": false,
+            "description": "特征名称（如'山脊'、'沙滩'等）",
+            "item_fields": null
+          },
+          {
+            "name": "likely_misinterpretation",
+            "type": "string",
+            "nullable": false,
+            "description": "可能的误判解释（如'河岸被误认为山脊'）",
+            "item_fields": null
+          },
+          {
+            "name": "confidence",
+            "type": "float",
+            "nullable": false,
+            "description": "误判可能性置信度（0.0-1.0）",
+            "item_fields": null
+          }
+        ]
+      },
+      {
+        "name": "corrected_interpretation",
+        "type": "string",
+        "nullable": true,
+        "description": "纠正后的地形解释（如'实际为河岸而非山脊'），仅当分析成功且存在明确纠正结论时返回，否则为 null",
+        "item_fields": null
+      }
+    ],
+    "allowed_agents": [
+      "coarse_locator"
+    ],
+    "is_terminal": false,
+    "created_at": "2026-07-24T08:09:09Z",
+    "source_video_timestamp": null,
+    "source_narration": "然而,当我结合了黄河沿岸风光,重新分析了一遍后,我渐渐察觉到,这应该只是一段河岸而已,整个河岸的走势,应该是这样的。",
+    "derived_from_existing_tools": [
+      "analyze_terrain_visual_illusion",
+      "detect_terrain_features"
+    ]
+  },
+  {
+    "name": "search_tall_buildings_by_criteria",
+    "description": "根据建筑高度与建成年份等条件搜索符合要求的建筑物，并返回相关结果列表，用于发现符合特定历史与物理特征的目标建筑。",
+    "params": [
+      {
+        "name": "max_year",
+        "type": "int",
+        "required": true,
+        "description": "建筑物建成的最晚年份，例如 2000 表示 2000 年前建成。",
+        "example": 2000,
+        "default": null,
+        "enum_values": null
+      },
+      {
+        "name": "min_height_meters",
+        "type": "float",
+        "required": true,
+        "description": "建筑物最低高度（米），例如 100 表示高度超过 100 米。",
+        "example": 100.0,
+        "default": null,
+        "enum_values": null
+      },
+      {
+        "name": "city_list",
+        "type": "string_list",
+        "required": true,
+        "description": "需要搜索的城市列表，例如 ['北京', '天津']。",
+        "example": [
+          "北京",
+          "天津"
+        ],
+        "default": null,
+        "enum_values": null
+      }
+    ],
+    "observation_fields": [
+      {
+        "name": "status",
+        "type": "string",
+        "nullable": false,
+        "description": "工具执行状态，如 'success' 或 'error'。",
+        "item_fields": null
+      },
+      {
+        "name": "error_message",
+        "type": "string",
+        "nullable": true,
+        "description": "当 status 为 'error' 时返回具体错误原因；成功时为 null。",
+        "item_fields": null
+      },
+      {
+        "name": "results",
+        "type": "result_list",
+        "nullable": false,
+        "description": "符合条件的建筑物列表。",
+        "item_fields": [
+          {
+            "name": "building_name",
+            "type": "string",
+            "nullable": false,
+            "description": "建筑物名称，如 '京广中心'。",
+            "item_fields": null
+          },
+          {
+            "name": "city",
+            "type": "string",
+            "nullable": false,
+            "description": "建筑物所在的城市名称。",
+            "item_fields": null
+          },
+          {
+            "name": "height_meters",
+            "type": "float",
+            "nullable": false,
+            "description": "建筑物的总高度，单位为米。",
+            "item_fields": null
+          },
+          {
+            "name": "built_year",
+            "type": "int",
+            "nullable": false,
+            "description": "建筑物的建成年份，如 1990。",
+            "item_fields": null
+          }
+        ]
+      }
+    ],
+    "allowed_agents": [
+      "coarse_locator"
+    ],
+    "is_terminal": false,
+    "created_at": "2026-07-24T15:45:57Z",
+    "source_video_timestamp": null,
+    "source_narration": "分别是京广中心",
+    "derived_from_existing_tools": [
+      "web_search"
+    ]
+  },
+  {
+    "name": "analyze_shadow_direction_for_geolocation",
+    "description": "分析图像中阴影的指向（如影子朝向右上方），推断拍摄时的太阳方位角或大致时间信息，用于辅助精定位阶段判断拍摄朝向与地理位置。",
+    "params": [
+      {
+        "name": "target_image",
+        "type": "string",
+        "required": true,
+        "description": "待分析的图像路径或标识符",
+        "example": "photo_001.jpg",
+        "default": null,
+        "enum_values": null
+      },
+      {
+        "name": "shadow_direction",
+        "type": "string",
+        "required": true,
+        "description": "图像中阴影的指向描述，如'右上方'、'正下方'等",
+        "example": "右上方",
+        "default": null,
+        "enum_values": null
+      },
+      {
+        "name": "reference_features",
+        "type": "string_list",
+        "required": false,
+        "description": "用于辅助判断阴影方向的参考地物或结构特征列表",
+        "example": [
+          "建筑物边缘",
+          "电线杆",
+          "树木"
+        ],
+        "default": null,
+        "enum_values": null
+      }
+    ],
+    "observation_fields": [
+      {
+        "name": "status",
+        "type": "string",
+        "nullable": false,
+        "description": "分析状态，如'success'或'error'",
+        "item_fields": null
+      },
+      {
+        "name": "error_message",
+        "type": "string",
+        "nullable": true,
+        "description": "若分析失败（如阴影不明显或图像质量差），返回错误信息；成功时为null",
+        "item_fields": null
+      },
+      {
+        "name": "shadow_angle_degrees",
+        "type": "float",
+        "nullable": true,
+        "description": "阴影相对于正北方向的顺时针角度（0-360度）；若无法准确计算阴影角度则为null",
+        "item_fields": null
+      },
+      {
+        "name": "estimated_sun_azimuth_degrees",
+        "type": "float",
+        "nullable": true,
+        "description": "根据阴影方向推算的太阳方位角（与阴影方向相反）；若阴影方向无法确定则为null",
+        "item_fields": null
+      },
+      {
+        "name": "estimated_time_of_day",
+        "type": "string",
+        "nullable": true,
+        "description": "根据太阳方位角粗略估计的拍摄时间段，如'上午'、'下午'、'傍晚'；若无法推断时间则为null",
+        "item_fields": null
+      },
+      {
+        "name": "analysis_notes",
+        "type": "string",
+        "nullable": true,
+        "description": "对阴影分析的补充说明或不确定性描述；若无额外说明则为null",
+        "item_fields": null
+      }
+    ],
+    "allowed_agents": [
+      "fine_locator"
+    ],
+    "is_terminal": false,
+    "created_at": "2026-07-24T16:04:47Z",
+    "source_video_timestamp": null,
+    "source_narration": "找到这个建筑",
+    "derived_from_existing_tools": [
+      "zoom_inspect",
+      "sun_position_calc"
+    ]
+  },
+  {
+    "name": "extract_altitude_from_drone_footage",
+    "description": "从无人机航拍画面中提取高度数值变化信息（如高度跳变、正负转换），并结合画面内容计算或估算实际飞行高度，用于判断飞行器所处空域及地理线索。",
+    "params": [
+      {
+        "name": "video_frame_description",
+        "type": "string",
+        "required": true,
+        "description": "对视频画面中高度数值显示及变化过程的文字描述",
+        "example": "高度数值从 8500m 跳变至 -200m 再回到 9200m",
+        "default": null,
+        "enum_values": null
+      },
+      {
+        "name": "altitude_values",
+        "type": "string_list",
+        "required": true,
+        "description": "画面中识别到的高度数值序列",
+        "example": [
+          "8500m",
+          "-200m",
+          "9200m"
+        ],
+        "default": null,
+        "enum_values": null
+      },
+      {
+        "name": "reference_airspace_info",
+        "type": "string",
+        "required": false,
+        "description": "参考空域信息（如客机航线高度范围）",
+        "example": "客机航线通常在 8000-12000m",
+        "default": null,
+        "enum_values": null
+      }
+    ],
+    "observation_fields": [
+      {
+        "name": "status",
+        "type": "string",
+        "nullable": false,
+        "description": "执行状态，success 或 error",
+        "item_fields": null
+      },
+      {
+        "name": "error_message",
+        "type": "string",
+        "nullable": true,
+        "description": "错误信息，仅当 status 为 error 时填写，说明失败原因；当 status 为 success 时为 null",
+        "item_fields": null
+      },
+      {
+        "name": "altitude_sequence",
+        "type": "result_list",
+        "nullable": false,
+        "description": "提取到的高度数值序列及其含义",
+        "item_fields": [
+          {
+            "name": "raw_value",
+            "type": "string",
+            "nullable": false,
+            "description": "原始识别到的高度数值文本",
+            "item_fields": null
+          },
+          {
+            "name": "parsed_value_meters",
+            "type": "float",
+            "nullable": true,
+            "description": "解析后的高度数值（米），当无法解析数值时填 null",
+            "item_fields": null
+          },
+          {
+            "name": "anomaly_flag",
+            "type": "bool",
+            "nullable": false,
+            "description": "该数值是否为异常跳变值，用于标记数据可靠性",
+            "item_fields": null
+          }
+        ]
+      },
+      {
+        "name": "estimated_actual_altitude_meters",
+        "type": "float",
+        "nullable": true,
+        "description": "估算的实际飞行高度（米），当无法计算或数据异常时填 null",
+        "item_fields": null
+      },
+      {
+        "name": "airspace_risk_assessment",
+        "type": "string",
+        "nullable": true,
+        "description": "空域风险评估结果，当无参考空域信息时填 null",
+        "item_fields": null
+      }
+    ],
+    "allowed_agents": [
+      "coarse_locator"
+    ],
+    "is_terminal": false,
+    "created_at": "2026-07-25T12:32:03Z",
+    "source_video_timestamp": null,
+    "source_narration": "无人机冲破云层,数次闯入近万米高空的客机航线附近,极其危险,这不是电影,而是正在发生的现实。",
+    "derived_from_existing_tools": []
+  },
+  {
+    "name": "estimate_flight_altitude_from_video",
+    "description": "根据无人机航拍视频画面描述与高度数值信息，估算飞行器的实际飞行高度范围，用于判断空域特征与地理线索。",
+    "params": [
+      {
+        "name": "video_frame_description",
+        "type": "string",
+        "required": true,
+        "description": "对视频画面内容的描述，包括地形、地貌、飞行状态等",
+        "example": "无人机航拍显示飞行高度6000-7000米，定位至湖南郴州资兴市青鹅湖附近",
+        "default": null,
+        "enum_values": null
+      },
+      {
+        "name": "altitude_values",
+        "type": "string_list",
+        "required": true,
+        "description": "视频中出现的高度数值列表",
+        "example": [
+          "6000米",
+          "7000米"
+        ],
+        "default": null,
+        "enum_values": null
+      },
+      {
+        "name": "reference_airspace_info",
+        "type": "string",
+        "required": false,
+        "description": "参考空域信息，如地理位置、地形特征等",
+        "example": "湖南郴州资兴市青鹅湖附近",
+        "default": null,
+        "enum_values": null
+      }
+    ],
+    "observation_fields": [
+      {
+        "name": "status",
+        "type": "string",
+        "nullable": false,
+        "description": "估算状态，success/error",
+        "item_fields": null
+      },
+      {
+        "name": "estimated_altitude_range",
+        "type": "string",
+        "nullable": true,
+        "description": "估算的飞行高度范围，如'6000-7000米'，当status为error时为null",
+        "item_fields": null
+      },
+      {
+        "name": "confidence_level",
+        "type": "string",
+        "nullable": true,
+        "description": "估算置信度，high/medium/low，当status为error时为null",
+        "item_fields": null
+      },
+      {
+        "name": "geographic_context",
+        "type": "string",
+        "nullable": true,
+        "description": "相关地理上下文信息，如无法提取时为null，长度10-80字符",
+        "item_fields": null
+      },
+      {
+        "name": "error_message",
+        "type": "string",
+        "nullable": true,
+        "description": "错误信息，当status为success时为null，仅当status为error时填写",
+        "item_fields": null
+      }
+    ],
+    "allowed_agents": [
+      "coarse_locator"
+    ],
+    "is_terminal": false,
+    "created_at": "2026-07-25T12:45:09Z",
+    "source_video_timestamp": null,
+    "source_narration": "此外,也有网友也好奇他怎么还没进去,他居然是这么回复的。",
+    "derived_from_existing_tools": [
+      "extract_altitude_from_drone_footage"
+    ]
+  },
+  {
+    "name": "annotate_shooting_direction_and_landmark_on_satellite_map",
+    "description": "在卫星地图上标注拍摄朝向及特定地标（如依山亭）的地理位置，用于粗定位阶段对比历史地图与当前图像，辅助候选地点发现与地形认知强化。",
+    "params": [
+      {
+        "name": "target_satellite_image",
+        "type": "string",
+        "required": true,
+        "description": "目标卫星地图图像标识符",
+        "example": "satellite_map_2002_jimuge_park",
+        "default": null,
+        "enum_values": null
+      },
+      {
+        "name": "shooting_direction",
+        "type": "string",
+        "required": true,
+        "description": "拍摄朝向描述（如'正北'、'东南'等）",
+        "example": "southwest",
+        "default": null,
+        "enum_values": null
+      },
+      {
+        "name": "landmark_name",
+        "type": "string",
+        "required": true,
+        "description": "需要标注的地标名称（如依山亭、亭子等）",
+        "example": "依山亭",
+        "default": null,
+        "enum_values": null
+      },
+      {
+        "name": "landmark_position_description",
+        "type": "string",
+        "required": true,
+        "description": "地标在图像中的位置描述或相对方位",
+        "example": "位于画面中央偏左的山坡上",
+        "default": null,
+        "enum_values": null
+      },
+      {
+        "name": "year",
+        "type": "int",
+        "required": false,
+        "description": "卫星地图对应的年份（用于历史地图对比）",
+        "example": 2002,
+        "default": null,
+        "enum_values": null
+      }
+    ],
+    "observation_fields": [
+      {
+        "name": "status",
+        "type": "string",
+        "nullable": false,
+        "description": "标注操作的状态（success/error）",
+        "item_fields": null
+      },
+      {
+        "name": "error_message",
+        "type": "string",
+        "nullable": true,
+        "description": "错误信息，当status为error时返回具体的错误原因，当status为success时为null",
+        "item_fields": null
+      },
+      {
+        "name": "annotated_image_url",
+        "type": "string",
+        "nullable": false,
+        "description": "标注后的卫星地图图像URL或标识符",
+        "item_fields": null
+      },
+      {
+        "name": "shooting_direction_annotated",
+        "type": "string",
+        "nullable": false,
+        "description": "实际标注的拍摄朝向信息",
+        "item_fields": null
+      },
+      {
+        "name": "landmark_annotated",
+        "type": "string",
+        "nullable": false,
+        "description": "实际标注的地标名称信息",
+        "item_fields": null
+      },
+      {
+        "name": "landmark_position_on_image",
+        "type": "bbox",
+        "nullable": true,
+        "description": "地标在图像中的大致边界框位置，当无法精确定位时为null",
+        "item_fields": null
+      }
+    ],
+    "allowed_agents": [
+      "coarse_locator"
+    ],
+    "is_terminal": false,
+    "created_at": "2026-07-26T15:08:12Z",
+    "source_video_timestamp": null,
+    "source_narration": "然而打开最早零二年的摇杆地图可见,公园里最热门的拍照,打卡地吉木格,其拍摄一侧,并没有圆拱屋顶建筑。",
+    "derived_from_existing_tools": [
+      "calculate_shooting_direction_and_landmark_position",
+      "lookup_historical_satellite_map"
+    ]
+  },
+  {
+    "name": "identify_bridge_and_river_terrain_features",
+    "description": "根据叙述和卫星地图画面，识别并定位特定地理特征（如黄河、京广铁路桥、邙山、高地、平原等），用于纠正地形认知并辅助粗定位推理。",
+    "params": [
+      {
+        "name": "target_satellite_image",
+        "type": "string",
+        "required": true,
+        "description": "目标卫星地图图像标识符或描述。",
+        "example": "satellite_map_zhengzhou_yellow_river",
+        "default": null,
+        "enum_values": null
+      },
+      {
+        "name": "narration_context",
+        "type": "string",
+        "required": true,
+        "description": "与图像相关的叙述文本，包含需要识别的地理特征线索（如'河岸边'、'高地'、'桥'、'平原'、'京广铁路桥'、'邙山'）。",
+        "example": "然而应该是这样的，是河岸边罢了。高地、桥、平原。横跨黄河的桥梁并不多，是位于邙山旁的京广铁路桥",
+        "default": null,
+        "enum_values": null
+      },
+      {
+        "name": "focus_features",
+        "type": "string_list",
+        "required": false,
+        "description": "需要重点关注的地理特征列表，如['黄河', '京广铁路桥', '邙山', '高地', '平原']。",
+        "example": [
+          "黄河",
+          "京广铁路桥",
+          "邙山",
+          "高地",
+          "平原"
+        ],
+        "default": null,
+        "enum_values": null
+      }
+    ],
+    "observation_fields": [
+      {
+        "name": "status",
+        "type": "string",
+        "nullable": false,
+        "description": "执行状态，如 'success' 或 'error'。",
+        "item_fields": null
+      },
+      {
+        "name": "error_message",
+        "type": "string",
+        "nullable": true,
+        "description": "如果状态为 error，则包含错误信息；当状态为 success 时为 null。",
+        "item_fields": null
+      },
+      {
+        "name": "identified_features",
+        "type": "result_list",
+        "nullable": false,
+        "description": "识别出的地理特征列表。",
+        "item_fields": [
+          {
+            "name": "feature_name",
+            "type": "string",
+            "nullable": false,
+            "description": "地理特征名称，如 '京广铁路桥', '黄河', '邙山'。",
+            "item_fields": null
+          },
+          {
+            "name": "feature_type",
+            "type": "string",
+            "nullable": false,
+            "description": "地理特征类型，如 'bridge', 'river', 'mountain', 'highland', 'plain'。",
+            "item_fields": null
+          },
+          {
+            "name": "bbox",
+            "type": "bbox",
+            "nullable": true,
+            "description": "该特征在图像中的边界框坐标 [x_min, y_min, x_max, y_max]；当特征无法精确定位或为全局性特征（如整条河流）时为 null。",
+            "item_fields": null
+          },
+          {
+            "name": "confidence",
+            "type": "float",
+            "nullable": false,
+            "description": "识别该特征的置信度，0.0 到 1.0 之间。",
+            "item_fields": null
+          },
+          {
+            "name": "description",
+            "type": "string",
+            "nullable": true,
+            "description": "对该特征的简要描述或与叙述的关联说明；当无额外描述信息时为 null。",
+            "item_fields": null
+          }
+        ]
+      },
+      {
+        "name": "terrain_cognition_correction",
+        "type": "string",
+        "nullable": true,
+        "description": "基于识别结果对地形认知的纠正或强化说明，例如确认了河流与桥梁的相对位置关系；当无需纠正或无额外认知信息时为 null。",
+        "item_fields": null
+      }
+    ],
+    "allowed_agents": [
+      "coarse_locator"
+    ],
+    "is_terminal": false,
+    "created_at": "2026-07-27T08:17:57Z",
+    "source_video_timestamp": null,
+    "source_narration": "然而应该是这样的，是河岸边罢了。高地、桥、平原。横跨黄河的桥梁并不多，是位于邙山旁的京广铁路桥",
+    "derived_from_existing_tools": [
+      "detect_terrain_features",
+      "annotate_geographic_environment_on_image"
     ]
   }
 ]

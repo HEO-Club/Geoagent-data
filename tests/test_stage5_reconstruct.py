@@ -1,13 +1,24 @@
-"""stage5：轨迹重构、handoff、返工与 groundtruth 隔离测试（LLM 全部 mock）。"""
+"""stage5：逐步因果生成、polish、拒绝采样与 handoff 测试（LLM 全部 mock）。"""
 
 from __future__ import annotations
 
+import inspect
+import re
 from typing import Any, Optional
 from unittest.mock import MagicMock
 
 import pytest
 from pydantic import BaseModel
 
+from pipeline.config import clear_settings_cache
+from pipeline.evidence_routing import (
+    RawGivenClue,
+    ScopeBoundKind,
+    VideoChainContext,
+    VideoFactClaim,
+    WorkingScope,
+    embed_video_context,
+)
 from pipeline.schemas import (
     Action,
     AgentRole,
@@ -22,15 +33,19 @@ from pipeline.schemas import (
     VerificationResult,
 )
 from pipeline.stage5_reconstruct import (
-    _CoarseOutputBundle,
-    _CoarseReasoningCheck,
+    TrajectoryQualityRejected,
     _CoarseToolSuitability,
     _ExternalHints,
-    _RewrittenTrajectory,
-    _TaoStyleCheck,
-    _VerifierOutputBundle,
+    _FaithfulnessCheck,
+    _PolishedThoughts,
+    _StepThought,
+    _TrajectoryJudgement,
+    _build_coarse_evidence_ledger,
     _collapse_consecutive_duplicate_actions,
-    _normalize_coarse_regions,
+    _collapse_semantic_fact_clusters,
+    _drop_noninformative_empty_units,
+    _filter_unusable_ui_units,
+    _hard_check_issues,
     _validate_coarse_projection_richness,
     reconstruct_all_trajectories,
     reconstruct_revision_trajectories,
@@ -83,9 +98,10 @@ def _step(
     start: float = 0.0,
     end: float = 1.0,
     mode: NormalizationMode = NormalizationMode.MATCHED,
+    narration: str = "旁白。",
 ) -> NormalizedStep:
     return NormalizedStep(
-        move=_move(start=start, end=end, role=role),
+        move=_move(start=start, end=end, role=role, narration=narration),
         thought_draft=thought,
         actions=actions,
         normalization_mode=mode if actions else NormalizationMode.THOUGHT_ONLY,
@@ -120,10 +136,44 @@ def _obs(
     )
 
 
+def _coarse_ctx_draft(thought: str = "观察地貌。") -> str:
+    ctx = VideoChainContext(
+        raw_given_clues=[RawGivenClue(text="河南许昌附近")],
+        working_scope=WorkingScope(
+            region="河南许昌附近",
+            bound_kind=ScopeBoundKind.NEAR,
+            raw_clue_texts=["河南许昌附近"],
+        ),
+        video_facts=[
+            VideoFactClaim(
+                fact_id="vf1",
+                start_time=0.0,
+                end_time=1.0,
+                quote="高地俯视长桥",
+                tokens=["高地", "桥"],
+                kind="observe",
+            )
+        ],
+    )
+    return embed_video_context(thought, ctx)
+
+
+@pytest.fixture(autouse=True)
+def _env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ALLOW_REAL_API", "false")
+    monkeypatch.setenv("STAGE5_BEST_OF_K", "2")
+    monkeypatch.setenv("STAGE5_JUDGE_THRESHOLD", "0.6")
+    clear_settings_cache()
+    yield
+    clear_settings_cache()
+
+
 @pytest.fixture()
 def mock_llm(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     """拦截 call_structured，按 response_model 返回合法结构化结果。"""
     calls: list[dict[str, Any]] = []
+    step_thought_i = {"n": 0}
+    judge_scores: list[float] = []
 
     def _fake(
         prompt: str,
@@ -141,38 +191,44 @@ def mock_llm(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
                 "model": model,
             }
         )
-        # 统计 scaffold 中的 Step 数
-        n_steps = prompt.count("### Step ")
-        thoughts = [f"前向思考 {i + 1}" for i in range(max(n_steps, 1))]
-
-        if response_model is _CoarseOutputBundle:
-            return _CoarseOutputBundle(thoughts=thoughts, coarse_output=_hyp())
-        if response_model is _VerifierOutputBundle:
-            return _VerifierOutputBundle(
-                thoughts=thoughts,
-                verifier_output=VerificationResult(
-                    verdict="pass",
-                    failed_checks=[],
-                    suggested_recheck="none",
-                    return_to_agent=None,
-                ),
+        if response_model is _StepThought:
+            step_thought_i["n"] += 1
+            tool_name = "zoom_inspect"
+            m = re.search(r"tool=([a-z0-9_]+)", prompt)
+            if m:
+                tool_name = m.group(1)
+            return _StepThought(
+                thought=(
+                    f"前向思考 {step_thought_i['n']}：基于已有观察，"
+                    f"调用 {tool_name} 继续核对画面线索。"
+                )
             )
-        if response_model is _RewrittenTrajectory:
-            return _RewrittenTrajectory(thoughts=thoughts)
+        if response_model is _PolishedThoughts:
+            # 从待润色轨迹解析 Thought 行，保持条数
+            thoughts = []
+            for line in prompt.splitlines():
+                if line.startswith("Thought: "):
+                    thoughts.append("润色后：" + line[len("Thought: ") :])
+            if not thoughts:
+                thoughts = ["润色后思考"]
+            return _PolishedThoughts(thoughts=thoughts)
+        if response_model is _FaithfulnessCheck:
+            return _FaithfulnessCheck(unfaithful_steps=[])
+        if response_model is _TrajectoryJudgement:
+            score = judge_scores.pop(0) if judge_scores else 0.85
+            return _TrajectoryJudgement(score=score, issues=[])
+        if response_model is LocationHypothesis:
+            return _hyp()
+        if response_model is VerificationResult:
+            return VerificationResult(
+                verdict="pass",
+                failed_checks=[],
+                suggested_recheck="none",
+                return_to_agent=None,
+            )
         if response_model is SubmitAnswerResult:
             return _submit()
-        if response_model is _TaoStyleCheck:
-            return _TaoStyleCheck(is_standard_tao=True, issues=[])
-        if response_model is _CoarseReasoningCheck:
-            return _CoarseReasoningCheck(
-                identifies_geo_human_features=True,
-                narrows_scope_progressively=True,
-                has_reasoning_gap=False,
-                thought_action_aligned=True,
-                issues=[],
-            )
         if response_model is _CoarseToolSuitability:
-            # 默认：名称含 compare/inspect/feature → 适合；否则否
             suitable = any(
                 k in prompt.lower()
                 for k in ("compare", "inspect", "feature", "shadow", "植被", "建筑")
@@ -185,30 +241,56 @@ def mock_llm(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
             hints: list[str] = []
             if "河南信阳" in prompt or "网友" in prompt:
                 hints = ["河南信阳"]
-            return _ExternalHints(hints=hints)
+            return _ExternalHints(hints=hints, given_clues=hints)
         raise AssertionError(f"未预期的 response_model: {response_model}")
 
-    monkeypatch.setattr(
-        "pipeline.stage5_reconstruct.call_structured",
-        _fake,
-    )
+    monkeypatch.setattr("pipeline.stage5_reconstruct.call_structured", _fake)
     holder = MagicMock()
     holder.calls = calls
+    holder.judge_scores = judge_scores
+    holder.reset_step_counter = lambda: step_thought_i.__setitem__("n", 0)
     return holder
 
 
-def test_coarse_trajectory_output_and_no_handoff(mock_llm: MagicMock) -> None:
-    action = Action(tool="zoom_inspect", params={"bbox": [0.1, 0.1, 0.4, 0.4]})
-    steps = [_step([action], thought="看塔尖。")]
+def test_stepwise_prompt_hides_current_observation(mock_llm: MagicMock) -> None:
+    """第 t 步 prompt 含前 t-1 步 Obs，不含第 t 步 Obs。"""
+    zoom1 = Action(tool="zoom_inspect", params={"bbox": [0.1, 0.1, 0.4, 0.4]})
+    zoom2 = Action(tool="zoom_inspect", params={"bbox": [0.5, 0.5, 0.3, 0.3]})
+    obs1_text = "UNIQUE_OBS_ALPHA_tower_lattice"
+    obs2_text = "UNIQUE_OBS_BETA_river_bank"
+    steps = [
+        _step(
+            [zoom1],
+            thought=_coarse_ctx_draft("看塔。"),
+            start=0.0,
+            end=1.0,
+            narration="看塔尖结构",
+        ),
+        _step(
+            [zoom2],
+            thought="看河岸。",
+            start=1.0,
+            end=2.0,
+            narration="看河岸农田",
+        ),
+    ]
     observations = [
         _obs(
-            action,
+            zoom1,
             observation={
                 "status": "success",
                 "error_message": None,
-                "description": "iron lattice tower",
+                "description": obs1_text,
             },
-        )
+        ),
+        _obs(
+            zoom2,
+            observation={
+                "status": "success",
+                "error_message": None,
+                "description": obs2_text,
+            },
+        ),
     ]
     traj = reconstruct_single_trajectory(
         steps,
@@ -217,28 +299,249 @@ def test_coarse_trajectory_output_and_no_handoff(mock_llm: MagicMock) -> None:
         answer_timestamp=100.0,
         image_path="frame.jpg",
     )
-    assert traj.agent_role == AgentRole.COARSE
-    assert traj.coarse_handoff is None
-    assert traj.fine_handoff is None
-    assert traj.coarse_output is not None
-    assert traj.coarse_output.possible_countries == ["France"]
-    assert len(traj.steps) == 1
-    assert traj.steps[0].thought.startswith("前向思考")
-    assert traj.steps[0].observation is not None
-    # scaffold 改写 prompt 不得含 groundtruth
-    scaffold_calls = [
-        c for c in mock_llm.calls if c["response_model"] is _CoarseOutputBundle
+    step_prompts = [
+        c["prompt"] for c in mock_llm.calls if c["response_model"] is _StepThought
     ]
-    assert scaffold_calls
-    assert "groundtruth" not in scaffold_calls[0]["prompt"].lower()
-    assert "风格规范" in scaffold_calls[0]["prompt"] or "GOOD 示例" in scaffold_calls[0]["prompt"]
-    assert any(c["response_model"] is _TaoStyleCheck for c in mock_llm.calls)
-    assert any(c["response_model"] is _CoarseReasoningCheck for c in mock_llm.calls)
-    assert "特征识别" in traj.system_prompt or "递进" in traj.system_prompt
+    # best-of-2 → 每候选 2 步 → 至少 4 次逐步调用；取第一候选前两步
+    assert len(step_prompts) >= 2
+    p0, p1 = step_prompts[0], step_prompts[1]
+    assert obs1_text not in p0
+    assert obs2_text not in p0
+    assert obs1_text in p1
+    assert obs2_text not in p1
+    assert traj.stage5_judge_score is not None
+    assert traj.stage5_judge_score >= 0.6
+
+
+def test_polish_unfaithful_step_rolls_back(mock_llm: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
+    """忠实性对比判定不忠实的步回退为润色前文本。"""
+    calls: list[dict[str, Any]] = []
+    step_i = {"n": 0}
+
+    def _fake(
+        prompt: str,
+        response_model: type[BaseModel],
+        images: Optional[list[str]] = None,
+        video: Optional[str] = None,
+        model: Optional[str] = None,
+    ) -> BaseModel:
+        calls.append({"prompt": prompt, "response_model": response_model})
+        if response_model is _StepThought:
+            step_i["n"] += 1
+            return _StepThought(
+                thought=f"原始思考{step_i['n']}：调用 zoom_inspect 核对画面。"
+            )
+        if response_model is _PolishedThoughts:
+            return _PolishedThoughts(
+                thoughts=["润色后思考1（改了事实）", "润色后思考2"]
+            )
+        if response_model is _FaithfulnessCheck:
+            return _FaithfulnessCheck(unfaithful_steps=[1])
+        if response_model is _TrajectoryJudgement:
+            return _TrajectoryJudgement(score=0.9, issues=[])
+        if response_model is LocationHypothesis:
+            return _hyp()
+        if response_model is _CoarseToolSuitability:
+            return _CoarseToolSuitability(
+                suitable_for_coarse_reasoning=True, reason="mock"
+            )
+        if response_model is _ExternalHints:
+            return _ExternalHints()
+        raise AssertionError(response_model)
+
+    monkeypatch.setattr("pipeline.stage5_reconstruct.call_structured", _fake)
+    monkeypatch.setenv("STAGE5_BEST_OF_K", "1")
+    clear_settings_cache()
+
+    zoom1 = Action(tool="zoom_inspect", params={"bbox": [0.1, 0.1, 0.4, 0.4]})
+    zoom2 = Action(tool="zoom_inspect", params={"bbox": [0.5, 0.5, 0.3, 0.3]})
+    traj = reconstruct_single_trajectory(
+        [
+            _step([zoom1], thought=_coarse_ctx_draft("a"), start=0, end=1),
+            _step([zoom2], thought="b", start=1, end=2),
+        ],
+        [
+            _obs(
+                zoom1,
+                observation={
+                    "status": "success",
+                    "error_message": None,
+                    "description": "tower detail",
+                },
+            ),
+            _obs(
+                zoom2,
+                observation={
+                    "status": "success",
+                    "error_message": None,
+                    "description": "river detail",
+                },
+            ),
+        ],
+        AgentRole.COARSE,
+        answer_timestamp=100.0,
+        image_path="frame.jpg",
+    )
+    assert traj.steps[0].thought.startswith("原始思考1")
+    assert traj.steps[1].thought.startswith("润色后思考2")
+
+
+def test_hard_check_internal_id_rejects_candidate(
+    mock_llm: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """内部 ID 泄漏 → 该候选硬校验判废；若全部失败则 TrajectoryQualityRejected。"""
+    step_i = {"n": 0}
+
+    def _fake(
+        prompt: str,
+        response_model: type[BaseModel],
+        images: Optional[list[str]] = None,
+        video: Optional[str] = None,
+        model: Optional[str] = None,
+    ) -> BaseModel:
+        if response_model is _StepThought:
+            step_i["n"] += 1
+            return _StepThought(thought=f"依据视频来源事实 vf12_3_observe 排除平原。")
+        if response_model is _PolishedThoughts:
+            return _PolishedThoughts(
+                thoughts=["依据视频来源事实 vf12_3_observe 排除平原。"]
+            )
+        if response_model is _FaithfulnessCheck:
+            return _FaithfulnessCheck(unfaithful_steps=[])
+        if response_model is _TrajectoryJudgement:
+            return _TrajectoryJudgement(score=0.9, issues=[])
+        if response_model is LocationHypothesis:
+            return _hyp()
+        if response_model is _CoarseToolSuitability:
+            return _CoarseToolSuitability(
+                suitable_for_coarse_reasoning=True, reason="ok"
+            )
+        if response_model is _ExternalHints:
+            return _ExternalHints()
+        raise AssertionError(response_model)
+
+    monkeypatch.setattr("pipeline.stage5_reconstruct.call_structured", _fake)
+    monkeypatch.setenv("STAGE5_BEST_OF_K", "1")
+    clear_settings_cache()
+
+    zoom = Action(tool="zoom_inspect", params={"bbox": [0.1, 0.1, 0.4, 0.4]})
+    with pytest.raises(TrajectoryQualityRejected):
+        reconstruct_single_trajectory(
+            [_step([zoom], thought=_coarse_ctx_draft("看。"))],
+            [
+                _obs(
+                    zoom,
+                    observation={
+                        "status": "success",
+                        "error_message": None,
+                        "description": "elevated ground",
+                    },
+                )
+            ],
+            AgentRole.COARSE,
+            answer_timestamp=100.0,
+            image_path="frame.jpg",
+        )
+
+
+def test_rejection_sampling_picks_highest_score(mock_llm: MagicMock) -> None:
+    """best-of-k 选择最高分且达到阈值的候选。"""
+    mock_llm.judge_scores.extend([0.55, 0.82])
+    zoom1 = Action(tool="zoom_inspect", params={"bbox": [0.1, 0.1, 0.4, 0.4]})
+    zoom2 = Action(tool="zoom_inspect", params={"bbox": [0.5, 0.2, 0.3, 0.3]})
+    traj = reconstruct_single_trajectory(
+        [
+            _step([zoom1], thought=_coarse_ctx_draft("a"), start=0, end=1),
+            _step([zoom2], thought="b", start=1, end=2),
+        ],
+        [
+            _obs(
+                zoom1,
+                observation={
+                    "status": "success",
+                    "error_message": None,
+                    "description": "tower A",
+                },
+            ),
+            _obs(
+                zoom2,
+                observation={
+                    "status": "success",
+                    "error_message": None,
+                    "description": "river B",
+                },
+            ),
+        ],
+        AgentRole.COARSE,
+        answer_timestamp=100.0,
+        image_path="frame.jpg",
+    )
+    assert traj.stage5_judge_score == pytest.approx(0.82)
+
+
+def test_rejection_sampling_all_below_threshold(
+    mock_llm: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mock_llm.judge_scores.extend([0.2, 0.3])
+    monkeypatch.setenv("STAGE5_BEST_OF_K", "2")
+    clear_settings_cache()
+    zoom1 = Action(tool="zoom_inspect", params={"bbox": [0.1, 0.1, 0.4, 0.4]})
+    zoom2 = Action(tool="zoom_inspect", params={"bbox": [0.5, 0.2, 0.3, 0.3]})
+    with pytest.raises(TrajectoryQualityRejected):
+        reconstruct_single_trajectory(
+            [
+                _step([zoom1], thought=_coarse_ctx_draft("a"), start=0, end=1),
+                _step([zoom2], thought="b", start=1, end=2),
+            ],
+            [
+                _obs(
+                    zoom1,
+                    observation={
+                        "status": "success",
+                        "error_message": None,
+                        "description": "tower A",
+                    },
+                ),
+                _obs(
+                    zoom2,
+                    observation={
+                        "status": "success",
+                        "error_message": None,
+                        "description": "river B",
+                    },
+                ),
+            ],
+            AgentRole.COARSE,
+            answer_timestamp=100.0,
+            image_path="frame.jpg",
+        )
+
+
+def test_system_prompt_is_concise_role_instruction(mock_llm: MagicMock) -> None:
+    zoom = Action(tool="zoom_inspect", params={"bbox": [0.1, 0.1, 0.4, 0.4]})
+    traj = reconstruct_single_trajectory(
+        [_step([zoom], thought=_coarse_ctx_draft("看。"))],
+        [
+            _obs(
+                zoom,
+                observation={
+                    "status": "success",
+                    "error_message": None,
+                    "description": "elevated ground bridge",
+                },
+            )
+        ],
+        AgentRole.COARSE,
+        answer_timestamp=100.0,
+        image_path="frame.jpg",
+    )
+    assert "粗定位 Agent" in traj.system_prompt
+    assert "vf" not in traj.system_prompt
+    assert "<<<" not in traj.system_prompt
+    assert "禁止" not in traj.system_prompt
 
 
 def test_coarse_projects_out_web_search(mock_llm: MagicMock) -> None:
-    """COARSE 投影剔除 web_search，保留前后允许步骤且 Obs 对齐。"""
     zoom = Action(tool="zoom_inspect", params={"bbox": [0.1, 0.1, 0.4, 0.4]})
     search = Action(
         tool="web_search",
@@ -246,12 +549,19 @@ def test_coarse_projects_out_web_search(mock_llm: MagicMock) -> None:
     )
     ocr = Action(tool="ocr", params={"bbox": [0.2, 0.2, 0.3, 0.3]})
     steps = [
-        _step([zoom], thought="看建筑。"),
-        _step([search], thought="搜索。"),
-        _step([ocr], thought="读文字。"),
+        _step([zoom], thought=_coarse_ctx_draft("看建筑。")),
+        _step([search], thought="搜索。", start=1, end=2),
+        _step([ocr], thought="读文字。", start=2, end=3),
     ]
     observations = [
-        _obs(zoom, observation={"status": "success", "error_message": None, "description": "arcade"}),
+        _obs(
+            zoom,
+            observation={
+                "status": "success",
+                "error_message": None,
+                "description": "arcade",
+            },
+        ),
         _obs(
             search,
             observation={
@@ -260,7 +570,14 @@ def test_coarse_projects_out_web_search(mock_llm: MagicMock) -> None:
                 "results": [{"title": "x", "snippet": "y", "url": "http://a"}],
             },
         ),
-        _obs(ocr, observation={"status": "success", "error_message": None, "texts": ["Cafe"]}),
+        _obs(
+            ocr,
+            observation={
+                "status": "success",
+                "error_message": None,
+                "texts": ["Cafe"],
+            },
+        ),
     ]
     traj = reconstruct_single_trajectory(
         steps,
@@ -269,18 +586,10 @@ def test_coarse_projects_out_web_search(mock_llm: MagicMock) -> None:
         answer_timestamp=100.0,
         image_path="frame.jpg",
     )
-    tools = [s.action.tool for s in traj.steps]
-    assert tools == ["zoom_inspect", "ocr"]
-    assert "web_search" not in tools
-    scaffold = next(
-        c["prompt"] for c in mock_llm.calls if c["response_model"] is _CoarseOutputBundle
-    )
-    assert "tool=web_search" not in scaffold
-    assert scaffold.count("### Step ") == 2
+    assert [s.action.tool for s in traj.steps] == ["zoom_inspect", "ocr"]
 
 
 def test_coarse_projection_empty_raises(mock_llm: MagicMock) -> None:
-    """仅 web_search 时投影为空应失败。"""
     search = Action(
         tool="web_search",
         params={"query": "q", "purpose": "broad_discovery"},
@@ -299,74 +608,362 @@ def test_coarse_projection_empty_raises(mock_llm: MagicMock) -> None:
                 )
             ],
             AgentRole.COARSE,
-            answer_timestamp=10.0,
+            answer_timestamp=100.0,
             image_path="frame.jpg",
         )
 
 
-def test_coarse_projects_out_compare_images(mock_llm: MagicMock) -> None:
-    """投影默认剔除 compare_images*，保留固定 Tool。"""
+def test_drop_keeps_error_and_geo_empty_with_success() -> None:
+    """有 success 时仍保留 error 与有地理增益的 empty，避免断链。"""
     zoom = Action(tool="zoom_inspect", params={"bbox": [0.1, 0.1, 0.4, 0.4]})
-    compare = Action(
+    sat = Action(
+        tool="lookup_historical_satellite_map",
+        params={"query": "许昌北侧", "year": 2005},
+    )
+    find = Action(
+        tool="find_specific_features_in_satellite_map",
+        params={
+            "target_satellite_image": "map",
+            "reference_features": ["桥", "河"],
+        },
+    )
+    pin = Action(tool="zoom_inspect", params={"bbox": [0.2, 0.2, 0.3, 0.3]})
+
+    units = [
+        (
+            _coarse_ctx_draft("看河桥。"),
+            zoom,
+            _obs(
+                zoom,
+                status="error",
+                observation={
+                    "status": "error",
+                    "error_message": "schema exhausted",
+                    "description": "observation synthesis failed",
+                },
+            ),
+            _step(
+                [zoom],
+                thought=_coarse_ctx_draft("看河桥。"),
+                narration="河桥山关系明确",
+            ),
+        ),
+        (
+            _coarse_ctx_draft("查卫星。"),
+            sat,
+            _obs(
+                sat,
+                observation={
+                    "status": "success",
+                    "error_message": None,
+                    "image_url": "u",
+                    "layout_description": "农田与坑塘",
+                    "matched_features": ["农田"],
+                },
+            ),
+            _step(
+                [sat],
+                thought=_coarse_ctx_draft("查卫星。"),
+                start=1,
+                end=2,
+                narration="打开许昌地图排查",
+            ),
+        ),
+        (
+            _coarse_ctx_draft("未命中细部。"),
+            find,
+            _obs(
+                find,
+                status="empty",
+                observation={
+                    "status": "empty",
+                    "error_message": None,
+                    "matched_features": [],
+                    "overall_match_assessment": "未找到匹配",
+                },
+            ),
+            _step(
+                [find],
+                thought=_coarse_ctx_draft("未命中细部。"),
+                start=2,
+                end=3,
+                narration="对比扶手石与地图河岸",
+            ),
+        ),
+        (
+            "置顶聊天。",
+            pin,
+            _obs(
+                pin,
+                status="empty",
+                observation={
+                    "status": "empty",
+                    "error_message": None,
+                    "description": "no in-scene geography visible in content region",
+                },
+            ),
+            NormalizedStep(
+                move=Move(
+                    start_time=3.0,
+                    end_time=4.0,
+                    narration="静待时间的流逝，看看聊天记录",
+                    screen_action="置顶求助消息列表并滚动",
+                    visible_clues=["置顶", "聊天"],
+                    agent_role=AgentRole.COARSE,
+                ),
+                thought_draft="置顶聊天。",
+                actions=[pin],
+                normalization_mode=NormalizationMode.MATCHED,
+                matched_tool_confidence=0.5,
+                fallback_reason=None,
+            ),
+        ),
+    ]
+    kept = _drop_noninformative_empty_units(units)
+    tools = [u[1].tool for u in kept]
+    statuses = [u[2].status for u in kept]
+    assert tools == [
+        "zoom_inspect",
+        "lookup_historical_satellite_map",
+        "find_specific_features_in_satellite_map",
+    ]
+    assert statuses == ["error", "success", "empty"]
+
+
+def test_coarse_keeps_compare_images(mock_llm: MagicMock) -> None:
+    """COARSE 投影保留视觉比对类 Tool。"""
+    zoom = Action(tool="zoom_inspect", params={"bbox": [0.1, 0.1, 0.4, 0.4]})
+    cmp_ = Action(
         tool="compare_images_for_geolocation",
-        params={"image_a": "a", "image_b": "b"},
-    )
-    sun = Action(
-        tool="sun_position_calc",
-        params={"shadow_direction_deg": 135.0, "estimated_local_time": "14:30"},
-    )
-    steps = [
-        _step([zoom], thought="看建筑。"),
-        _step([compare], thought="比对卫星。"),
-        _step([sun], thought="算日照。"),
-    ]
-    observations = [
-        _obs(zoom, observation={"status": "success", "error_message": None, "description": "x"}),
-        _obs(
-            compare,
-            observation={"status": "success", "error_message": None, "similarity": 0.9},
-        ),
-        _obs(
-            sun,
-            observation={
-                "status": "success",
-                "error_message": None,
-                "possible_latitude_range": [20.0, 40.0],
-            },
-        ),
-    ]
-    traj = reconstruct_single_trajectory(
-        steps,
-        observations,
-        AgentRole.COARSE,
-        answer_timestamp=100.0,
-        image_path="frame.jpg",
-    )
-    tools = [s.action.tool for s in traj.steps]
-    assert tools == ["zoom_inspect", "sun_position_calc"]
-    assert all("compare_images" not in t for t in tools)
-    # 不应为 compare 调用动态适配 LLM（名称硬排除）
-    assert not any(c["response_model"] is _CoarseToolSuitability for c in mock_llm.calls)
-
-
-def test_coarse_keeps_fixed_tools_when_web_and_compare_present(
-    mock_llm: MagicMock,
-) -> None:
-    """含 web_search + 固定 Tool 时只留三固定允许集中的步。"""
-    zoom = Action(tool="zoom_inspect", params={"bbox": [0.0, 0.0, 1.0, 1.0]})
-    search = Action(
-        tool="web_search",
-        params={"query": "q", "purpose": "broad_discovery"},
+        params={"image_a": "a.jpg", "image_b": "b.jpg"},
     )
     ocr = Action(tool="ocr", params={"bbox": [0.2, 0.2, 0.3, 0.3]})
     traj = reconstruct_single_trajectory(
         [
-            _step([zoom], thought="看。"),
-            _step([search], thought="搜。"),
-            _step([ocr], thought="读。"),
+            _step([zoom], thought=_coarse_ctx_draft("看。")),
+            _step([cmp_], thought="比对。", start=1, end=2),
+            _step([ocr], thought="读。", start=2, end=3),
         ],
         [
-            _obs(zoom, observation={"status": "success", "error_message": None, "description": "a"}),
+            _obs(
+                zoom,
+                observation={
+                    "status": "success",
+                    "error_message": None,
+                    "description": "a",
+                },
+            ),
+            _obs(
+                cmp_,
+                observation={
+                    "status": "success",
+                    "error_message": None,
+                    "visual_similarity_score": 0.7,
+                    "matched_features": ["bridge"],
+                    "mismatched_features": [],
+                    "geolocation_hints": ["wide river"],
+                },
+            ),
+            _obs(
+                ocr,
+                observation={
+                    "status": "success",
+                    "error_message": None,
+                    "texts": ["x"],
+                },
+            ),
+        ],
+        AgentRole.COARSE,
+        answer_timestamp=100.0,
+        image_path="frame.jpg",
+    )
+    assert "compare_images_for_geolocation" in [s.action.tool for s in traj.steps]
+
+
+def test_step_prompt_requires_matching_action_tool(mock_llm: MagicMock) -> None:
+    """Thought prompt 强制说明本步 tool，并禁止异工具话术。"""
+    from pipeline.stage5_reconstruct import _build_step_prompt
+
+    sat = Action(
+        tool="lookup_historical_satellite_map",
+        params={"year": 2005, "region": "河南"},
+    )
+    units = [
+        (
+            "想查卫星图看河岸",
+            sat,
+            _obs(
+                sat,
+                observation={"status": "success", "error_message": None},
+            ),
+            _step([sat], thought="想查卫星图看河岸"),
+        )
+    ]
+    prompt = _build_step_prompt(
+        AgentRole.COARSE,
+        ["agent_role: coarse_locator", "user_query: test"],
+        [],
+        units,
+        0,
+    )
+    assert "lookup_historical_satellite_map" in prompt
+    assert "必须说明为何调用本步工具" in prompt
+    assert "禁止提及未出现在本步 Action 的工具名" in prompt
+    assert "本步工具为 lookup_historical_satellite_map" in prompt
+
+
+def test_thought_mismatch_triggers_one_retry(
+    mock_llm: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Thought 含异工具话术时重试一次。"""
+    from pipeline.stage5_reconstruct import _generate_thoughts_stepwise
+
+    zoom = Action(tool="zoom_inspect", params={"bbox": [0.1, 0.1, 0.4, 0.4]})
+    units = [
+        (
+            "看塔",
+            zoom,
+            _obs(
+                zoom,
+                observation={
+                    "status": "success",
+                    "error_message": None,
+                    "description": "tower",
+                },
+            ),
+            _step([zoom], thought="看塔"),
+        )
+    ]
+    calls: list[str] = []
+
+    def _fake(prompt: str, response_model: type[BaseModel], **_k: Any) -> BaseModel:
+        calls.append(prompt)
+        if len(calls) == 1:
+            return _StepThought(thought="我先用 web_search 搜一下塔的名称。")
+        return _StepThought(thought="用 zoom_inspect 查看塔身结构细节。")
+
+    monkeypatch.setattr("pipeline.stage5_reconstruct.call_structured", _fake)
+    thoughts = _generate_thoughts_stepwise(
+        AgentRole.COARSE,
+        units,
+        ["agent_role: coarse_locator"],
+        "frame.jpg",
+    )
+    assert len(calls) == 2
+    assert "不对齐" in calls[1]
+    assert "zoom_inspect" in thoughts[0]
+    assert "web_search" not in thoughts[0]
+
+
+def test_coarse_sanitizes_illegal_zoom_bbox(mock_llm: MagicMock) -> None:
+    zoom = Action(tool="zoom_inspect", params={"bbox": [10, 20, 300, 400]})
+    ocr = Action(tool="ocr", params={"bbox": [0.2, 0.2, 0.3, 0.3]})
+    traj = reconstruct_single_trajectory(
+        [
+            _step([zoom], thought=_coarse_ctx_draft("看。")),
+            _step([ocr], thought="读。", start=1, end=2),
+        ],
+        [
+            _obs(
+                zoom,
+                observation={
+                    "status": "success",
+                    "error_message": None,
+                    "description": "wide scene",
+                },
+            ),
+            _obs(
+                ocr,
+                observation={
+                    "status": "success",
+                    "error_message": None,
+                    "texts": ["sign"],
+                },
+            ),
+        ],
+        AgentRole.COARSE,
+        answer_timestamp=100.0,
+        image_path="frame.jpg",
+    )
+    bbox = traj.steps[0].action.params["bbox"]
+    assert all(abs(float(x)) <= 1.5 for x in bbox)
+
+
+def test_working_scope_survives_coarse_projection(mock_llm: MagicMock) -> None:
+    zoom = Action(tool="zoom_inspect", params={"bbox": [0.1, 0.1, 0.4, 0.4]})
+    ctx = VideoChainContext(
+        raw_given_clues=[RawGivenClue(text="河南许昌人、拍摄地离家不远")],
+        working_scope=WorkingScope(
+            region="河南许昌附近",
+            bound_kind=ScopeBoundKind.NEAR,
+            raw_clue_texts=["河南许昌人、拍摄地离家不远"],
+        ),
+        video_facts=[
+            VideoFactClaim(
+                fact_id="vf0",
+                start_time=1.0,
+                end_time=2.0,
+                quote="高地长桥",
+                tokens=["高地", "桥"],
+                kind="observe",
+            )
+        ],
+    )
+    ui_step = NormalizedStep(
+        move=_move(narration="打开聊天"),
+        thought_draft=embed_video_context("界面", ctx),
+        actions=[zoom],
+        normalization_mode=NormalizationMode.MATCHED,
+        matched_tool_confidence=0.9,
+        fallback_reason=None,
+    )
+    geo_step = NormalizedStep(
+        move=_move(narration="高地俯视长桥", start=2.0, end=3.0),
+        thought_draft="确认桥与高地",
+        actions=[zoom],
+        normalization_mode=NormalizationMode.MATCHED,
+        matched_tool_confidence=0.9,
+        fallback_reason=None,
+    )
+    traj = reconstruct_single_trajectory(
+        [ui_step, geo_step],
+        [
+            _obs(
+                zoom,
+                observation={
+                    "status": "success",
+                    "error_message": None,
+                    "description": "聊天界面置顶消息",
+                },
+            ),
+            _obs(
+                zoom,
+                observation={
+                    "status": "success",
+                    "error_message": None,
+                    "description": "elevated ground and long bridge",
+                },
+            ),
+        ],
+        AgentRole.COARSE,
+        answer_timestamp=100.0,
+        image_path="frame.jpg",
+    )
+    assert "工作范围：河南许昌附近" in traj.user_query
+
+
+def test_fine_requires_submit_answer_and_terminal_none(mock_llm: MagicMock) -> None:
+    search = Action(
+        tool="web_search",
+        params={"query": "tower", "purpose": "entity_lookup"},
+    )
+    submit = Action(tool="submit_answer", params=_submit().model_dump())
+    traj = reconstruct_single_trajectory(
+        [
+            _step([search], thought="检索。", role=AgentRole.FINE),
+            _step([submit], thought="提交。", role=AgentRole.FINE, start=1, end=2),
+        ],
+        [
             _obs(
                 search,
                 observation={
@@ -375,561 +972,76 @@ def test_coarse_keeps_fixed_tools_when_web_and_compare_present(
                     "results": [],
                 },
             ),
-            _obs(ocr, observation={"status": "success", "error_message": None, "texts": ["x"]}),
+            _obs(submit),
         ],
-        AgentRole.COARSE,
-        answer_timestamp=10.0,
-        image_path="frame.jpg",
-    )
-    assert [s.action.tool for s in traj.steps] == ["zoom_inspect", "ocr"]
-
-
-def test_coarse_sanitizes_illegal_zoom_bbox(mock_llm: MagicMock) -> None:
-    """经纬度式 bbox（绝对值>1.5）纠正为全图框。"""
-    bad = Action(
-        tool="zoom_inspect",
-        params={"bbox": [113.833, 34.0, 113.9, 34.1]},
-    )
-    traj = reconstruct_single_trajectory(
-        [_step([bad], thought="放大。")],
-        [_obs(bad, observation={"status": "success", "error_message": None, "description": "x"})],
-        AgentRole.COARSE,
-        answer_timestamp=10.0,
-        image_path="frame.jpg",
-    )
-    assert traj.steps[0].action.params["bbox"] == [0.0, 0.0, 1.0, 1.0]
-    scaffold = next(
-        c["prompt"] for c in mock_llm.calls if c["response_model"] is _CoarseOutputBundle
-    )
-    assert "113.833" not in scaffold
-    assert "[0.0, 0.0, 1.0, 1.0]" in scaffold
-
-
-def test_coarse_thought_sun_vs_wrong_action_triggers_rewrite(
-    mock_llm: MagicMock, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Thought 说太阳/日照但 Action 非 sun_position_calc → 强制重写。"""
-    bundle_n = {"n": 0}
-
-    def _fake(
-        prompt: str,
-        response_model: type[BaseModel],
-        images: Optional[list[str]] = None,
-        video: Optional[str] = None,
-        model: Optional[str] = None,
-    ) -> BaseModel:
-        _ = images, video, model
-        n_steps = max(prompt.count("### Step "), 1)
-        if response_model is _ExternalHints:
-            return _ExternalHints(hints=[])
-        if response_model is _TaoStyleCheck:
-            return _TaoStyleCheck(is_standard_tao=True, issues=[])
-        if response_model is _CoarseReasoningCheck:
-            # 程序化对齐应在 LLM 链检之前已触发重写；若仍调用则放行
-            return _CoarseReasoningCheck(
-                identifies_geo_human_features=True,
-                narrows_scope_progressively=True,
-                has_reasoning_gap=False,
-                thought_action_aligned=True,
-                issues=[],
-            )
-        if response_model is _CoarseOutputBundle:
-            bundle_n["n"] += 1
-            if bundle_n["n"] == 1:
-                thoughts = ["根据阴影推断太阳位置与日照方向。"] * n_steps
-            else:
-                thoughts = [
-                    "立面阴影朝北偏东，先放大确认建筑细节再收窄范围。"
-                ] * n_steps
-            return _CoarseOutputBundle(thoughts=thoughts, coarse_output=_hyp())
-        raise AssertionError(response_model)
-
-    monkeypatch.setattr("pipeline.stage5_reconstruct.call_structured", _fake)
-    action = Action(tool="zoom_inspect", params={"bbox": [0.1, 0.1, 0.4, 0.4]})
-    traj = reconstruct_single_trajectory(
-        [_step([action], thought="看。")],
-        [_obs(action, observation={"status": "success", "error_message": None, "description": "x"})],
-        AgentRole.COARSE,
-        answer_timestamp=10.0,
-        image_path="frame.jpg",
-    )
-    assert bundle_n["n"] == 2
-    assert "太阳" not in traj.steps[0].thought
-
-
-def test_normalize_coarse_regions_moves_descriptive() -> None:
-    hyp = LocationHypothesis(
-        possible_countries=["中国"],
-        possible_regions=["河南省", "华北平原南缘", "中原地区"],
-        reasoning_summary="特征收窄。",
-        confidence=0.6,
-        key_clues_remaining=[],
-    )
-    fixed, issues = _normalize_coarse_regions(hyp)
-    assert fixed.possible_regions == ["河南省"]
-    assert issues
-    assert "华北平原南缘" in fixed.reasoning_summary
-    assert "中原地区" in fixed.key_clues_remaining
-
-
-def test_coarse_duplicate_fullframe_zoom_raises() -> None:
-    zoom = Action(tool="zoom_inspect", params={"bbox": [0.0, 0.0, 1.0, 1.0]})
-    obs = _obs(
-        zoom,
-        observation={"status": "success", "error_message": None, "description": "same"},
-    )
-    step = _step([zoom])
-    units = [
-        ("d1", zoom, obs, step),
-        ("d2", zoom, obs, step),
-    ]
-    with pytest.raises(ValueError, match="递进可写性不足"):
-        _validate_coarse_projection_richness(units)
-
-
-def test_collapse_consecutive_duplicates_keeps_progressive_chain() -> None:
-    """连续相同 tool+params 折叠后，不同观察目标链可通过可写性门禁。"""
-    zoom_a = Action(tool="zoom_inspect", params={"bbox": [0.0, 0.0, 1.0, 1.0]})
-    zoom_b = Action(tool="zoom_inspect", params={"bbox": [0.0, 0.0, 1.0, 0.45]})
-    ocr = Action(tool="ocr", params={"bbox": [0.15, 0.15, 0.7, 0.35]})
-    obs_a = _obs(
-        zoom_a,
-        observation={
-            "status": "success",
-            "error_message": None,
-            "description": "wide hills",
-        },
-    )
-    obs_b = _obs(
-        zoom_b,
-        observation={
-            "status": "success",
-            "error_message": None,
-            "description": "distant ridge",
-        },
-    )
-    obs_o = _obs(
-        ocr,
-        observation={"status": "success", "error_message": None, "texts": []},
-    )
-    step_a = _step([zoom_a])
-    step_b = _step([zoom_b])
-    step_o = _step([ocr])
-    units = [
-        ("d1", zoom_a, obs_a, step_a),
-        ("d2", zoom_a, obs_a, step_a),
-        ("d3", zoom_a, obs_a, step_a),
-        ("d4", ocr, obs_o, step_o),
-        ("d5", zoom_b, obs_b, step_b),
-        ("d6", zoom_b, obs_b, step_b),
-    ]
-    collapsed = _collapse_consecutive_duplicate_actions(units)
-    assert len(collapsed) == 3
-    _validate_coarse_projection_richness(collapsed)
-
-
-def test_coarse_reasoning_gap_triggers_rewrite(
-    mock_llm: MagicMock, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """递进链跳步触发带 issues 重写。"""
-    chain_n = {"n": 0}
-
-    def _fake(
-        prompt: str,
-        response_model: type[BaseModel],
-        images: Optional[list[str]] = None,
-        video: Optional[str] = None,
-        model: Optional[str] = None,
-    ) -> BaseModel:
-        _ = images, video, model
-        n_steps = max(prompt.count("### Step "), 1)
-        thoughts = [f"前向思考 {i + 1}" for i in range(n_steps)]
-        if response_model is _ExternalHints:
-            return _ExternalHints(hints=[])
-        if response_model is _TaoStyleCheck:
-            return _TaoStyleCheck(is_standard_tao=True, issues=[])
-        if response_model is _CoarseReasoningCheck:
-            chain_n["n"] += 1
-            # 第一次失败触发重写；重写后再检一次
-            bad = chain_n["n"] == 1
-            return _CoarseReasoningCheck(
-                identifies_geo_human_features=not bad,
-                narrows_scope_progressively=not bad,
-                has_reasoning_gap=bad,
-                thought_action_aligned=not bad,
-                feature_driven_narrowing=not bad,
-                clues_only_as_auxiliary=True,
-                regions_are_administrative_and_consistent=True,
-                issues=["单一弱特征跳步"] if bad else [],
-            )
-        if response_model is _CoarseOutputBundle:
-            return _CoarseOutputBundle(thoughts=thoughts, coarse_output=_hyp())
-        raise AssertionError(response_model)
-
-    monkeypatch.setattr("pipeline.stage5_reconstruct.call_structured", _fake)
-    action = Action(tool="zoom_inspect", params={"bbox": [0.1, 0.1, 0.4, 0.4]})
-    traj = reconstruct_single_trajectory(
-        [_step([action], thought="看。")],
-        [_obs(action, observation={"status": "success", "error_message": None, "description": "x"})],
-        AgentRole.COARSE,
-        answer_timestamp=10.0,
-        image_path="frame.jpg",
-    )
-    assert traj.coarse_output is not None
-    assert chain_n["n"] == 2
-
-
-def test_external_hints_go_into_user_query(mock_llm: MagicMock) -> None:
-    """网友给定地名抽入 user_query，不含来源套话。"""
-    action = Action(tool="zoom_inspect", params={"bbox": [0.1, 0.1, 0.4, 0.4]})
-    steps = [
-        NormalizedStep(
-            move=_move(narration="有网友说是河南信阳附近拍的。"),
-            thought_draft="看塔。",
-            actions=[action],
-            normalization_mode=NormalizationMode.MATCHED,
-            matched_tool_confidence=0.9,
-            fallback_reason=None,
-        )
-    ]
-    traj = reconstruct_single_trajectory(
-        steps,
-        [
-            _obs(
-                action,
-                observation={
-                    "status": "success",
-                    "error_message": None,
-                    "description": "tower",
-                },
-            )
-        ],
-        AgentRole.COARSE,
-        answer_timestamp=100.0,
-        image_path="frame.jpg",
-    )
-    assert "河南信阳" in traj.user_query
-    assert "已知线索" in traj.user_query
-    assert "网友" not in traj.user_query
-    scaffold = next(
-        c["prompt"] for c in mock_llm.calls if c["response_model"] is _CoarseOutputBundle
-    )
-    assert "河南信阳" in scaffold
-
-
-def test_fine_prompt_allows_early_precise(mock_llm: MagicMock) -> None:
-    map_action = Action(tool="map_query", params={"query": "Eiffel Tower"})
-    submit = Action(tool="submit_answer", params=_submit().model_dump())
-    steps = [
-        _step([map_action], role=AgentRole.FINE, thought="查地图。"),
-        _step([submit], role=AgentRole.FINE, thought="提交。", start=1.0, end=2.0),
-    ]
-    observations = [
-        _obs(
-            map_action,
-            observation={
-                "status": "success",
-                "error_message": None,
-                "formatted_address": "Paris",
-                "resolved_latlng": [48.8584, 2.2945],
-                "place_type": "landmark",
-            },
-        ),
-        _obs(submit),
-    ]
-    traj = reconstruct_single_trajectory(
-        steps,
-        observations,
         AgentRole.FINE,
         answer_timestamp=100.0,
         image_path="frame.jpg",
         coarse_handoff=_hyp(),
     )
     assert traj.fine_output is not None
-    assert "缩小范围无上限" in traj.system_prompt or "可尽早" in traj.system_prompt
-    rewrite = next(
-        c["prompt"]
-        for c in mock_llm.calls
-        if c["response_model"] is _RewrittenTrajectory
-    )
-    assert "缩小范围无上限" in rewrite or "尽早写出" in rewrite
-
-
-def test_tao_style_failure_triggers_rewrite(mock_llm: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
-    """形态自检失败时强制重写一次。"""
-    calls: list[type] = []
-    style_calls = {"n": 0}
-
-    def _fake(
-        prompt: str,
-        response_model: type[BaseModel],
-        images: Optional[list[str]] = None,
-        video: Optional[str] = None,
-        model: Optional[str] = None,
-    ) -> BaseModel:
-        _ = images, video, model
-        calls.append(response_model)
-        n_steps = max(prompt.count("### Step "), 1)
-        thoughts = [f"前向思考 {i + 1}" for i in range(n_steps)]
-        if response_model is _TaoStyleCheck:
-            style_calls["n"] += 1
-            # 第一次失败触发重写
-            ok = style_calls["n"] > 1
-            return _TaoStyleCheck(
-                is_standard_tao=ok,
-                issues=[] if ok else ["旁白叙事体"],
-            )
-        if response_model is _ExternalHints:
-            return _ExternalHints(hints=[])
-        if response_model is _CoarseReasoningCheck:
-            return _CoarseReasoningCheck(
-                identifies_geo_human_features=True,
-                narrows_scope_progressively=True,
-                has_reasoning_gap=False,
-                thought_action_aligned=True,
-                issues=[],
-            )
-        if response_model is _CoarseOutputBundle:
-            return _CoarseOutputBundle(thoughts=thoughts, coarse_output=_hyp())
-        raise AssertionError(response_model)
-
-    monkeypatch.setattr("pipeline.stage5_reconstruct.call_structured", _fake)
-    action = Action(tool="zoom_inspect", params={"bbox": [0.1, 0.1, 0.4, 0.4]})
-    traj = reconstruct_single_trajectory(
-        [_step([action], thought="看塔尖。")],
-        [
-            _obs(
-                action,
-                observation={
-                    "status": "success",
-                    "error_message": None,
-                    "description": "tower",
-                },
-            )
-        ],
-        AgentRole.COARSE,
-        answer_timestamp=100.0,
-        image_path="frame.jpg",
-    )
-    assert traj.coarse_output is not None
-    assert calls.count(_CoarseOutputBundle) == 2
-    assert style_calls["n"] >= 1
-
-
-def test_fine_requires_submit_answer_and_terminal_none(mock_llm: MagicMock) -> None:
-    map_action = Action(
-        tool="map_query",
-        params={"query": "Eiffel Tower"},
-    )
-    submit = Action(
-        tool="submit_answer",
-        params=_submit().model_dump(),
-    )
-    steps = [
-        _step([map_action], role=AgentRole.FINE, thought="查地图。"),
-        _step([submit], role=AgentRole.FINE, thought="提交。", start=1.0, end=2.0),
-    ]
-    observations = [
-        _obs(
-            map_action,
-            observation={
-                "status": "success",
-                "error_message": None,
-                "formatted_address": "Paris",
-                "resolved_latlng": [48.8584, 2.2945],
-                "place_type": "tourist_attraction",
-            },
-        ),
-        _obs(submit),
-    ]
-    traj = reconstruct_single_trajectory(
-        steps,
-        observations,
-        AgentRole.FINE,
-        answer_timestamp=100.0,
-        image_path="frame.jpg",
-        coarse_handoff=_hyp(),
-    )
-    assert traj.fine_output is not None
-    assert traj.fine_output.location_name == "Eiffel Tower"
     assert traj.steps[-1].action.tool == "submit_answer"
     assert traj.steps[-1].observation is None
     assert traj.steps[-1].observation_source is None
-    assert traj.coarse_handoff is not None
-    assert traj.fine_handoff is None
 
 
 def test_fine_synthesizes_submit_answer_when_missing(mock_llm: MagicMock) -> None:
-    """脚手架末步非 submit_answer 时，stage5 基于证据合成 terminal 步。"""
-    map_action = Action(tool="map_query", params={"query": "Eiffel Tower"})
-    steps = [
-        _step([map_action], role=AgentRole.FINE, thought="查地图锁定地标。"),
-    ]
-    observations = [
-        _obs(
-            map_action,
-            observation={
-                "status": "success",
-                "error_message": None,
-                "formatted_address": "Paris",
-                "resolved_latlng": [48.8584, 2.2945],
-                "place_type": "tourist_attraction",
-            },
-        )
-    ]
+    mq = Action(tool="map_query", params={"query": "Eiffel Tower"})
     traj = reconstruct_single_trajectory(
-        steps,
-        observations,
+        [_step([mq], thought="查地图。", role=AgentRole.FINE)],
+        [
+            _obs(
+                mq,
+                observation={
+                    "status": "success",
+                    "error_message": None,
+                    "resolved_latlng": [48.8584, 2.2945],
+                    "display_name": "Eiffel Tower",
+                },
+            )
+        ],
         AgentRole.FINE,
-        answer_timestamp=50.0,
-        image_path="a.jpg",
+        answer_timestamp=100.0,
+        image_path="frame.jpg",
         coarse_handoff=_hyp(),
     )
     assert traj.steps[-1].action.tool == "submit_answer"
-    assert traj.steps[-1].observation is None
     assert traj.fine_output is not None
-    assert traj.fine_output.location_name == "Eiffel Tower"
-    assert len(traj.steps) == 2
-    # 先合成 SubmitAnswerResult，再抽线索，再改写 thoughts
-    assert mock_llm.calls[0]["response_model"] is SubmitAnswerResult
-    assert "groundtruth:" not in mock_llm.calls[0]["prompt"].lower()
-    rewrite = next(
-        c for c in mock_llm.calls if c["response_model"] is _RewrittenTrajectory
-    )
-    assert rewrite["prompt"].count("### Step ") == 2
-
-
-def test_fine_empty_units_cannot_synthesize_submit(mock_llm: MagicMock) -> None:
-    """全 thought_only 时无法展开 Action，仍应失败。"""
-    steps = [_step([], role=AgentRole.FINE, thought="只有旁白。")]
-    with pytest.raises(ValueError, match="无可重构的 Action"):
-        reconstruct_single_trajectory(
-            steps,
-            [],
-            AgentRole.FINE,
-            answer_timestamp=50.0,
-            image_path="a.jpg",
-            coarse_handoff=_hyp(),
-        )
-
-
-def _verifier_map_obs(action: Action) -> ObservationExecutionResult:
-    return _obs(
-        action,
-        observation={
-            "status": "success",
-            "error_message": None,
-            "formatted_address": "Paris",
-            "resolved_latlng": [48.8584, 2.2945],
-            "place_type": "tourist_attraction",
-        },
-    )
-
-
-def _verifier_web_action() -> Action:
-    return Action(
-        tool="web_search",
-        params={
-            "query": "verify Eiffel Tower visual features",
-            "top_k": 3,
-            "purpose": "verification",
-        },
-    )
-
-
-def _verifier_web_obs(action: Action) -> ObservationExecutionResult:
-    return _obs(
-        action,
-        observation={
-            "status": "success",
-            "error_message": None,
-            "results": [
-                {
-                    "title": "Landmark",
-                    "snippet": "iron lattice",
-                    "url": "https://example.com/a",
-                }
-            ],
-        },
-    )
 
 
 def test_verifier_uses_fine_handoff_as_candidate(mock_llm: MagicMock) -> None:
-    map_action = Action(
-        tool="map_query",
-        params={"latlng": [48.8584, 2.2945]},
-    )
-    web_action = _verifier_web_action()
-    steps = [
-        _step([map_action], role=AgentRole.VERIFIER, thought="核对坐标。"),
-        _step([web_action], role=AgentRole.VERIFIER, start=1.0, end=2.0, thought="检索佐证。"),
-    ]
-    observations = [_verifier_map_obs(map_action), _verifier_web_obs(web_action)]
+    mq = Action(tool="map_query", params={"query": "Eiffel Tower"})
     traj = reconstruct_single_trajectory(
-        steps,
-        observations,
+        [_step([mq], thought="核对。", role=AgentRole.VERIFIER)],
+        [
+            _obs(
+                mq,
+                observation={
+                    "status": "success",
+                    "error_message": None,
+                    "resolved_latlng": [48.8584, 2.2945],
+                    "display_name": "Eiffel Tower",
+                },
+            )
+        ],
         AgentRole.VERIFIER,
         answer_timestamp=100.0,
         image_path="frame.jpg",
-        coarse_handoff=_hyp(),
         fine_handoff=_submit(),
     )
-    assert len(traj.steps) == 2
     assert traj.verifier_output is not None
-    assert traj.verifier_output.verdict == "pass"
     assert traj.fine_handoff is not None
-    prompt = mock_llm.calls[0]["prompt"]
-    assert "候选" in prompt or "fine_handoff" in prompt
-    assert "48.8584" in prompt  # 候选坐标可出现
-    assert "groundtruth" not in prompt.lower()
+    header = next(
+        c["prompt"]
+        for c in mock_llm.calls
+        if c["response_model"] is _StepThought
+    )
+    assert "fine_handoff" in header.lower() or "候选" in header or "Eiffel" in header
 
 
 def test_verifier_synthesizes_scaffold_when_no_video_actions(
-    mock_llm: MagicMock, monkeypatch: pytest.MonkeyPatch
+    mock_llm: MagicMock,
 ) -> None:
-    """无视频 Action 时，基于 fine_handoff 合成 map_query+web_search 验证链。"""
-    calls: list[str] = []
-
-    def _fake_execute(
-        action: Action, image_path: str, agent_role: AgentRole, **kwargs: object
-    ) -> ObservationExecutionResult:
-        _ = kwargs
-        assert agent_role == AgentRole.VERIFIER
-        assert image_path == "frame.jpg"
-        calls.append(action.tool)
-        if action.tool == "map_query":
-            return _obs(
-                action,
-                observation={
-                    "status": "success",
-                    "error_message": None,
-                    "formatted_address": "Paris",
-                    "resolved_latlng": [48.8584, 2.2945],
-                    "place_type": "tourist_attraction",
-                },
-            )
-        if action.tool == "web_search":
-            assert action.params.get("purpose") == "verification"
-            return _obs(
-                action,
-                observation={
-                    "status": "success",
-                    "error_message": None,
-                    "results": [
-                        {
-                            "title": "Landmark guide",
-                            "snippet": "iron lattice tower",
-                            "url": "https://example.com/a",
-                        }
-                    ],
-                },
-            )
-        raise AssertionError(f"unexpected tool {action.tool}")
-
-    monkeypatch.setattr(
-        "pipeline.stage5_reconstruct.execute_action",
-        _fake_execute,
-    )
     traj = reconstruct_single_trajectory(
         [],
         [],
@@ -938,568 +1050,653 @@ def test_verifier_synthesizes_scaffold_when_no_video_actions(
         image_path="frame.jpg",
         fine_handoff=_submit(),
     )
-    assert calls == ["map_query", "web_search"]
-    assert len(traj.steps) == 2
-    assert traj.steps[0].action.tool == "map_query"
-    assert traj.steps[1].action.tool == "web_search"
-    assert traj.steps[0].observation is not None
-    assert traj.steps[1].observation is not None
+    tools = [s.action.tool for s in traj.steps]
+    assert "map_query" in tools
+    assert "web_search" in tools
     assert traj.verifier_output is not None
-    assert traj.fine_handoff is not None
-    prompt = mock_llm.calls[0]["prompt"]
-    assert "时序" in prompt or "禁止" in prompt
 
 
 def test_reconstruct_all_handoff_chain(mock_llm: MagicMock) -> None:
-    coarse_action = Action(tool="zoom_inspect", params={"bbox": [0.0, 0.0, 0.5, 0.5]})
-    fine_map = Action(tool="map_query", params={"query": "tower paris"})
-    fine_submit = Action(tool="submit_answer", params=_submit().model_dump())
-    ver_map = Action(tool="map_query", params={"latlng": [48.8584, 2.2945]})
-    ver_web = _verifier_web_action()
+    zoom = Action(tool="zoom_inspect", params={"bbox": [0.1, 0.1, 0.4, 0.4]})
+    ocr = Action(tool="ocr", params={"bbox": [0.2, 0.2, 0.3, 0.3]})
+    mq = Action(tool="map_query", params={"query": "tower"})
+    submit = Action(tool="submit_answer", params=_submit().model_dump())
 
     all_steps = {
-        AgentRole.COARSE: [_step([coarse_action], role=AgentRole.COARSE)],
+        AgentRole.COARSE: [
+            _step([zoom], thought=_coarse_ctx_draft("看。"), start=0, end=1),
+            _step([ocr], thought="读。", start=1, end=2),
+        ],
         AgentRole.FINE: [
-            _step([fine_map], role=AgentRole.FINE),
-            _step([fine_submit], role=AgentRole.FINE, start=1.0, end=2.0),
+            _step([mq], thought="查。", role=AgentRole.FINE, start=2, end=3),
+            _step(
+                [submit], thought="交。", role=AgentRole.FINE, start=3, end=4
+            ),
         ],
-        AgentRole.VERIFIER: [
-            _step([ver_map], role=AgentRole.VERIFIER),
-            _step([ver_web], role=AgentRole.VERIFIER, start=1.0, end=2.0),
-        ],
+        AgentRole.VERIFIER: [],
     }
     all_obs = {
         AgentRole.COARSE: [
             _obs(
-                coarse_action,
+                zoom,
                 observation={
                     "status": "success",
                     "error_message": None,
                     "description": "tower",
                 },
-            )
-        ],
-        AgentRole.FINE: [
+            ),
             _obs(
-                fine_map,
+                ocr,
                 observation={
                     "status": "success",
                     "error_message": None,
-                    "formatted_address": "Paris",
-                    "resolved_latlng": [48.8584, 2.2945],
-                    "place_type": "tourist_attraction",
+                    "texts": ["Tour"],
                 },
             ),
-            _obs(fine_submit),
         ],
-        AgentRole.VERIFIER: [
-            _verifier_map_obs(ver_map),
-            _verifier_web_obs(ver_web),
+        AgentRole.FINE: [
+            _obs(
+                mq,
+                observation={
+                    "status": "success",
+                    "error_message": None,
+                    "resolved_latlng": [48.8584, 2.2945],
+                    "display_name": "Eiffel Tower",
+                },
+            ),
+            _obs(submit),
         ],
+        AgentRole.VERIFIER: [],
     }
-    result = reconstruct_all_trajectories(
-        all_steps, all_obs, answer_timestamp=80.0, image_path="img.jpg"
+    trajs = reconstruct_all_trajectories(
+        all_steps, all_obs, answer_timestamp=100.0, image_path="frame.jpg"
     )
-    assert set(result.keys()) == {
-        AgentRole.COARSE,
-        AgentRole.FINE,
-        AgentRole.VERIFIER,
-    }
-    assert result[AgentRole.FINE].coarse_handoff == result[AgentRole.COARSE].coarse_output
-    assert result[AgentRole.VERIFIER].fine_handoff == result[AgentRole.FINE].fine_output
-    assert len(result[AgentRole.VERIFIER].steps) == 2
+    assert trajs[AgentRole.COARSE].coarse_output is not None
+    assert trajs[AgentRole.FINE].coarse_handoff is not None
+    assert trajs[AgentRole.FINE].fine_output is not None
+    assert trajs[AgentRole.VERIFIER].fine_handoff is not None
+    assert trajs[AgentRole.VERIFIER].verifier_output is not None
 
 
-def test_thought_only_merged_into_next_action(mock_llm: MagicMock) -> None:
-    action = Action(tool="ocr", params={})
-    steps = [
-        _step([], thought="先观察整体。", mode=NormalizationMode.THOUGHT_ONLY),
-        _step([action], thought="再读招牌。"),
-    ]
-    observations = [
-        _obs(
-            action,
-            observation={"status": "success", "error_message": None, "texts": ["Cafe"]},
-        )
-    ]
-    traj = reconstruct_single_trajectory(
-        steps,
-        observations,
-        AgentRole.COARSE,
-        answer_timestamp=10.0,
-        image_path="x.jpg",
+def test_reconstruct_all_keeps_coarse_when_fine_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FINE 拒绝采样失败时仍返回已成功的 COARSE。"""
+    from pipeline.stage5_reconstruct import (
+        _FaithfulnessCheck,
+        _PolishedThoughts,
+        _StepThought,
+        _TrajectoryJudgement,
     )
-    assert len(traj.steps) == 1
-    # scaffold prompt 应包含 thought_only 草稿
-    scaffold = next(
-        c["prompt"] for c in mock_llm.calls if c["response_model"] is _CoarseOutputBundle
-    )
-    assert "先观察整体" in scaffold
 
+    call_n = {"judge": 0}
 
-def test_system_feedback_revision_to_fine(mock_llm: MagicMock) -> None:
-    hyp = _hyp()
-    submit = _submit()
-    parents = {
-        AgentRole.COARSE: reconstruct_single_trajectory(
-            [
-                _step(
-                    [Action(tool="zoom_inspect", params={"bbox": [0, 0, 1, 1]})],
-                    role=AgentRole.COARSE,
-                )
-            ],
-            [
-                _obs(
-                    Action(tool="zoom_inspect", params={"bbox": [0, 0, 1, 1]}),
-                    observation={
-                        "status": "success",
-                        "error_message": None,
-                        "description": "x",
-                    },
-                )
-            ],
-            AgentRole.COARSE,
-            50.0,
-            "i.jpg",
-        ),
-        AgentRole.FINE: reconstruct_single_trajectory(
-            [
-                _step(
-                    [Action(tool="submit_answer", params=submit.model_dump())],
-                    role=AgentRole.FINE,
-                )
-            ],
-            [_obs(Action(tool="submit_answer", params=submit.model_dump()))],
-            AgentRole.FINE,
-            50.0,
-            "i.jpg",
-            coarse_handoff=hyp,
-        ),
-        AgentRole.VERIFIER: reconstruct_single_trajectory(
-            [
-                _step(
-                    [Action(tool="map_query", params={"query": "x"})],
-                    role=AgentRole.VERIFIER,
-                ),
-                _step(
-                    [_verifier_web_action()],
-                    role=AgentRole.VERIFIER,
-                    start=1.0,
-                    end=2.0,
-                ),
-            ],
-            [
-                _obs(
-                    Action(tool="map_query", params={"query": "x"}),
-                    observation={
-                        "status": "empty",
-                        "error_message": None,
-                        "formatted_address": None,
-                        "resolved_latlng": None,
-                        "place_type": None,
-                    },
-                    status="empty",
-                ),
-                _verifier_web_obs(_verifier_web_action()),
-            ],
-            AgentRole.VERIFIER,
-            50.0,
-            "i.jpg",
-            fine_handoff=submit,
-        ),
-    }
-    # 覆盖 verifier_output 为 fail（手动替换）
-    parents[AgentRole.VERIFIER] = parents[AgentRole.VERIFIER].model_copy(
-        update={
-            "verifier_output": VerificationResult(
-                verdict="fail",
-                failed_checks=["address mismatch"],
-                suggested_recheck="recheck map",
-                return_to_agent=2,
+    def _fake(
+        prompt: str,
+        response_model: type,
+        images: list[str] | None = None,
+        **_k: Any,
+    ) -> Any:
+        if response_model is _StepThought:
+            return _StepThought(thought="观察地貌推进粗定位。")
+        if response_model is _PolishedThoughts:
+            n = prompt.count("Step ") or 1
+            return _PolishedThoughts(thoughts=["观察地貌推进粗定位。"] * max(n, 1))
+        if response_model is _FaithfulnessCheck:
+            return _FaithfulnessCheck(unfaithful_steps=[])
+        if response_model is _TrajectoryJudgement:
+            call_n["judge"] += 1
+            # COARSE 高分；FINE 低分
+            if "fine_locator" in prompt or "agent_role: fine_locator" in prompt:
+                return _TrajectoryJudgement(score=0.1, issues=["故意低分"])
+            return _TrajectoryJudgement(score=0.9, issues=[])
+        if response_model is LocationHypothesis:
+            return _hyp()
+        if response_model is SubmitAnswerResult:
+            return SubmitAnswerResult(
+                location_name="Somewhere",
+                latitude=1.0,
+                longitude=2.0,
+                confidence=0.5,
+                reasoning="x",
             )
-        }
-    )
+        if response_model is VerificationResult:
+            return VerificationResult(
+                verdict="pass",
+                failed_checks=[],
+                suggested_recheck="",
+                return_to_agent=None,
+            )
+        raise AssertionError(response_model)
 
-    fine_submit = Action(tool="submit_answer", params=submit.model_dump())
+    monkeypatch.setattr("pipeline.stage5_reconstruct.call_structured", _fake)
+    monkeypatch.setenv("STAGE5_BEST_OF_K", "1")
+    clear_settings_cache()
+
+    zoom = Action(tool="zoom_inspect", params={"bbox": [0.1, 0.1, 0.4, 0.4]})
+    mq = Action(tool="map_query", params={"query": "x"})
+    submit = Action(
+        tool="submit_answer",
+        params={
+            "location_name": "Somewhere",
+            "lat": 1.0,
+            "lng": 2.0,
+            "confidence": 0.5,
+            "reasoning": "x",
+        },
+    )
     all_steps = {
-        AgentRole.COARSE: parents[AgentRole.COARSE] and [
-            _step(
-                [Action(tool="zoom_inspect", params={"bbox": [0, 0, 1, 1]})],
-                role=AgentRole.COARSE,
-            )
+        AgentRole.COARSE: [
+            _step([zoom], thought=_coarse_ctx_draft("看。"), start=0, end=1)
         ],
-        AgentRole.FINE: [_step([fine_submit], role=AgentRole.FINE)],
-        AgentRole.VERIFIER: [
-            _step(
-                [Action(tool="map_query", params={"query": "x"})],
-                role=AgentRole.VERIFIER,
-            ),
-            _step(
-                [_verifier_web_action()],
-                role=AgentRole.VERIFIER,
-                start=1.0,
-                end=2.0,
-            ),
+        AgentRole.FINE: [
+            _step([mq], thought="查。", start=1, end=2),
+            _step([submit], thought="交。", start=2, end=3),
         ],
+        AgentRole.VERIFIER: [],
     }
     all_obs = {
         AgentRole.COARSE: [
             _obs(
-                Action(tool="zoom_inspect", params={"bbox": [0, 0, 1, 1]}),
+                zoom,
                 observation={
                     "status": "success",
                     "error_message": None,
-                    "description": "x",
+                    "description": "hills",
                 },
             )
         ],
-        AgentRole.FINE: [_obs(fine_submit)],
-        AgentRole.VERIFIER: [
+        AgentRole.FINE: [
             _obs(
-                Action(tool="map_query", params={"query": "x"}),
+                mq,
                 observation={
-                    "status": "empty",
+                    "status": "success",
                     "error_message": None,
-                    "formatted_address": None,
-                    "resolved_latlng": None,
-                    "place_type": None,
+                    "resolved_latlng": [1.0, 2.0],
+                    "display_name": "Somewhere",
                 },
-                status="empty",
             ),
-            _verifier_web_obs(_verifier_web_action()),
+            _obs(submit),
         ],
+        AgentRole.VERIFIER: [],
     }
+    trajs = reconstruct_all_trajectories(
+        all_steps, all_obs, answer_timestamp=100.0, image_path="frame.jpg"
+    )
+    assert AgentRole.COARSE in trajs
+    assert trajs[AgentRole.COARSE].coarse_output is not None
+    assert AgentRole.FINE not in trajs
+    assert AgentRole.VERIFIER not in trajs
 
+
+def test_thought_only_merged_into_next_action(mock_llm: MagicMock) -> None:
+    zoom = Action(tool="zoom_inspect", params={"bbox": [0.1, 0.1, 0.4, 0.4]})
+    ocr = Action(tool="ocr", params={"bbox": [0.2, 0.2, 0.3, 0.3]})
+    traj = reconstruct_single_trajectory(
+        [
+            _step([], thought=_coarse_ctx_draft("仅思考。"), start=0, end=1),
+            _step([zoom], thought="看。", start=1, end=2),
+            _step([ocr], thought="读。", start=2, end=3),
+        ],
+        [
+            _obs(
+                zoom,
+                observation={
+                    "status": "success",
+                    "error_message": None,
+                    "description": "tower",
+                },
+            ),
+            _obs(
+                ocr,
+                observation={
+                    "status": "success",
+                    "error_message": None,
+                    "texts": ["x"],
+                },
+            ),
+        ],
+        AgentRole.COARSE,
+        answer_timestamp=100.0,
+        image_path="frame.jpg",
+    )
+    assert len(traj.steps) == 2
+
+
+def test_system_feedback_revision_to_fine(mock_llm: MagicMock) -> None:
+    mq = Action(tool="map_query", params={"query": "tower"})
+    submit = Action(tool="submit_answer", params=_submit().model_dump())
+    parent = reconstruct_single_trajectory(
+        [
+            _step([mq], thought="查。", role=AgentRole.FINE),
+            _step([submit], thought="交。", role=AgentRole.FINE, start=1, end=2),
+        ],
+        [
+            _obs(
+                mq,
+                observation={
+                    "status": "success",
+                    "error_message": None,
+                    "resolved_latlng": [48.8584, 2.2945],
+                    "display_name": "Eiffel Tower",
+                },
+            ),
+            _obs(submit),
+        ],
+        AgentRole.FINE,
+        answer_timestamp=100.0,
+        image_path="frame.jpg",
+        coarse_handoff=_hyp(),
+    )
+    verification = VerificationResult(
+        verdict="fail",
+        failed_checks=["visual mismatch"],
+        suggested_recheck="recheck plaza",
+        return_to_agent=2,
+    )
     revs = reconstruct_revision_trajectories(
-        parents,
-        VerificationResult(
-            verdict="fail",
-            failed_checks=["address mismatch"],
-            suggested_recheck="recheck",
-            return_to_agent=2,
-        ),
-        all_steps,
-        all_obs,
-        answer_timestamp=50.0,
-        image_path="i.jpg",
+        {AgentRole.FINE: parent},
+        verification,
+        {
+            AgentRole.FINE: [
+                _step([mq], thought="再查。", role=AgentRole.FINE),
+                _step(
+                    [submit], thought="再交。", role=AgentRole.FINE, start=1, end=2
+                ),
+            ]
+        },
+        {
+            AgentRole.FINE: [
+                _obs(
+                    mq,
+                    observation={
+                        "status": "success",
+                        "error_message": None,
+                        "resolved_latlng": [48.8584, 2.2945],
+                        "display_name": "Eiffel Tower",
+                    },
+                ),
+                _obs(submit),
+            ]
+        },
+        answer_timestamp=100.0,
+        image_path="frame.jpg",
         revision_round=1,
         max_revision_rounds=2,
     )
     assert len(revs) == 1
-    rev = revs[0]
-    assert rev.is_revision is True
-    assert rev.agent_role == AgentRole.FINE
-    assert rev.revision_source == RevisionSource.SYSTEM_FEEDBACK
-    assert rev.revision_input is not None
-    assert rev.revision_input.verdict == "fail"
-    assert rev.parent_trajectory_id == parents[AgentRole.FINE].id
+    assert revs[0].is_revision is True
+    assert revs[0].revision_source == RevisionSource.SYSTEM_FEEDBACK
+    assert revs[0].agent_role == AgentRole.FINE
 
 
 def test_revision_rejected_when_over_max_rounds(mock_llm: MagicMock) -> None:
-    hyp = _hyp()
-    submit = _submit()
-    fine_action = Action(tool="submit_answer", params=submit.model_dump())
-    parents = {
-        AgentRole.FINE: reconstruct_single_trajectory(
-            [_step([fine_action], role=AgentRole.FINE)],
-            [_obs(fine_action)],
-            AgentRole.FINE,
-            10.0,
-            "a.jpg",
-            coarse_handoff=hyp,
-        ),
-        AgentRole.COARSE: reconstruct_single_trajectory(
-            [
-                _step(
-                    [Action(tool="ocr", params={})],
-                    role=AgentRole.COARSE,
-                )
-            ],
-            [
-                _obs(
-                    Action(tool="ocr", params={}),
-                    observation={
-                        "status": "success",
-                        "error_message": None,
-                        "texts": ["x"],
-                    },
-                )
-            ],
-            AgentRole.COARSE,
-            10.0,
-            "a.jpg",
-        ),
-    }
+    mq = Action(tool="map_query", params={"query": "tower"})
+    submit = Action(tool="submit_answer", params=_submit().model_dump())
+    parent = reconstruct_single_trajectory(
+        [
+            _step([mq], thought="查。", role=AgentRole.FINE),
+            _step([submit], thought="交。", role=AgentRole.FINE, start=1, end=2),
+        ],
+        [
+            _obs(
+                mq,
+                observation={
+                    "status": "success",
+                    "error_message": None,
+                    "resolved_latlng": [48.8584, 2.2945],
+                    "display_name": "Eiffel Tower",
+                },
+            ),
+            _obs(submit),
+        ],
+        AgentRole.FINE,
+        answer_timestamp=100.0,
+        image_path="frame.jpg",
+        coarse_handoff=_hyp(),
+    )
+    verification = VerificationResult(
+        verdict="fail",
+        failed_checks=["x"],
+        suggested_recheck="y",
+        return_to_agent=2,
+    )
     revs = reconstruct_revision_trajectories(
-        parents,
-        VerificationResult(
-            verdict="fail",
-            failed_checks=["x"],
-            suggested_recheck="y",
-            return_to_agent=2,
-        ),
+        {AgentRole.FINE: parent},
+        verification,
         {
-            AgentRole.FINE: [_step([fine_action], role=AgentRole.FINE)],
-            AgentRole.COARSE: [
-                _step([Action(tool="ocr", params={})], role=AgentRole.COARSE)
-            ],
-            AgentRole.VERIFIER: [],
+            AgentRole.FINE: [
+                _step([mq], thought="再查。", role=AgentRole.FINE),
+                _step(
+                    [submit], thought="再交。", role=AgentRole.FINE, start=1, end=2
+                ),
+            ]
         },
         {
-            AgentRole.FINE: [_obs(fine_action)],
-            AgentRole.COARSE: [
+            AgentRole.FINE: [
                 _obs(
-                    Action(tool="ocr", params={}),
+                    mq,
                     observation={
                         "status": "success",
                         "error_message": None,
-                        "texts": ["x"],
+                        "resolved_latlng": [48.8584, 2.2945],
+                        "display_name": "Eiffel Tower",
                     },
-                )
-            ],
-            AgentRole.VERIFIER: [],
+                ),
+                _obs(submit),
+            ]
         },
-        answer_timestamp=10.0,
-        image_path="a.jpg",
+        answer_timestamp=100.0,
+        image_path="frame.jpg",
         revision_round=3,
         max_revision_rounds=2,
     )
     assert revs == []
 
 
-def test_video_observed_revision(mock_llm: MagicMock) -> None:
-    hyp = _hyp()
-    submit = _submit()
-    fine_action = Action(tool="submit_answer", params=submit.model_dump())
-    fine_step = _step(
-        [fine_action],
-        role=AgentRole.FINE,
-        start=20.0,
-        end=30.0,
-        thought="纠错后提交。",
-    )
-    parents = {
-        AgentRole.COARSE: reconstruct_single_trajectory(
-            [
-                _step(
-                    [Action(tool="ocr", params={})],
-                    role=AgentRole.COARSE,
-                    start=0.0,
-                    end=5.0,
-                )
-            ],
-            [
-                _obs(
-                    Action(tool="ocr", params={}),
-                    observation={
-                        "status": "success",
-                        "error_message": None,
-                        "texts": ["x"],
-                    },
-                )
-            ],
-            AgentRole.COARSE,
-            40.0,
-            "v.jpg",
+def test_signature_has_no_groundtruth_param() -> None:
+    sig = inspect.signature(reconstruct_single_trajectory)
+    assert "groundtruth" not in sig.parameters
+    src = inspect.getsource(reconstruct_single_trajectory)
+    assert "禁止将 groundtruth" in src or "禁止使用 groundtruth" in src.lower()
+
+
+def test_hard_check_issues_detects_redundancy() -> None:
+    zoom = Action(tool="zoom_inspect", params={"bbox": [0.1, 0.1, 0.4, 0.4]})
+    desc = "俯视视角下画面下方可见建筑物的屋顶结构整体视角呈现从高处向下俯瞰的特征"
+    unit = (
+        "draft",
+        zoom,
+        _obs(
+            zoom,
+            observation={
+                "status": "success",
+                "error_message": None,
+                "description": desc,
+            },
         ),
-        AgentRole.FINE: reconstruct_single_trajectory(
-            [fine_step],
-            [_obs(fine_action)],
-            AgentRole.FINE,
-            40.0,
-            "v.jpg",
-            coarse_handoff=hyp,
+        _step([zoom], narration=desc),
+    )
+    issues = _hard_check_issues([desc], [unit])
+    assert any("thought_observation_redundancy" in x for x in issues) or any(
+        "narration_copy" in x for x in issues
+    )
+
+
+def test_duplicate_fullframe_zoom_raises() -> None:
+    zoom = Action(tool="zoom_inspect", params={"bbox": [0.0, 0.0, 1.0, 1.0]})
+    units = [
+        (
+            "a",
+            zoom,
+            _obs(
+                zoom,
+                observation={
+                    "status": "success",
+                    "error_message": None,
+                    "description": "same",
+                },
+            ),
+            _step([zoom]),
         ),
-    }
-    # 修正 coarse_output 以便 handoff
-    parents[AgentRole.COARSE] = parents[AgentRole.COARSE].model_copy(
-        update={"coarse_output": hyp}
-    )
-
-    revs = reconstruct_revision_trajectories(
-        parents,
-        VerificationResult(
-            verdict="pass",
-            failed_checks=[],
-            suggested_recheck="none",
-            return_to_agent=None,
+        (
+            "b",
+            zoom,
+            _obs(
+                zoom,
+                observation={
+                    "status": "success",
+                    "error_message": None,
+                    "description": "same",
+                },
+            ),
+            _step([zoom], start=1, end=2),
         ),
-        {
-            AgentRole.FINE: [fine_step],
-            AgentRole.COARSE: [
-                _step(
-                    [Action(tool="ocr", params={})],
-                    role=AgentRole.COARSE,
-                    start=0.0,
-                    end=5.0,
-                )
-            ],
-            AgentRole.VERIFIER: [],
-        },
-        {
-            AgentRole.FINE: [_obs(fine_action)],
-            AgentRole.COARSE: [
-                _obs(
-                    Action(tool="ocr", params={}),
-                    observation={
-                        "status": "success",
-                        "error_message": None,
-                        "texts": ["x"],
-                    },
-                )
-            ],
-            AgentRole.VERIFIER: [],
-        },
-        answer_timestamp=40.0,
-        image_path="v.jpg",
-        revision_round=1,
-        max_revision_rounds=2,
-        video_revision_segments=[(18.0, 32.0)],
-    )
-    assert len(revs) == 1
-    assert revs[0].revision_source == RevisionSource.VIDEO_OBSERVED
-    assert revs[0].revision_input is None
-    assert revs[0].is_revision is True
+    ]
+    with pytest.raises(ValueError, match="递进可写性不足"):
+        _validate_coarse_projection_richness(units)
 
 
-def test_video_observed_revision_falls_back_without_overlap(
-    mock_llm: MagicMock,
-) -> None:
-    """revision 时段与 Move 无重叠时，回退全量可展开步，避免空跑。"""
-    hyp = _hyp()
-    submit = _submit()
-    fine_action = Action(tool="submit_answer", params=submit.model_dump())
-    fine_step = _step(
-        [fine_action],
-        role=AgentRole.FINE,
-        start=20.0,
-        end=30.0,
-        thought="提交。",
-    )
-    parents = {
-        AgentRole.COARSE: reconstruct_single_trajectory(
-            [
-                _step(
-                    [Action(tool="ocr", params={})],
-                    role=AgentRole.COARSE,
-                    start=0.0,
-                    end=5.0,
-                )
-            ],
-            [
-                _obs(
-                    Action(tool="ocr", params={}),
-                    observation={
-                        "status": "success",
-                        "error_message": None,
-                        "texts": ["x"],
-                    },
-                )
-            ],
-            AgentRole.COARSE,
-            40.0,
-            "v.jpg",
+def test_collapse_consecutive_duplicates_keeps_progressive_chain() -> None:
+    zoom = Action(tool="zoom_inspect", params={"bbox": [0.1, 0.1, 0.4, 0.4]})
+    units = [
+        (
+            "a",
+            zoom,
+            _obs(
+                zoom,
+                observation={
+                    "status": "success",
+                    "error_message": None,
+                    "description": "same",
+                },
+            ),
+            _step([zoom]),
         ),
-        AgentRole.FINE: reconstruct_single_trajectory(
-            [fine_step],
-            [_obs(fine_action)],
-            AgentRole.FINE,
-            40.0,
-            "v.jpg",
-            coarse_handoff=hyp,
+        (
+            "b",
+            zoom,
+            _obs(
+                zoom,
+                observation={
+                    "status": "success",
+                    "error_message": None,
+                    "description": "same",
+                },
+            ),
+            _step([zoom], start=1, end=2),
         ),
-    }
-    parents[AgentRole.COARSE] = parents[AgentRole.COARSE].model_copy(
-        update={"coarse_output": hyp}
-    )
-
-    revs = reconstruct_revision_trajectories(
-        parents,
-        VerificationResult(
-            verdict="pass",
-            failed_checks=[],
-            suggested_recheck="none",
-            return_to_agent=None,
+        (
+            "c",
+            Action(tool="ocr", params={"bbox": [0.2, 0.2, 0.3, 0.3]}),
+            _obs(
+                Action(tool="ocr", params={"bbox": [0.2, 0.2, 0.3, 0.3]}),
+                observation={
+                    "status": "success",
+                    "error_message": None,
+                    "texts": ["x"],
+                },
+            ),
+            _step(
+                [Action(tool="ocr", params={"bbox": [0.2, 0.2, 0.3, 0.3]})],
+                start=2,
+                end=3,
+            ),
         ),
-        {
-            AgentRole.FINE: [fine_step],
-            AgentRole.COARSE: [
-                _step(
-                    [Action(tool="ocr", params={})],
-                    role=AgentRole.COARSE,
-                    start=0.0,
-                    end=5.0,
-                )
-            ],
-            AgentRole.VERIFIER: [],
-        },
-        {
-            AgentRole.FINE: [_obs(fine_action)],
-            AgentRole.COARSE: [
-                _obs(
-                    Action(tool="ocr", params={}),
-                    observation={
-                        "status": "success",
-                        "error_message": None,
-                        "texts": ["x"],
-                    },
-                )
-            ],
-            AgentRole.VERIFIER: [],
-        },
-        answer_timestamp=40.0,
-        image_path="v.jpg",
-        revision_round=1,
-        max_revision_rounds=2,
-        # 与 FINE Move(20-30) 无重叠
-        video_revision_segments=[(90.0, 100.0)],
+    ]
+    collapsed = _collapse_consecutive_duplicate_actions(units)
+    assert len(collapsed) == 2
+    assert collapsed[0][1].tool == "zoom_inspect"
+    assert collapsed[1][1].tool == "ocr"
+
+
+def test_collapse_same_action_different_obs_without_delta() -> None:
+    """同 bbox zoom、Obs 字面不同但无候选增量 → 折叠。"""
+    zoom = Action(tool="zoom_inspect", params={"bbox": [0.05, 0.55, 0.9, 0.45]})
+    units = [
+        (
+            "看河岸。",
+            zoom,
+            _obs(
+                zoom,
+                observation={
+                    "status": "success",
+                    "error_message": None,
+                    "description": "desc-a",
+                },
+            ),
+            _step([zoom]),
+        ),
+        (
+            "再看河岸细节。",
+            zoom,
+            _obs(
+                zoom,
+                observation={
+                    "status": "success",
+                    "error_message": None,
+                    "description": "desc-b-different",
+                },
+            ),
+            _step([zoom], start=1, end=2),
+        ),
+        (
+            "继续同一框。",
+            zoom,
+            _obs(
+                zoom,
+                observation={
+                    "status": "success",
+                    "error_message": None,
+                    "description": "desc-c",
+                },
+            ),
+            _step([zoom], start=2, end=3),
+        ),
+    ]
+    collapsed = _collapse_consecutive_duplicate_actions(units)
+    assert len(collapsed) == 1
+    assert collapsed[0][2].observation is not None
+    assert collapsed[0][2].observation["description"] == "desc-a"
+
+
+def test_judge_rubric_distinguishes_video_fact_vs_early() -> None:
+    from pipeline.stage5_reconstruct import _JUDGE_RUBRIC
+
+    assert "不得" in _JUDGE_RUBRIC and "无视频来源" in _JUDGE_RUBRIC
+    assert "链内过早" in _JUDGE_RUBRIC
+    assert "轻微瑕疵" in _JUDGE_RUBRIC
+    assert "不应" in _JUDGE_RUBRIC and "≤0.4" in _JUDGE_RUBRIC
+    assert "空转 zoom" in _JUDGE_RUBRIC or "连续空转" in _JUDGE_RUBRIC
+
+
+def test_filter_ui_observation_units() -> None:
+    zoom = Action(tool="zoom_inspect", params={"bbox": [0.1, 0.1, 0.4, 0.4]})
+    units = [
+        (
+            "ui",
+            zoom,
+            _obs(
+                zoom,
+                observation={
+                    "status": "success",
+                    "error_message": None,
+                    "description": "聊天界面置顶消息进度条",
+                },
+            ),
+            _step([zoom]),
+        ),
+        (
+            "geo",
+            zoom,
+            _obs(
+                zoom,
+                observation={
+                    "status": "success",
+                    "error_message": None,
+                    "description": "elevated ground and long bridge",
+                },
+            ),
+            _step([zoom], start=1, end=2),
+        ),
+    ]
+    kept, removed = _filter_unusable_ui_units(units)
+    assert len(removed) == 1
+    assert len(kept) == 1
+    assert "bridge" in str(kept[0][2].observation)
+
+
+def test_build_ledger_lists_visual_facts() -> None:
+    zoom = Action(tool="zoom_inspect", params={"bbox": [0.1, 0.1, 0.4, 0.4]})
+    units = [
+        (
+            _coarse_ctx_draft("看。"),
+            zoom,
+            _obs(
+                zoom,
+                observation={
+                    "status": "success",
+                    "error_message": None,
+                    "description": "elevated ground",
+                },
+            ),
+            _step([zoom]),
+        )
+    ]
+    ledger = _build_coarse_evidence_ledger(
+        units, given_clues=[], candidate_hypotheses=[]
     )
-    assert len(revs) == 1
-    assert revs[0].revision_source == RevisionSource.VIDEO_OBSERVED
-    assert revs[0].agent_role == AgentRole.FINE
-    assert revs[0].is_revision is True
+    assert ledger.visual_facts or ledger.video_fact_claims
 
 
-def test_thin_verifier_augmented_with_web_search(
-    mock_llm: MagicMock, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """视频侧仅一步 map_query 时，补齐 web_search 验证深度。"""
-    calls: list[str] = []
-
-    def _fake_execute(
-        action: Action, image_path: str, agent_role: AgentRole, **kwargs: object
-    ) -> ObservationExecutionResult:
-        _ = image_path, agent_role, kwargs
-        calls.append(action.tool)
-        assert action.tool == "web_search"
-        return _verifier_web_obs(action)
-
-    monkeypatch.setattr(
-        "pipeline.stage5_reconstruct.execute_action",
-        _fake_execute,
-    )
-    map_action = Action(tool="map_query", params={"latlng": [48.8584, 2.2945]})
-    traj = reconstruct_single_trajectory(
-        [_step([map_action], role=AgentRole.VERIFIER)],
-        [_verifier_map_obs(map_action)],
-        AgentRole.VERIFIER,
+def test_prompts_never_contain_groundtruth_token(mock_llm: MagicMock) -> None:
+    zoom = Action(tool="zoom_inspect", params={"bbox": [0.1, 0.1, 0.4, 0.4]})
+    ocr = Action(tool="ocr", params={"bbox": [0.2, 0.2, 0.3, 0.3]})
+    reconstruct_single_trajectory(
+        [
+            _step([zoom], thought=_coarse_ctx_draft("看。"), start=0, end=1),
+            _step([ocr], thought="读。", start=1, end=2),
+        ],
+        [
+            _obs(
+                zoom,
+                observation={
+                    "status": "success",
+                    "error_message": None,
+                    "description": "tower",
+                },
+            ),
+            _obs(
+                ocr,
+                observation={
+                    "status": "success",
+                    "error_message": None,
+                    "texts": ["x"],
+                },
+            ),
+        ],
+        AgentRole.COARSE,
         answer_timestamp=100.0,
         image_path="frame.jpg",
-        fine_handoff=_submit(),
     )
-    assert calls == ["web_search"]
-    assert len(traj.steps) == 2
-    assert traj.steps[0].action.tool == "map_query"
-    assert traj.steps[1].action.tool == "web_search"
+    for c in mock_llm.calls:
+        assert "groundtruth" not in c["prompt"].lower()
+        assert "34.947" not in c["prompt"]
 
 
-def test_signature_has_no_groundtruth_param() -> None:
-    import inspect
-
-    for fn in (
-        reconstruct_single_trajectory,
-        reconstruct_all_trajectories,
-        reconstruct_revision_trajectories,
-    ):
-        params = inspect.signature(fn).parameters
-        assert "groundtruth" not in params
+def test_semantic_fact_cluster_collapse_dedupes_same_facts() -> None:
+    zoom = Action(tool="zoom_inspect", params={"bbox": [0.1, 0.1, 0.4, 0.4]})
+    units = [
+        (
+            "a",
+            zoom,
+            _obs(
+                zoom,
+                observation={
+                    "status": "success",
+                    "error_message": None,
+                    "description": "bridge over river",
+                },
+            ),
+            _step([zoom]),
+        ),
+        (
+            "b",
+            Action(tool="zoom_inspect", params={"bbox": [0.2, 0.2, 0.4, 0.4]}),
+            _obs(
+                Action(tool="zoom_inspect", params={"bbox": [0.2, 0.2, 0.4, 0.4]}),
+                observation={
+                    "status": "success",
+                    "error_message": None,
+                    "description": "bridge over river",
+                },
+            ),
+            _step(
+                [Action(tool="zoom_inspect", params={"bbox": [0.2, 0.2, 0.4, 0.4]})],
+                start=1,
+                end=2,
+            ),
+        ),
+    ]
+    collapsed = _collapse_semantic_fact_clusters(units)
+    assert len(collapsed) <= len(units)

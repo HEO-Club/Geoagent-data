@@ -409,11 +409,11 @@ class TimedScreenAction(BaseModel):
 
 
 class Move(BaseModel):
-    """stage2 对齐后的推理动作单元。"""
+    """stage2 对齐后的推理动作单元（通常对应一次屏幕操作会话）。"""
 
     start_time: float
     end_time: float
-    narration: str
+    narration: str  # 来自 asr_raw 或 vlm_transcript
     screen_action: Optional[str] = None
     visible_clues: list[str] = Field(default_factory=list)
     agent_role: AgentRole
@@ -520,6 +520,9 @@ class Trajectory(BaseModel):
     revision_round: int = 0
     revision_source: Optional[RevisionSource] = None
     revision_input: Optional[VerificationResult] = None
+
+    # stage5 judge best-of-k 入选候选的 rubric 得分（0~1）；stage6 以其为质量基分
+    stage5_judge_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 
     @model_validator(mode="after")
     def _validate_handoffs(self) -> Trajectory:

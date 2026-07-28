@@ -1,0 +1,12 @@
+{
+  "video_id": "BV1JFp7zdEzH",
+  "query": "荔浦市",
+  "latitude": 24.4914297,
+  "longitude": 110.3904799,
+  "formatted_address": "荔浦市, 桂林市, 广西壮族自治区, 中国",
+  "place_type": "administrative",
+  "status": "success",
+  "answer_timestamp": 419.69,
+  "source": "prep_groundtruth+manual_query",
+  "needs_review": true
+}

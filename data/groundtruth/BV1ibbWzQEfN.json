@@ -1,0 +1,12 @@
+{
+  "video_id": "BV1ibbWzQEfN",
+  "query": "江门东湖公园",
+  "latitude": 22.595341,
+  "longitude": 113.0816729,
+  "formatted_address": "东湖公园, 白沙街道, 蓬江区, 江门市, 广东省, 中国",
+  "place_type": "park",
+  "status": "success",
+  "answer_timestamp": 311.5,
+  "source": "prep_groundtruth+manual_query",
+  "needs_review": true
+}

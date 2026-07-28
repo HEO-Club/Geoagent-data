@@ -1,0 +1,122 @@
+[
+  {
+    "video_id": "BV13m61BJEQC",
+    "query": "郑州黄河文化公园",
+    "latitude": 34.9475818,
+    "longitude": 113.517007,
+    "formatted_address": "郑州黄河文化公园",
+    "place_type": "park",
+    "status": "success",
+    "source": "existing",
+    "needs_review": false
+  },
+  {
+    "video_id": "BV15zyUY2EKs",
+    "query": "呼伦贝尔职业技术学院",
+    "latitude": 49.175032,
+    "longitude": 119.7327285,
+    "formatted_address": "呼伦贝尔职业技术学院, 辉河路, 巴彦托海镇, 鄂温克族自治旗, 呼伦贝尔市 ᠬᠥᠯᠥᠨ ᠪᠤᠶᠢᠷ, 内蒙古自治区 ᠦᠪᠦᠷ ᠮᠣᠩᠭᠤᠯ ᠤᠨ ᠥᠪᠡᠷᠲᠡᠭᠡᠨ ᠵᠠᠰᠠᠬᠣ ᠣᠷᠣᠨ, 021000, 中国",
+    "place_type": "college",
+    "status": "success",
+    "answer_timestamp": 619.45,
+    "source": "prep_groundtruth+manual_query",
+    "needs_review": true
+  },
+  {
+    "video_id": "BV1CDtizwEhE",
+    "query": "天津津湾广场",
+    "latitude": 39.1303448,
+    "longitude": 117.2011885,
+    "formatted_address": "津湾广场, 解放北路, 承德道社区, 小白楼街道, 和平区, 天津市, 300040, 中国",
+    "place_type": "station",
+    "status": "success",
+    "answer_timestamp": 205.8,
+    "source": "prep_groundtruth+manual_query",
+    "needs_review": true
+  },
+  {
+    "video_id": "BV1fKMQzUEQx",
+    "query": "云南勐腊",
+    "latitude": 21.6551382,
+    "longitude": 101.4786177,
+    "formatted_address": "勐腊县, 西双版纳傣族自治州, 云南省, 666300, 中国",
+    "place_type": "administrative",
+    "status": "success",
+    "answer_timestamp": 1391.11,
+    "source": "prep_groundtruth+manual_query",
+    "needs_review": true
+  },
+  {
+    "video_id": "BV1ibbWzQEfN",
+    "query": "江门东湖公园",
+    "latitude": 22.595341,
+    "longitude": 113.0816729,
+    "formatted_address": "东湖公园, 白沙街道, 蓬江区, 江门市, 广东省, 中国",
+    "place_type": "park",
+    "status": "success",
+    "answer_timestamp": 311.5,
+    "source": "prep_groundtruth+manual_query",
+    "needs_review": true
+  },
+  {
+    "video_id": "BV1JFp7zdEzH",
+    "query": "荔浦市",
+    "latitude": 24.4914297,
+    "longitude": 110.3904799,
+    "formatted_address": "荔浦市, 桂林市, 广西壮族自治区, 中国",
+    "place_type": "administrative",
+    "status": "success",
+    "answer_timestamp": 419.69,
+    "source": "prep_groundtruth+manual_query",
+    "needs_review": true
+  },
+  {
+    "video_id": "BV1jjN2zdEQH",
+    "query": "滨河东路,城关区,兰州",
+    "latitude": 36.0696749,
+    "longitude": 103.8467961,
+    "formatted_address": "兰州城关滨河东路（近水广场近似）",
+    "place_type": "primary",
+    "status": "success",
+    "answer_timestamp": 409.9,
+    "source": "manual_approx",
+    "needs_review": true,
+    "manual_note": "兰州城关滨河东路（近水广场近似）"
+  },
+  {
+    "video_id": "BV1RC2XBdEnq",
+    "query": "中山沙溪镇",
+    "latitude": 22.5114054,
+    "longitude": 113.3160118,
+    "formatted_address": "沙溪镇, 中山市, 广东省, 中国",
+    "place_type": "administrative",
+    "status": "success",
+    "answer_timestamp": 582.9,
+    "source": "prep_groundtruth+manual_query",
+    "needs_review": true
+  },
+  {
+    "video_id": "BV1SbeqzoE5y",
+    "query": "上海阳谱大桥",
+    "latitude": 31.2571349,
+    "longitude": 121.5414034,
+    "formatted_address": "杨浦大桥, 内环高架路, 引翔港, 大桥街道, 杨浦区, 上海市, 200082, 中国",
+    "place_type": "bridge",
+    "status": "success",
+    "answer_timestamp": 282.67,
+    "source": "prep_groundtruth+manual_query",
+    "needs_review": true
+  },
+  {
+    "video_id": "BV1ze2JY5EMV",
+    "query": "淄博淄川马棚村",
+    "latitude": 36.5980657,
+    "longitude": 117.790314,
+    "formatted_address": "马棚村, 济潍高速, 淄川区, 淄博市, 山东省, 中国",
+    "place_type": "bus_stop",
+    "status": "success",
+    "answer_timestamp": 345.46,
+    "source": "prep_groundtruth+manual_query",
+    "needs_review": true
+  }
+]

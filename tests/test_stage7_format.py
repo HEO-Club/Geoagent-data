@@ -253,3 +253,38 @@ def test_merge_jsonl_shards_single_writer(tmp_path: Path) -> None:
     assert len(coarse_lines) == 2
     ids = {json.loads(line)["id"] for line in coarse_lines}
     assert ids == {"traj-coarse-1", "traj-coarse-2"}
+
+
+def test_agent1_revision_input_strips_fine_place_text() -> None:
+    """Agent1 shard 不携带 FINE 地点文本的 revision_input。"""
+    traj = _coarse_traj().model_copy(
+        update={
+            "is_revision": True,
+            "revision_round": 1,
+            "revision_source": __import__(
+                "pipeline.schemas", fromlist=["RevisionSource"]
+            ).RevisionSource.SYSTEM_FEEDBACK,
+            "parent_trajectory_id": "parent-1",
+            "revision_input": VerificationResult(
+                verdict="fail",
+                failed_checks=["郑州黄河文化公园 visual mismatch"],
+                suggested_recheck="核对郑州黄河文化公园大门",
+                return_to_agent=1,
+            ),
+        }
+    )
+    entry = to_dataset_entry(
+        traj,
+        {
+            "source_video": "vid001",
+            "groundtruth": (34.9, 113.5),
+            "quality_score": 0.2,
+            "verified": True,
+        },
+    )
+    assert entry.revision_input is not None
+    blob = " ".join(entry.revision_input.failed_checks)
+    assert "郑州黄河文化公园" not in blob
+    assert entry.revision_input.suggested_recheck == ""
+    assert entry.revision_input.verdict == "fail"
+    assert entry.revision_input.return_to_agent == 1

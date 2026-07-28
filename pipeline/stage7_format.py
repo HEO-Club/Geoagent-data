@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 from typing import Any, Optional
 
+from pipeline.evidence_routing import sanitize_revision_input_for_coarse_shard
 from pipeline.schemas import (
     AgentRole,
     ChatMessage,
@@ -133,6 +134,10 @@ def to_dataset_entry(traj: Trajectory, meta: dict[str, Any]) -> DatasetEntry:
     else:
         raise TypeError(f"groundtruth 类型非法: {type(gt)}")
 
+    revision_input = traj.revision_input
+    if traj.agent_role == AgentRole.COARSE:
+        revision_input = sanitize_revision_input_for_coarse_shard(revision_input)
+
     return DatasetEntry(
         id=traj.id,
         source_video=str(resolved["source_video"]),
@@ -145,7 +150,7 @@ def to_dataset_entry(traj: Trajectory, meta: dict[str, Any]) -> DatasetEntry:
         parent_trajectory_id=traj.parent_trajectory_id,
         revision_round=traj.revision_round,
         revision_source=traj.revision_source,
-        revision_input=traj.revision_input,
+        revision_input=revision_input,
         quality_score=float(resolved["quality_score"]),
         verified=bool(resolved["verified"]),
         distance_error_km=(

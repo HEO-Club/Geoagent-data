@@ -171,6 +171,7 @@ def detect_screen_actions(
         prompt,
         _ScreenActionBatch,
         images=vlm_frames,
+        lane="vlm",
     )
     if not isinstance(batch, _ScreenActionBatch):
         batch = _ScreenActionBatch.model_validate(batch)

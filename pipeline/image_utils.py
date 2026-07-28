@@ -84,6 +84,86 @@ def _normalize_bbox_xyxy(bbox: list[float]) -> Optional[tuple[float, float, floa
     return x1, y1, x2, y2
 
 
+def candidate_keyframes_near_move(
+    keyframes: Sequence[str],
+    start_time: float,
+    end_time: float,
+    *,
+    max_candidates: int = 5,
+) -> list[str]:
+    """取 Move 起点/中点/终点附近若干关键帧候选。"""
+    if not keyframes:
+        return []
+    mid = (start_time + end_time) / 2.0
+    targets = [start_time, mid, end_time]
+    timed: list[tuple[float, str]] = []
+    for path in keyframes:
+        t = parse_keyframe_time(path)
+        if t is None:
+            continue
+        timed.append((t, path))
+    if not timed:
+        return list(keyframes[:max_candidates])
+    scored: list[tuple[float, str]] = []
+    for t, p in timed:
+        dist = min(abs(t - tg) for tg in targets)
+        scored.append((dist, p))
+    scored.sort(key=lambda x: x[0])
+    out: list[str] = []
+    seen: set[str] = set()
+    for _, p in scored:
+        if p in seen:
+            continue
+        seen.add(p)
+        out.append(p)
+        if len(out) >= max_candidates:
+            break
+    return out
+
+
+def compose_content_relative_bbox(
+    content_bbox: list[float],
+    action_bbox: list[float],
+) -> list[float]:
+    """内容区 bbox 与 Action 相对 bbox → 全图归一化 xywh。"""
+    from pipeline.evidence_routing import combine_bboxes
+
+    return combine_bboxes(content_bbox, action_bbox)
+
+
+def expand_bbox_xywh(
+    bbox: list[float],
+    *,
+    margin: float = 0.08,
+) -> list[float]:
+    """将归一化 ``[x,y,w,h]``（或可解析为 xywh 的框）向外扩展 ``margin`` 并 clamp 到 ``[0,1]``。
+
+    非法输入原样返回。用于 zoom/ocr 降低 stage3 框偏导致的机械 empty。
+    """
+    if not isinstance(bbox, list) or len(bbox) != 4:
+        return bbox
+    if not all(isinstance(x, (int, float)) for x in bbox):
+        return bbox
+    m = max(0.0, float(margin))
+    if m <= 0.0:
+        return [float(x) for x in bbox]
+    norm = _normalize_bbox_xyxy([float(x) for x in bbox])
+    if norm is None:
+        return [float(x) for x in bbox]
+    x1, y1, x2, y2 = norm
+    x1 = max(0.0, x1 - m)
+    y1 = max(0.0, y1 - m)
+    x2 = min(1.0, x2 + m)
+    y2 = min(1.0, y2 + m)
+    w = max(0.02, x2 - x1)
+    h = max(0.02, y2 - y1)
+    if x1 + w > 1.0:
+        x1 = max(0.0, 1.0 - w)
+    if y1 + h > 1.0:
+        y1 = max(0.0, 1.0 - h)
+    return [x1, y1, w, h]
+
+
 def crop_image_by_bbox(
     image_path: str,
     bbox: list[float],

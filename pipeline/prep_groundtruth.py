@@ -30,34 +30,19 @@ _last_request_monotonic: float = 0.0
 _PLACE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
     re.compile(p)
     for p in (
-        r"(?:在|于|位于|来到|登上|经过)([\u4e00-\u9fff]{2,20}"
+        r"(?:答案是|地点是|这里是|拍摄于|在|于|位于|来到|登上|经过)"
+        r"([\u4e00-\u9fff]{2,20}"
         r"(?:文化公园|风景名胜区|风景区|公园|大桥|铁路桥|公路桥|广场|"
         r"车站|码头|寺庙|古镇|古城|大学|博物馆|塔|山|亭))",
-        r"([\u4e00-\u9fff]{2,16}(?:黄河文化公园|文化公园|风景名胜区))",
-        r"((?:郑州|许昌|洛阳|开封|北京|上海|南京|武汉|西安)"
-        r"[\u4e00-\u9fff]{0,12}(?:黄河文化公园|文化公园|风景区|公园|大桥|山|亭))",
-        r"([\u4e00-\u9fff]{2,12}(?:铁路桥|公路桥|大桥|依山亭|吉木格))",
+        r"(?:最终|所以|确认)(?:地点|答案)?(?:就是|是)"
+        r"([\u4e00-\u9fff]{2,20}(?:公园|景区|广场|车站|码头|寺庙|"
+        r"古镇|古城|大学|博物馆|大桥|山|塔|亭))",
     )
 )
 
 _NOISE_PREFIX = re.compile(
     r"^(这|那|该|此|其|的|了|着|过|是|就|把|被|反而|不远处|经过|下游|中国|首座)+"
 )
-_BAD_SUBSTRINGS = (
-    "我国",
-    "始建",
-    "新建了",
-    "父亲",
-    "照片",
-    "时候",
-    "一段",
-    "一条",
-    "建成",
-    "正交",
-    "特大桥",  # 过长描述性桥名易误抽，保留「郑州黄河大桥」等短名
-)
-
-
 class PlaceCandidate(BaseModel):
     """从文字稿抽出的候选地名。"""
 
@@ -202,8 +187,6 @@ def extract_place_candidates(
                 parts = [p for p in match.groups() if p]
                 query = _normalize_place("".join(parts))
                 if len(query) < 2 or len(query) > 24 or query in seen:
-                    continue
-                if any(bad in query for bad in _BAD_SUBSTRINGS):
                     continue
                 seen.add(query)
                 found.append(

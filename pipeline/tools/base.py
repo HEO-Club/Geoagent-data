@@ -12,7 +12,13 @@ import diskcache
 from pydantic import BaseModel, Field, ValidationError
 
 from pipeline.config import get_settings
-from pipeline.image_utils import crop_image_by_bbox
+from pipeline.evidence_routing import (
+    ContentRegion,
+    ContentType,
+    EvidenceIntent,
+    heuristic_content_region,
+)
+from pipeline.image_utils import crop_image_by_bbox, expand_bbox_xywh
 from pipeline.llm import call_structured
 from pipeline.schemas import (
     Action,
@@ -24,14 +30,50 @@ from pipeline.schemas import (
 from pipeline.tools.registry import load_registry
 from pipeline.tools.validation import validate_action_params, validate_observation
 
-PROMPT_VERSION = "obs_synth_v3"
+PROMPT_VERSION = "obs_synth_v10_video_step_result"
 
-# 仅对画面观察类 Tool 做 H9 门禁（web_search/map_query 结果常合法提及平台名）
-_FRAME_OVERLAY_TOOLS: frozenset[str] = frozenset(
-    {"zoom_inspect", "ocr", "sun_position_calc", "reverse_image_search"}
+# VisualObs：依赖关键帧；bbox 为注意力提示（含单图地形/标注类）
+_VISUAL_OBS_TOOLS: frozenset[str] = frozenset(
+    {
+        "zoom_inspect",
+        "ocr",
+        "sun_position_calc",
+        "annotate_geographic_environment_on_image",
+        "detect_terrain_features",
+        "analyze_terrain_ambiguity",
+        "analyze_terrain_visual_illusion",
+    }
 )
+# RetrievalObs：纯文本按本步旁白+Action 填 schema，不传图
+# （含 COARSE 开放的卫星/历史地图/双图比对结果摘要，避免无效图 URL）
+_RETRIEVAL_OBS_TOOLS: frozenset[str] = frozenset(
+    {
+        "web_search",
+        "map_query",
+        "reverse_image_search",
+        "find_specific_features_in_satellite_map",
+        "lookup_historical_satellite_map",
+        "lookup_historical_map_layout",
+        "compare_images_for_geolocation",
+    }
+)
+_BBOX_EXPAND_MARGIN = 0.08
+_TEXT_ONLY_IMAGE_MARKER = "text_only"
 
-# 视频 overlay / 元信息类别（通用结构启发式，非单视频标题黑名单）
+
+class _ObservationGroundingCheck(BaseModel):
+    """逐视频来源蕴含 + 相对既有声明的增量检查。"""
+
+    fully_entailed_by_source_claims: bool
+    unsupported_spans: list[str] = Field(default_factory=list)
+    target_visibility_consistent: bool
+    adds_incremental_information: bool = True
+    reason: str = ""
+
+# 仅对 VisualObs 做 H9 门禁（检索摘要常合法提及平台名）
+_FRAME_OVERLAY_TOOLS: frozenset[str] = _VISUAL_OBS_TOOLS
+
+# 视频 overlay / 元信息类别（通用结构识别，与地理事实判定无关）
 _OVERLAY_CATEGORY_RES: tuple[re.Pattern[str], ...] = (
     re.compile(
         r"水印|片头|标题卡|烧录字幕|进度条|频道(?:名|标识|水印|logo)|up主|创作者标签",
@@ -50,41 +92,24 @@ _OVERLAY_CATEGORY_RES: tuple[re.Pattern[str], ...] = (
     re.compile(r"平台\s*(?:logo|ui|水印)", re.I),
 )
 
-# 中文地名/行政区/道路等后缀短语（COARSE 旁白消毒）
-_PLACE_SUFFIX_RE = re.compile(
-    r"[\u4e00-\u9fff]{1,12}(?:省|市|州|盟|地区|县|区|旗|镇|乡|村|庄|"
-    r"街道|路|街|巷|大道|广场|公园|景区|机场|车站|地铁站|大学|医院)"
-)
-# 常见英文地名词形（粗粒度）
-_LATIN_PLACE_RE = re.compile(
-    r"\b(?:in|at|near|around)?\s*[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*"
-    r"(?:\s+(?:City|County|Province|Street|Road|Park|Square))?\b"
-)
 _COORD_RE = re.compile(
     r"(?:[-+]?\d{1,3}(?:\.\d+)?\s*[,，]\s*[-+]?\d{1,3}(?:\.\d+)?)"
     r"|(?:北纬|南纬|东经|西经)\s*[-+]?\d+(?:\.\d+)?"
     r"|(?:lat(?:itude)?|lng|lon(?:gitude)?)\s*[:=]?\s*[-+]?\d+(?:\.\d+)?",
     re.IGNORECASE,
 )
-_FIRST_PERSON_RE = re.compile(
-    r"(?:我(?:们)?|咱们|博主)(?:觉得|认为|来到|发现|看到|知道|猜)"
-)
-
-
 def sanitize_narration_for_obs(agent_role: AgentRole, narration: str) -> str:
     """按角色消毒旁白，降低地名经 Observation 反哺 Thought 的风险。
 
-    COARSE：剥离中英地名后缀短语、坐标表述与第一人称叙事残留。
+    COARSE：不传自由旁白，只由 EvidenceIntent.source_claims 提供来源事实。
     FINE / VERIFIER：仅剥离坐标表述（允许 params 驱动的地名查询上下文）。
     """
     text = (narration or "").strip()
     if not text:
         return ""
-    text = _COORD_RE.sub(" ", text)
     if agent_role == AgentRole.COARSE:
-        text = _PLACE_SUFFIX_RE.sub(" ", text)
-        text = _LATIN_PLACE_RE.sub(" ", text)
-        text = _FIRST_PERSON_RE.sub(" ", text)
+        return ""
+    text = _COORD_RE.sub(" ", text)
     text = re.sub(r"\s+", " ", text).strip(" ，,。.;；")
     return text
 
@@ -92,7 +117,7 @@ def sanitize_narration_for_obs(agent_role: AgentRole, narration: str) -> str:
 def observation_contains_video_overlay(observation: dict[str, Any]) -> list[str]:
     """通用启发式：Observation 是否含视频 overlay/元信息类别。
 
-    返回命中的类别说明列表；空列表表示未检出。不做单视频标题黑名单删除。
+    返回命中的类别说明列表；空列表表示未检出。
     """
     if not observation:
         return []
@@ -104,19 +129,36 @@ def observation_contains_video_overlay(observation: dict[str, Any]) -> list[str]
     return hits
 
 
-def _resolve_synth_image(tool: ToolDefinition, params: dict[str, Any], image_path: str) -> str:
-    """zoom_inspect/ocr 按 bbox 裁图后送模；其余用原图。"""
+def _resolve_synth_image(
+    tool: ToolDefinition,
+    params: dict[str, Any],
+    image_path: str,
+    *,
+    evidence_intent: Optional[EvidenceIntent] = None,
+    content_region: Optional[ContentRegion] = None,
+) -> str:
+    """内容区裁剪 + zoom_inspect/ocr 相对 bbox；interface_only 返回原图由上层处理。"""
+    region = content_region or heuristic_content_region(intent=evidence_intent)
+    settings = get_settings()
+    cache_dir = str(Path(settings.CACHE_DIR))
+
+    # 先裁内容区（老照片/地图画布）
+    base = image_path
+    if region.content_type is not ContentType.INTERFACE_ONLY:
+        base = crop_image_by_bbox(
+            image_path, list(region.content_bbox), cache_dir=cache_dir
+        )
+
     if tool.name not in ("zoom_inspect", "ocr"):
-        return image_path
+        return base
     bbox = params.get("bbox")
     if not isinstance(bbox, list) or len(bbox) != 4:
-        return image_path
-    settings = get_settings()
-    return crop_image_by_bbox(
-        image_path,
-        [float(x) for x in bbox],
-        cache_dir=str(Path(settings.CACHE_DIR)),
+        return base
+    # bbox=注意力提示：外扩后再裁，降低 stage3 框偏导致的机械 empty
+    expanded = expand_bbox_xywh(
+        [float(x) for x in bbox], margin=_BBOX_EXPAND_MARGIN
     )
+    return crop_image_by_bbox(base, expanded, cache_dir=cache_dir)
 
 
 def _tool_schema_hash(tool: ToolDefinition) -> str:
@@ -214,6 +256,159 @@ def _build_observation_model(tool: ToolDefinition) -> type[BaseModel]:
     return type(f"SynthObs_{tool.name}", (BaseModel,), namespace)
 
 
+def _is_retrieval_tool(tool_name: str) -> bool:
+    return tool_name in _RETRIEVAL_OBS_TOOLS
+
+
+def _is_visual_tool(tool_name: str) -> bool:
+    return tool_name in _VISUAL_OBS_TOOLS
+
+
+def _field_lines(tool: ToolDefinition) -> list[str]:
+    lines: list[str] = []
+    for f in tool.observation_fields:
+        lines.append(
+            f"- {f.name} ({f.type}, nullable={f.nullable}): {f.description}"
+        )
+    return lines
+
+
+def _retry_feedback_block(retry_feedback: str) -> str:
+    if not retry_feedback.strip():
+        return ""
+    return (
+        "Previous Observation was rejected. Fix these issues and regenerate:\n"
+        f"{retry_feedback.strip()}\n"
+    )
+
+
+def _synthesize_visual_observation(
+    tool: ToolDefinition,
+    params: dict[str, Any],
+    image_path: str,
+    narration: str,
+    agent_role: AgentRole,
+    *,
+    retry_feedback: str = "",
+    evidence_intent: Optional[EvidenceIntent] = None,
+) -> dict[str, Any]:
+    """VisualObs：关键帧 + bbox 提示 + 可见确认优先。"""
+    model_cls = _build_observation_model(tool)
+    role_hint = (
+        "This is a COARSE (broad localization) step: prefer ranges/visual features; "
+        "do not invent city/POI names absent from source_claims and the image.\n"
+        if agent_role == AgentRole.COARSE
+        else ""
+    )
+    intent_hint = ""
+    if evidence_intent is not None:
+        intent_hint = (
+            f"- EvidenceIntent target: {evidence_intent.target_object}; "
+            f"features={evidence_intent.target_features}; "
+            f"relation={evidence_intent.expected_spatial_relation!r}; "
+            f"subject_scope={evidence_intent.subject_scope.value}; "
+            f"spatial_anchor={evidence_intent.spatial_anchor!r}.\n"
+            f"- Per-video source claims={evidence_intent.source_claims}; "
+            f"source concepts={evidence_intent.source_concepts}.\n"
+            "- PRIMARY GOAL: usable Observation of what this video step shows. "
+            "Prefer status=success with a short concrete description of visible "
+            "cues about the EvidenceIntent target.\n"
+            "- bbox in Params is an ATTENTION HINT (may be slightly off); "
+            "the crop is already expanded. Describe nearby in-scene geography "
+            "if the target or supporting scene is visible — do NOT return empty "
+            "for a ~5–10% box misalignment.\n"
+            "- A short visibility confirmation of a source_claims target IS "
+            "valuable training signal.\n"
+            "- Do not invent new place names / POIs absent from source_claims "
+            "AND the image. Visible appearance of an already-claimed target "
+            "and readable in-scene signage text are allowed.\n"
+            "- Use status=empty ONLY when: (a) pure UI / black / heavy blur with "
+            "no in-scene geography, OR (b) the stated target is clearly absent.\n"
+            "- Keep description to 1–3 short visual sentences.\n"
+        )
+    else:
+        intent_hint = (
+            "- bbox in Params is an ATTENTION HINT; crop may be expanded. "
+            "Prefer success when in-scene geography is visible near the hint.\n"
+            "- empty ONLY for pure UI/black/blur or clearly absent targets.\n"
+        )
+    prompt = (
+        "You synthesize a VisualObs tool Observation from the image and action "
+        "params (plus optional sanitized narration).\n"
+        "Goal: report what this video step's visual action reveals, in schema form.\n"
+        "Rules:\n"
+        "- Fill EVERY field listed; do not add extra fields.\n"
+        "- If nullable and info is absent, use null; do not guess.\n"
+        "- For result_list use 2~5 items matching item_fields when status=success.\n"
+        "- Never use placeholder strings like 未知/不确定/N/A.\n"
+        "- status must be success|empty|error; error_message only when status=error.\n"
+        "- Do NOT use any groundtruth.\n"
+        "- Style as a realistic API response for this tool.\n"
+        "- H9: NEVER include video production overlays: intro/title cards, "
+        "platform/channel watermarks or logos, difficulty/star badges, "
+        "progress bars, burned-in subtitles, creator tags, chat bubbles, "
+        "or non-scene UI. Describe only in-scene geography/architecture/"
+        "nature/real signage. For OCR, ignore corner watermarks and top title "
+        "bars; if only overlay text is visible, return empty texts / status=empty.\n"
+        "- Tool modality: write as this Tool's visual result, NOT as a separate "
+        "satellite-search / map-query / web API call. If the frame shows a map or "
+        "satellite view, describe visible map/satellite-view features in-scene "
+        "(e.g. plains, rivers, labels on the image); do NOT claim you 'opened a "
+        "satellite API' or 'queried remote sensing service'. For zoom_inspect/"
+        "ocr/sun_position_calc, never invent independent map-service metadata.\n"
+        f"{intent_hint}"
+        f"{role_hint}"
+        f"{_retry_feedback_block(retry_feedback)}"
+        f"AgentRole: {agent_role.value}\n"
+        f"Tool: {tool.name}\nDescription: {tool.description}\n"
+        f"Params: {json.dumps(params, ensure_ascii=False)}\n"
+        f"Narration: {narration or '(empty)'}\n"
+        f"Fields:\n" + "\n".join(_field_lines(tool))
+    )
+    result = call_structured(prompt, model_cls, images=[image_path])
+    return result.model_dump(mode="json")
+
+
+def _synthesize_retrieval_observation(
+    tool: ToolDefinition,
+    params: dict[str, Any],
+    narration: str,
+    agent_role: AgentRole,
+    *,
+    retry_feedback: str = "",
+) -> dict[str, Any]:
+    """RetrievalObs：无图；按本步旁白+Action 写 API 形结果，放行顺推中间地名。"""
+    model_cls = _build_observation_model(tool)
+    prompt = (
+        "You synthesize a RetrievalObs tool Observation from Action params and "
+        "this step's video narration only (NO image).\n"
+        "Goal: report what this video step's search/map/match action found, "
+        "as a realistic API response in the given schema.\n"
+        "Rules:\n"
+        "- Fill EVERY field listed; do not add extra fields.\n"
+        "- If nullable and info is absent from narration/params, use null.\n"
+        "- For result_list use 2~5 items matching item_fields when status=success.\n"
+        "- Never use placeholder strings like 未知/不确定/N/A.\n"
+        "- status must be success|empty|error; error_message only when status=error.\n"
+        "- Do NOT use any groundtruth or answer revealed only at video end.\n"
+        "- Place names that appear in THIS step's Narration and/or Action params "
+        "(e.g. query) MAY be written into Observation fields when they are "
+        "intermediate results of this step (顺推). "
+        "Do NOT invent final answer-level place names absent from Narration "
+        "and Action params.\n"
+        "- Prefer status=success when the narration indicates useful hits; "
+        "empty only when the step clearly found nothing.\n"
+        f"{_retry_feedback_block(retry_feedback)}"
+        f"AgentRole: {agent_role.value}\n"
+        f"Tool: {tool.name}\nDescription: {tool.description}\n"
+        f"Params: {json.dumps(params, ensure_ascii=False)}\n"
+        f"Narration: {narration or '(empty)'}\n"
+        f"Fields:\n" + "\n".join(_field_lines(tool))
+    )
+    result = call_structured(prompt, model_cls, images=None)
+    return result.model_dump(mode="json")
+
+
 def _synthesize_observation(
     tool: ToolDefinition,
     params: dict[str, Any],
@@ -222,59 +417,59 @@ def _synthesize_observation(
     agent_role: AgentRole,
     *,
     retry_feedback: str = "",
+    evidence_intent: Optional[EvidenceIntent] = None,
 ) -> dict[str, Any]:
-    """H 规则：LLM 按 observation_fields 逐字段合成（关键帧/裁剪图 + 消毒旁白）。"""
-    model_cls = _build_observation_model(tool)
-    field_lines = []
-    for f in tool.observation_fields:
-        field_lines.append(
-            f"- {f.name} ({f.type}, nullable={f.nullable}): {f.description}"
+    """按 Tool 族分发 Visual / Retrieval 合成。"""
+    if _is_retrieval_tool(tool.name):
+        return _synthesize_retrieval_observation(
+            tool,
+            params,
+            narration,
+            agent_role,
+            retry_feedback=retry_feedback,
         )
-    role_hint = (
-        "This is a COARSE (broad localization) step: prefer ranges/visual features; "
-        "do not invent city/POI names.\n"
-        if agent_role == AgentRole.COARSE
-        else ""
+    return _synthesize_visual_observation(
+        tool,
+        params,
+        image_path,
+        narration,
+        agent_role,
+        retry_feedback=retry_feedback,
+        evidence_intent=evidence_intent,
     )
-    feedback = ""
-    if retry_feedback.strip():
-        feedback = (
-            "Previous Observation was rejected. Fix these issues and regenerate:\n"
-            f"{retry_feedback.strip()}\n"
-        )
+
+
+def _check_observation_grounding(
+    observation: dict[str, Any],
+    evidence_intent: EvidenceIntent,
+    image_path: str,
+) -> _ObservationGroundingCheck:
+    """检查 Obs 的每个事实是否被该视频引用声明蕴含。"""
     prompt = (
-        "You synthesize a tool Observation from the image, sanitized step narration, "
-        "and action params.\n"
-        "Rules:\n"
-        "- Fill EVERY field listed; do not add extra fields.\n"
-        "- If nullable and info is absent in the image/narration, use null; do not guess.\n"
-        "- For result_list use 2~5 items matching item_fields when status=success.\n"
-        "- Never use placeholder strings like 未知/不确定/N/A.\n"
-        "- status must be success|empty|error; error_message only when status=error.\n"
-        "- Do NOT use any groundtruth.\n"
-        "- Style the Observation as a realistic API response for this tool.\n"
-        "- Narration is auxiliary visual/process context ONLY. "
-        "Do NOT copy city names, POI names, or precise locations from Narration "
-        "into Observation fields.\n"
-        "- Place names in Observation may only come from Action params "
-        "(e.g. query) or clearly visible scene text (road signs/shop signs) "
-        "when the tool semantically extracts text.\n"
-        "- H9: NEVER include video production overlays: intro/title cards, "
-        "platform/channel watermarks or logos, difficulty/star badges, "
-        "progress bars, burned-in subtitles, creator tags, or non-scene UI. "
-        "Describe only in-scene geography/architecture/nature/real signage. "
-        "For OCR, ignore corner watermarks and top title bars; if only overlay "
-        "text is visible, return empty texts / status=empty.\n"
-        f"{role_hint}"
-        f"{feedback}"
-        f"AgentRole: {agent_role.value}\n"
-        f"Tool: {tool.name}\nDescription: {tool.description}\n"
-        f"Params: {json.dumps(params, ensure_ascii=False)}\n"
-        f"Narration: {narration or '(empty)'}\n"
-        f"Fields:\n" + "\n".join(field_lines)
+        "审查一个 COARSE Observation 是否受当前视频来源声明约束，"
+        "同时允许对已声明目标做可见确认。不要使用任何预设地理词表。\n"
+        "规则：\n"
+        "1. 不得引入 source_claims 未提及的新地名、新 POI、新候选地点；"
+        "同义改写允许。\n"
+        "2. 图片用于确认 source_claims 指定目标是否可见，并可描述该目标上"
+        "可见的外观/空间线索（形状、相对位置、材质色调、地貌类型等）；"
+        "这些可见确认不算「发明新事实」。目标完全不可见时 status=empty 才一致。\n"
+        "3. 若出现 source_claims 未提及的新地名/新候选/新设施名，"
+        "fully_entailed=false，并列入 unsupported_spans。\n"
+        "4. adds_incremental_information=true 当 Observation 给出了相对 "
+        "source_claims 的可见确认、否定或空间线索；短确认句算增量。"
+        "仅当整段 Observation 是对 source_claims 的长篇同义复述且无可视"
+        "确认时才 false（此时仍可 fully_entailed=true）。\n"
+        f"source_fact_ids={evidence_intent.video_fact_ids}\n"
+        f"source_claims={evidence_intent.source_claims}\n"
+        f"source_concepts={evidence_intent.source_concepts}\n"
+        f"observation={json.dumps(observation, ensure_ascii=False)}"
     )
-    result = call_structured(prompt, model_cls, images=[image_path])
-    return result.model_dump(mode="json")
+    return call_structured(
+        prompt,
+        _ObservationGroundingCheck,
+        images=[image_path],
+    )
 
 
 def execute_action(
@@ -285,6 +480,8 @@ def execute_action(
     narration: str = "",
     registry_path: Optional[str] = None,
     use_cache: bool = True,
+    evidence_intent: Optional[EvidenceIntent] = None,
+    content_region: Optional[ContentRegion] = None,
 ) -> ObservationExecutionResult:
     """分发器：权限 → params 校验 → terminal skip / LLM 合成 → observation 校验 → 缓存。"""
     settings = get_settings()
@@ -326,7 +523,18 @@ def execute_action(
         )
 
     narr = sanitize_narration_for_obs(agent_role, narration or "")
-    synth_image = _resolve_synth_image(tool, params, image_path)
+    region = content_region or heuristic_content_region(intent=evidence_intent)
+    retrieval = _is_retrieval_tool(tool.name)
+    if retrieval:
+        synth_image = _TEXT_ONLY_IMAGE_MARKER
+    else:
+        synth_image = _resolve_synth_image(
+            tool,
+            params,
+            image_path,
+            evidence_intent=evidence_intent,
+            content_region=region,
+        )
     model_name = settings.LLM_MODEL
     key = _cache_key(
         tool=tool,
@@ -364,6 +572,7 @@ def execute_action(
                 narr,
                 agent_role,
                 retry_feedback=retry_feedback,
+                evidence_intent=evidence_intent,
             )
             overlay_hits = (
                 observation_contains_video_overlay(raw_obs)
@@ -374,7 +583,7 @@ def execute_action(
                 retry_feedback = (
                     "H9 violation: Observation must not contain video overlays "
                     "(title cards, platform watermarks/logos, difficulty badges, "
-                    "burned-in subtitles, creator tags, non-scene UI). "
+                    "burned-in subtitles, creator tags, chat UI, non-scene UI). "
                     "Describe only in-scene geography/architecture/nature/signage."
                 )
                 last_error = "observation contains video overlay"
@@ -388,6 +597,49 @@ def execute_action(
                 )
                 continue
             obs = validate_observation(tool, raw_obs)
+            # 逐视频来源蕴含：不使用全局黑/白词表
+            if (
+                agent_role == AgentRole.COARSE
+                and evidence_intent is not None
+                and _is_visual_tool(tool.name)
+                and synth_image != _TEXT_ONLY_IMAGE_MARKER
+            ):
+                grounding = _check_observation_grounding(
+                    obs,
+                    evidence_intent,
+                    synth_image,
+                )
+                if (
+                    not grounding.fully_entailed_by_source_claims
+                    or not grounding.target_visibility_consistent
+                ):
+                    retry_feedback = (
+                        "Video-source entailment violation (ungrounded_video_fact): "
+                        f"unsupported={grounding.unsupported_spans}; "
+                        f"reason={grounding.reason}. "
+                        "Rewrite: keep ONLY a short visual confirmation of "
+                        "source_concepts / source_claims targets that are visible "
+                        "in the image (appearance, relative position, terrain/"
+                        "architecture cues). Remove new place names / new POIs / "
+                        "new facilities not in source_claims. "
+                        "If none of the claimed targets are visible, status=empty; "
+                        "otherwise prefer status=success."
+                    )
+                    last_error = (
+                        "ungrounded_video_fact: "
+                        f"{grounding.unsupported_spans or [grounding.reason]}"
+                    )
+                    result = ObservationExecutionResult(
+                        action=normalized_action,
+                        observation=None,
+                        source=ObservationSource.LLM_SYNTHESIZED,
+                        status="error",
+                        error_message=last_error,
+                        cache_hit=False,
+                    )
+                    continue
+                # adds_incremental_information=false 时仍接受：来源蕴含且目标可见的
+                # 确认句是可用训练信号；禁止再降 empty（会掏空 COARSE 证据链）。
             status = str((obs or {}).get("status", "success"))
             if status not in ("success", "empty", "error"):
                 status = "success"
@@ -413,6 +665,44 @@ def execute_action(
                 cache_hit=False,
             )
 
+    # H9/overlay 或闭包违规耗尽：返回 schema 合法 empty
+    if (
+        result.status == "error"
+        and last_error
+        and (
+            "overlay" in last_error.lower()
+            or "ungrounded_video_fact" in last_error.lower()
+        )
+        and tool.name in _FRAME_OVERLAY_TOOLS
+    ):
+        empty_obs = _empty_observation_payload(tool.name)
+        result = ObservationExecutionResult(
+            action=normalized_action,
+            observation=empty_obs,
+            source=ObservationSource.LLM_SYNTHESIZED,
+            status="empty",
+            error_message=last_error,
+            cache_hit=False,
+        )
+
     if cache is not None and result.status in ("success", "empty", "skipped"):
         cache[key] = result.model_dump(mode="json")
     return result
+
+
+def _empty_observation_payload(tool_name: str) -> dict[str, Any]:
+    """overlay/不可见目标时的 schema 友好 empty Observation。"""
+    if tool_name == "ocr":
+        return {"status": "empty", "error_message": None, "texts": []}
+    if tool_name == "sun_position_calc":
+        return {
+            "status": "empty",
+            "error_message": None,
+            "possible_latitude_range": None,
+            "note": None,
+        }
+    return {
+        "status": "empty",
+        "error_message": None,
+        "description": "no in-scene geography visible in content region",
+    }

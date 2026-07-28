@@ -29,14 +29,17 @@ _ANSWER_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
     )
 )
 
-# COARSE → FINE 切换线索：开始假设验证 / 查证具体地点
+# COARSE → FINE 切换：精确 POI / 街景 / 交卷级查证（非「打开地图」粗排查）
 _FINE_TRANSITION_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
     re.compile(p, re.IGNORECASE)
     for p in (
-        r"(搜(一下|索)|查(一下|一下地图)|打开地图|看街景|街景)",
-        r"(确认|验证一下|精确|缩小到|锁定候选)",
-        r"(google\s*maps|street\s*view|look\s*up|search\s*(for|it))",
-        r"(reverse\s*image|以图搜图)",
+        r"街景|street\s*view",
+        r"(精确到|定位到|锁定到|确认是).{0,12}(园|馆|楼|亭|桥|寺|站|广场)",
+        r"(公园|大楼|门牌|店招|景点|打卡点).{0,8}(确认|核对|就是|位于)",
+        r"(坐标|经纬|latitude|longitude)",
+        r"(google\s*maps|以图搜图|reverse\s*image)",
+        r"(submit_answer|提交答案|交卷)",
+        r"(精确|精定位|缩小到具体|锁定候选).{0,6}(点|位置|poi)",
     )
 )
 
@@ -168,6 +171,8 @@ def segment_by_agent_role(
     """划分 COARSE / FINE / VERIFIER 时间区间。
 
     COARSE/FINE 落在 answer_timestamp 之前。
+    COARSE 须覆盖区域试错与区域成功；FINE 起点为精确 POI/街景/交卷级意图。
+    禁止时间轴中点兜底；revision 不得当作 FINE 起点。
     VERIFIER：若证据窗非空取其并集；否则为零长度占位（主链由 stage5 合成）。
     """
     if not transcript:
@@ -177,6 +182,7 @@ def segment_by_agent_role(
     if answer_timestamp <= t_min:
         raise ValueError("answer_timestamp 不晚于文字稿起点，无法划分 COARSE/FINE")
 
+    span = float(answer_timestamp) - t_min
     fine_start = _find_first_match_start(
         transcript,
         _FINE_TRANSITION_PATTERNS,
@@ -184,12 +190,14 @@ def segment_by_agent_role(
         after=t_min,
     )
     if fine_start is None:
-        fine_start = t_min + (answer_timestamp - t_min) / 2.0
+        # 无精查线索：区域成功默认留在 COARSE；FINE 仅保留答案前短缓冲
+        buffer = min(30.0, max(span * 0.15, 0.01))
+        fine_start = float(answer_timestamp) - buffer
 
     if fine_start <= t_min:
-        fine_start = t_min + max((answer_timestamp - t_min) * 0.1, 0.01)
+        fine_start = t_min + max(span * 0.1, 0.01)
     if fine_start >= answer_timestamp:
-        fine_start = answer_timestamp - max((answer_timestamp - t_min) * 0.1, 0.01)
+        fine_start = answer_timestamp - max(span * 0.1, 0.01)
         if fine_start <= t_min:
             fine_start = (t_min + answer_timestamp) / 2.0
 

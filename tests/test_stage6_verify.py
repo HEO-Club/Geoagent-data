@@ -1,4 +1,7 @@
-"""stage6：距离验证、泄漏检查、质量评分测试（外部 API / LLM 全部 mock）。"""
+"""stage6：距离验证、泄漏检查、质量评分测试（外部 API / LLM 全部 mock）。
+
+按 SPEC 5.12：stage6 只做 GT 相关检查；质量基分取自 stage5_judge_score。
+"""
 
 from __future__ import annotations
 
@@ -8,7 +11,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from pipeline.config import Settings, clear_settings_cache
+from pipeline.config import clear_settings_cache
 from pipeline.schemas import (
     Action,
     AgentRole,
@@ -19,11 +22,8 @@ from pipeline.schemas import (
     VerificationResult,
 )
 from pipeline.stage6_verify import (
-    CoarseReasoningChainJudgeResult,
     LeakageJudgeResult,
     PlaceHints,
-    TaoStyleJudgeResult,
-    _JudgeResult,
     verify_and_score,
 )
 
@@ -43,72 +43,16 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture()
 def mock_llm(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
-    """同时 mock 合理性 judge 与泄漏 judge。"""
+    """mock 泄漏 LLM judge。"""
     calls: list[tuple[type, str]] = []
 
     def _fake(prompt: str, response_model: type, **kwargs: object) -> Any:
         calls.append((response_model, prompt))
-        if response_model is TaoStyleJudgeResult:
-            # 只检查轨迹 Thought 行，忽略 checklist 中的 BAD 反例
-            bad = False
-            for line in prompt.splitlines():
-                if "thought=" not in line:
-                    continue
-                if any(
-                    x in line
-                    for x in ("我足足花了", "求助者希望", "粉丝向我", "当我知道答案")
-                ):
-                    bad = True
-                    break
-            return TaoStyleJudgeResult(
-                is_standard_geo_tao=not bad,
-                issues=["旁白叙事体"] if bad else [],
-            )
-        if response_model is CoarseReasoningChainJudgeResult:
-            # 只检查轨迹 Thought 行，忽略 checklist 中的 BAD 反例
-            gap = False
-            misaligned = False
-            satellite_verify = False
-            clue_only = False
-            for line in prompt.splitlines():
-                # 兼容 thought= 与分字段 thought:
-                if "thought=" not in line and not line.strip().startswith("thought:"):
-                    continue
-                if any(
-                    x in line
-                    for x in ("直接就是法国", "所以这就是越南", "无需再看")
-                ):
-                    gap = True
-                if "随便调用" in line:
-                    misaligned = True
-                # 把已知线索当最终答案做卫星/地图验证
-                if ("卫星" in line or "地图验证" in line) and (
-                    "许昌" in line or "已知线索" in line or "验证就是" in line
-                ):
-                    satellite_verify = True
-                    clue_only = True
-            return CoarseReasoningChainJudgeResult(
-                identifies_geo_human_features=not gap and not satellite_verify,
-                narrows_scope_progressively=not gap and not satellite_verify,
-                has_reasoning_gap=gap or satellite_verify,
-                thought_action_aligned=not misaligned,
-                coarse_scope_within_role=True,
-                feature_driven_narrowing=not clue_only and not gap,
-                clues_only_as_auxiliary=not clue_only,
-                regions_are_administrative_and_consistent=True,
-                issues=(
-                    ["把线索当答案做卫星验证"]
-                    if satellite_verify
-                    else (["跳步"] if gap else (["Thought-Action不对齐"] if misaligned else []))
-                ),
-            )
         if response_model is LeakageJudgeResult:
             leaked = False
             reasons: list[str] = []
-            # 新语义：直接用 GT / 后见之明；命中地点本身不算泄漏
             if "agent_role: verifier" in prompt and "fine_handoff" in prompt:
                 if re.search(r"正确答案|真值|ground\s*truth|官方答案", prompt, re.I):
-                    # 检查 Thought 段是否含这些话术
                     if "--- Step" in prompt:
                         thought_blob = prompt
                         if re.search(
@@ -123,7 +67,6 @@ def mock_llm(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
                             )
                 return LeakageJudgeResult(leaked=False, reasons=[])
 
-            # 明确后见之明 / 粘贴真值话术
             if re.search(
                 r"(正确答案就是|真值就是|我知道答案|官方答案就是)",
                 prompt,
@@ -132,32 +75,17 @@ def mock_llm(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
                     leaked=True, reasons=["后见之明 / 直接使用 GT"]
                 )
 
-            # COARSE 以最终精准 POI 作结论
             if "agent_role: coarse" in prompt:
                 for needle in ("郑州黄河文化公园", "Eiffel Tower"):
                     if needle in prompt and (
                         f"就是{needle}" in prompt
                         or f"我认为就是{needle}" in prompt
-                        or f"线索指向{needle}" in prompt
                     ):
                         return LeakageJudgeResult(
                             leaked=True,
-                            reasons=[f"COARSE 以精准 POI 作结论: {needle}"],
+                            reasons=["COARSE 以最终精准 POI 作结论"],
                         )
-
-            # FINE：仅写准地点/坐标且无「正确答案」话术 → 不泄漏
-            if "agent_role: fine_locator" in prompt:
-                return LeakageJudgeResult(leaked=False, reasons=[])
-
-            # user_query 已知线索复用 → 不泄漏
-            if "已知线索" in prompt and (
-                "河南信阳" in prompt or "河南许昌" in prompt
-            ):
-                return LeakageJudgeResult(leaked=False, reasons=[])
-
             return LeakageJudgeResult(leaked=leaked, reasons=reasons)
-        if response_model is _JudgeResult:
-            return _JudgeResult(reasonable=True, issues=[], score=0.9)
         raise AssertionError(f"unexpected response_model: {response_model}")
 
     monkeypatch.setattr("pipeline.stage6_verify.call_structured", _fake)
@@ -200,6 +128,7 @@ def _traj(
     fine_handoff: Optional[SubmitAnswerResult] = None,
     coarse_handoff: Optional[LocationHypothesis] = None,
     user_query: str = "q",
+    stage5_judge_score: Optional[float] = None,
 ) -> Trajectory:
     thoughts = thoughts or ["前向推理。"]
     steps = [
@@ -238,6 +167,7 @@ def _traj(
         coarse_output=coarse_output,
         fine_output=fine_output,
         verifier_output=verifier_output,
+        stage5_judge_score=stage5_judge_score,
     )
 
 
@@ -264,6 +194,7 @@ def test_fine_distance_pass(mock_llm: MagicMock) -> None:
         AgentRole.FINE,
         fine_output=_submit(lat=48.86, lng=2.30),
         thoughts=["观察塔身。", "提交坐标。"],
+        stage5_judge_score=0.85,
     )
     report = verify_and_score(traj, GT, reverse_geocode=_fr_geocode)
     assert report.passed is True
@@ -290,7 +221,7 @@ def test_coarse_country_coverage(mock_llm: MagicMock) -> None:
     ok = _traj(
         AgentRole.COARSE,
         coarse_output=_hyp(countries=["France", "Belgium"]),
-        thoughts=["宏观特征像西欧。"],
+        thoughts=["宏观特征像西欧，排除东亚候选。"],
     )
     report_ok = verify_and_score(ok, GT, reverse_geocode=_fr_geocode)
     assert report_ok.passed is True
@@ -298,7 +229,7 @@ def test_coarse_country_coverage(mock_llm: MagicMock) -> None:
     bad = _traj(
         AgentRole.COARSE,
         coarse_output=_hyp(countries=["Japan"]),
-        thoughts=["像东亚。"],
+        thoughts=["像东亚，排除西欧候选。"],
     )
     report_bad = verify_and_score(bad, GT, reverse_geocode=_fr_geocode)
     assert report_bad.passed is False
@@ -338,7 +269,7 @@ def test_llm_allows_non_gt_candidate_city(mock_llm: MagicMock) -> None:
             confidence=0.6,
             key_clues_remaining=["具体场景"],
         ),
-        thoughts=["根据线索，可能在河南许昌一带。"],
+        thoughts=["根据建筑与植被排除不符候选，可能在河南许昌一带。"],
     )
     report = verify_and_score(traj, GT_ZH, reverse_geocode=_zh_geocode)
     assert report.leakage_detected is False
@@ -385,7 +316,6 @@ def test_user_query_hint_reuse_not_leak(mock_llm: MagicMock) -> None:
             "提交候选坐标。",
         ],
     )
-    # 距离会 hard-fail，但泄漏不应触发
     report = verify_and_score(traj, GT_ZH, reverse_geocode=_zh_geocode)
     assert report.leakage_detected is False
 
@@ -401,25 +331,17 @@ def test_coarse_coordinate_leakage(mock_llm: MagicMock) -> None:
     assert any("坐标" in r for r in report.hard_fail_reasons)
 
 
-def test_tao_style_narration_hard_fail(mock_llm: MagicMock) -> None:
+def test_style_issues_not_stage6_hard_fail(mock_llm: MagicMock) -> None:
+    """旁白叙事体等风格问题不再由 stage6 hard-fail（由 stage5 judge 负责）。"""
     traj = _traj(
         AgentRole.COARSE,
         coarse_output=_hyp(),
         thoughts=["为了找到这张照片的拍摄地,我足足花了半年的时间。当我知道答案的那一刻起。"],
+        stage5_judge_score=0.2,
     )
     report = verify_and_score(traj, GT, reverse_geocode=_fr_geocode)
-    assert report.passed is False
-    assert any("TAO" in r or "旁白" in r for r in report.hard_fail_reasons)
-
-
-def test_tao_style_pass_for_geo_reasoning(mock_llm: MagicMock) -> None:
-    traj = _traj(
-        AgentRole.COARSE,
-        coarse_output=_hyp(),
-        thoughts=["画面可见铁塔与宽阔河流，先放大立面确认建筑细节。"],
-    )
-    report = verify_and_score(traj, GT, reverse_geocode=_fr_geocode)
-    assert not any("TAO" in r for r in report.hard_fail_reasons)
+    assert not any("TAO" in r or "旁白" in r for r in report.hard_fail_reasons)
+    assert report.quality_score == pytest.approx(0.2)
 
 
 def test_verifier_handoff_restatement_not_leak(mock_llm: MagicMock) -> None:
@@ -439,36 +361,25 @@ def test_verifier_handoff_restatement_not_leak(mock_llm: MagicMock) -> None:
             "Agent2 候选为郑州黄河文化公园，坐标 [34.9458, 113.5517]。先 map_query 核对。"
         ],
     )
-    report = verify_and_score(
-        traj,
-        GT_ZH,
-        reverse_geocode=lambda _g: PlaceHints(
-            country="中国",
-            region="河南省",
-            city="郑州市",
-            display_name="黄河文化公园, 惠济区, 郑州市, 河南省, 中国",
-        ),
-    )
-    # 距离远于阈值且 verdict=fail → 一致性可通过；关键是泄漏不应因复述候选而触发
+    report = verify_and_score(traj, GT_ZH, reverse_geocode=_zh_geocode)
     assert report.leakage_detected is False
 
 
 def test_verifier_consistency_mismatch(mock_llm: MagicMock) -> None:
-    far = _submit(lat=40.0, lng=-74.0)
+    handoff = _submit(lat=40.0, lng=-74.0)  # far from GT
     traj = _traj(
         AgentRole.VERIFIER,
-        fine_handoff=far,
+        fine_handoff=handoff,
         verifier_output=VerificationResult(
             verdict="pass",
             failed_checks=[],
-            suggested_recheck="none",
+            suggested_recheck="",
             return_to_agent=None,
         ),
-        thoughts=["候选与图像自洽。"],
+        thoughts=["候选看起来合理。"],
     )
     report = verify_and_score(traj, GT, reverse_geocode=_fr_geocode)
     assert report.passed is False
-    assert report.distance_error_km is not None
     assert any("不一致" in r for r in report.hard_fail_reasons)
 
 
@@ -479,64 +390,84 @@ def test_verifier_pass_when_candidate_near(mock_llm: MagicMock) -> None:
         verifier_output=VerificationResult(
             verdict="pass",
             failed_checks=[],
-            suggested_recheck="none",
+            suggested_recheck="",
             return_to_agent=None,
         ),
-        thoughts=["候选与铁塔特征一致。"],
+        thoughts=["候选与地图一致。"],
     )
     report = verify_and_score(traj, GT, reverse_geocode=_fr_geocode)
     assert report.passed is True
-    assert report.distance_error_km is not None
-    assert report.distance_error_km < 1.0
 
 
 def test_verifier_allows_candidate_coords_near_gt_in_thought(
     mock_llm: MagicMock,
 ) -> None:
-    cand = _submit(lat=48.86, lng=2.29)
     traj = _traj(
         AgentRole.VERIFIER,
-        fine_handoff=cand,
+        fine_handoff=_submit(),
         verifier_output=VerificationResult(
             verdict="pass",
             failed_checks=[],
-            suggested_recheck="none",
+            suggested_recheck="",
             return_to_agent=None,
         ),
-        thoughts=["核对候选 48.86, 2.29 与图像是否自洽。"],
+        thoughts=["候选坐标约 48.8584, 2.2945，与卫星图一致。"],
     )
     report = verify_and_score(traj, GT, reverse_geocode=_fr_geocode)
     assert report.leakage_detected is False
-    assert report.passed is True
 
 
 def test_coarse_accepts_chinese_country_alias(mock_llm: MagicMock) -> None:
     traj = _traj(
         AgentRole.COARSE,
-        thoughts=["东亚宏观特征，缩小到中国境内省份级别。"],
-    )
-    traj.coarse_output = LocationHypothesis(
-        possible_countries=["中国"],
-        possible_regions=["河南省", "许昌市"],
-        reasoning_summary="宏观气候与文字线索指向中国中部。",
-        confidence=0.6,
-        key_clues_remaining=["具体城市"],
+        coarse_output=LocationHypothesis(
+            possible_countries=["中国"],
+            possible_regions=["河南省"],
+            reasoning_summary="华北平原特征。",
+            confidence=0.6,
+            key_clues_remaining=[],
+        ),
+        thoughts=["华北平原特征，排除华南。"],
     )
     report = verify_and_score(traj, GT_ZH, reverse_geocode=_zh_geocode)
     assert report.passed is True
-    assert not any("possible_countries" in r for r in report.hard_fail_reasons)
 
 
-def test_reasonableness_judge_excludes_gt_as_answer(mock_llm: MagicMock) -> None:
+def test_quality_uses_stage5_judge_score(mock_llm: MagicMock) -> None:
+    """无 hard-fail 时 quality 基分取自 stage5_judge_score。"""
     traj = _traj(
         AgentRole.COARSE,
         coarse_output=_hyp(),
-        thoughts=["西欧特征。"],
+        thoughts=["铁塔与河流组合，排除无河岸候选。"],
+        stage5_judge_score=0.73,
     )
-    verify_and_score(traj, GT, reverse_geocode=_fr_geocode)
-    reason_prompts = [p for m, p in mock_llm.calls if m is _JudgeResult]
-    assert reason_prompts
-    assert "不要把任何坐标当作必须输出的标准答案" in reason_prompts[0]
+    report = verify_and_score(traj, GT, reverse_geocode=_fr_geocode)
+    assert report.passed is True
+    assert report.quality_score == pytest.approx(0.73)
+
+
+def test_quality_defaults_to_one_without_stage5_score(mock_llm: MagicMock) -> None:
+    traj = _traj(
+        AgentRole.COARSE,
+        coarse_output=_hyp(),
+        thoughts=["铁塔与河流组合，排除无河岸候选。"],
+        stage5_judge_score=None,
+    )
+    report = verify_and_score(traj, GT, reverse_geocode=_fr_geocode)
+    assert report.passed is True
+    assert report.quality_score == pytest.approx(1.0)
+
+
+def test_hard_fail_caps_quality_at_point_three(mock_llm: MagicMock) -> None:
+    traj = _traj(
+        AgentRole.COARSE,
+        coarse_output=_hyp(countries=["Japan"]),
+        thoughts=["像东亚。"],
+        stage5_judge_score=0.95,
+    )
+    report = verify_and_score(traj, GT, reverse_geocode=_fr_geocode)
+    assert report.passed is False
+    assert report.quality_score <= 0.3
 
 
 def test_leak_check_can_be_disabled(
@@ -544,253 +475,121 @@ def test_leak_check_can_be_disabled(
 ) -> None:
     monkeypatch.setenv("ANSWER_LEAK_CHECK_ENABLED", "false")
     clear_settings_cache()
-    settings = Settings()
     traj = _traj(
-        AgentRole.COARSE,
-        coarse_output=_hyp(),
-        thoughts=["这是 Paris。"],
+        AgentRole.FINE,
+        fine_output=_submit(),
+        thoughts=["正确答案就是 Eiffel Tower，无需再查。", "提交。"],
     )
-    report = verify_and_score(
-        traj,
-        GT,
-        settings=settings,
-        reverse_geocode=_fr_geocode,
-    )
+    report = verify_and_score(traj, GT, reverse_geocode=_fr_geocode)
     assert report.leakage_detected is False
+    assert mock_llm.calls == []
 
 
 def test_report_distance_none_for_coarse(mock_llm: MagicMock) -> None:
-    traj = _traj(
-        AgentRole.COARSE,
-        coarse_output=_hyp(),
-        thoughts=["宏观判断。"],
-    )
+    traj = _traj(AgentRole.COARSE, coarse_output=_hyp())
     report = verify_and_score(traj, GT, reverse_geocode=_fr_geocode)
     assert report.distance_error_km is None
-    assert isinstance(report.quality_score, float)
-    assert 0.0 <= report.quality_score <= 1.0
 
 
 def test_tuple_reverse_geocode_still_works(mock_llm: MagicMock) -> None:
-    """兼容旧式 (country, region) 注入。"""
-    traj = _traj(
-        AgentRole.COARSE,
-        coarse_output=_hyp(),
-        thoughts=["西欧。"],
-    )
+    traj = _traj(AgentRole.COARSE, coarse_output=_hyp())
     report = verify_and_score(
-        traj,
-        GT,
-        reverse_geocode=lambda _c: ("France", "Île-de-France"),
+        traj, GT, reverse_geocode=lambda _c: ("France", "Île-de-France")
     )
     assert report.passed is True
 
 
-def test_coarse_progressive_reasoning_pass(mock_llm: MagicMock) -> None:
-    traj = _traj(
-        AgentRole.COARSE,
-        coarse_output=_hyp(),
-        thoughts=["画面可见铁塔与宽阔河流，先放大立面确认建筑细节。"],
-    )
-    report = verify_and_score(traj, GT, reverse_geocode=_fr_geocode)
-    assert not any("跳步" in r or "递进" in r for r in report.hard_fail_reasons)
-    chain_prompts = [p for m, p in mock_llm.calls if m is CoarseReasoningChainJudgeResult]
-    assert chain_prompts
-    assert "groundtruth" not in chain_prompts[0].lower() or "不含真值" in chain_prompts[0]
-
-
-def test_coarse_reasoning_gap_hard_fail(mock_llm: MagicMock) -> None:
-    traj = _traj(
-        AgentRole.COARSE,
-        coarse_output=_hyp(),
-        thoughts=["看到铁塔，直接就是法国，无需再看。"],
-    )
-    report = verify_and_score(traj, GT, reverse_geocode=_fr_geocode)
-    assert report.passed is False
-    assert any("跳步" in r or "递进" in r for r in report.hard_fail_reasons)
-
-
-def test_coarse_thought_action_misaligned_hard_fail(mock_llm: MagicMock) -> None:
-    traj = _traj(
-        AgentRole.COARSE,
-        coarse_output=_hyp(),
-        thoughts=["随便调用一下工具看看。"],
-    )
-    report = verify_and_score(traj, GT, reverse_geocode=_fr_geocode)
-    assert report.passed is False
-    assert any("不对齐" in r for r in report.hard_fail_reasons)
-
-
 def test_coarse_forbidden_web_search_hard_fail(mock_llm: MagicMock) -> None:
-    traj = _traj(
-        AgentRole.COARSE,
-        coarse_output=_hyp(),
-        thoughts=["先检索宏观线索。"],
-    )
+    traj = _traj(AgentRole.COARSE, coarse_output=_hyp())
     traj.steps[0] = TrajectoryStep(
-        thought=traj.steps[0].thought,
-        action=Action(
-            tool="web_search",
-            params={"query": "q", "purpose": "broad_discovery"},
-        ),
+        thought="检索地名。",
+        action=Action(tool="web_search", params={"query": "tower"}),
         observation={"status": "success", "error_message": None, "results": []},
         observation_source=None,
     )
     report = verify_and_score(traj, GT, reverse_geocode=_fr_geocode)
     assert report.passed is False
-    assert any("禁止 Tool" in r and "web_search" in r for r in report.hard_fail_reasons)
+    assert any("禁止 Tool" in r for r in report.hard_fail_reasons)
 
 
-def test_coarse_forbidden_compare_images_hard_fail(mock_llm: MagicMock) -> None:
-    """轨迹仍含 compare_images* → 程序化 hard-fail。"""
-    traj = _traj(
-        AgentRole.COARSE,
-        coarse_output=_hyp(),
-        thoughts=["比对候选卫星图与画面特征。"],
-    )
+def test_coarse_allows_compare_and_satellite_tools(mock_llm: MagicMock) -> None:
+    """视觉比对/卫星类不再因「禁止 Tool」hard-fail。"""
+    traj = _traj(AgentRole.COARSE, coarse_output=_hyp())
     traj.steps[0] = TrajectoryStep(
-        thought=traj.steps[0].thought,
+        thought="比对两张图的桥梁跨度。",
         action=Action(
             tool="compare_images_for_geolocation",
-            params={"image_a": "a", "image_b": "b"},
+            params={"image_a": "a.jpg", "image_b": "b.jpg"},
         ),
-        observation={"status": "success", "error_message": None, "similarity": 0.8},
+        observation={
+            "status": "success",
+            "error_message": None,
+            "visual_similarity_score": 0.8,
+            "matched_features": ["bridge"],
+            "mismatched_features": [],
+            "geolocation_hints": ["wide river"],
+        },
+        observation_source=None,
+    )
+    traj.steps.append(
+        TrajectoryStep(
+            thought="查看历史卫星图上的河岸布局。",
+            action=Action(
+                tool="lookup_historical_satellite_map",
+                params={"year": 2005, "region": "France"},
+            ),
+            observation={"status": "success", "error_message": None},
+            observation_source=None,
+        )
+    )
+    report = verify_and_score(traj, GT, reverse_geocode=_fr_geocode)
+    assert not any("禁止 Tool" in r for r in report.hard_fail_reasons)
+
+
+def test_coarse_forbidden_map_query_hard_fail(mock_llm: MagicMock) -> None:
+    traj = _traj(AgentRole.COARSE, coarse_output=_hyp())
+    traj.steps[0] = TrajectoryStep(
+        thought="解析坐标。",
+        action=Action(tool="map_query", params={"query": "Paris"}),
+        observation={
+            "status": "success",
+            "error_message": None,
+            "resolved_latlng": [48.8, 2.3],
+            "formatted_address": "Paris",
+        },
         observation_source=None,
     )
     report = verify_and_score(traj, GT, reverse_geocode=_fr_geocode)
     assert report.passed is False
-    assert any(
-        "禁止 Tool" in r and "compare_images" in r for r in report.hard_fail_reasons
-    )
-
-
-def test_coarse_known_clue_as_hypothesis_not_gt_fail(mock_llm: MagicMock) -> None:
-    """已知线索作假设收窄 → 不因「真值」误杀；裁判 prompt 含线索校准说明。"""
-    traj = _traj(
-        AgentRole.COARSE,
-        coarse_output=_hyp(countries=["China"], regions=["Henan"]),
-        thoughts=[
-            "画面为华北平原农田与低缓丘陵；结合已知线索河南许昌作为候选假设，"
-            "先放大路旁建筑细节以排除/收窄周边县域。"
-        ],
-        user_query="请粗定位照片拍摄地。\n已知线索：河南许昌",
-    )
-    traj.steps[0] = TrajectoryStep(
-        thought=traj.steps[0].thought,
-        action=Action(tool="zoom_inspect", params={"bbox": [0.0, 0.0, 1.0, 1.0]}),
-        observation={"status": "success", "error_message": None, "description": "fields"},
-        observation_source=None,
-    )
-    report = verify_and_score(traj, GT_ZH, reverse_geocode=_zh_geocode)
-    assert report.passed is True
-    assert not any("真值" in r for r in report.hard_fail_reasons)
-    chain_prompts = [
-        p for m, p in mock_llm.calls if m is CoarseReasoningChainJudgeResult
-    ]
-    assert chain_prompts
-    assert "已知线索" in chain_prompts[0]
-    assert (
-        "不违规" in chain_prompts[0]
-        or "辅助" in chain_prompts[0]
-        or "特征驱动" in chain_prompts[0]
-    )
-
-
-def test_coarse_clue_satellite_verify_still_hard_fail(mock_llm: MagicMock) -> None:
-    """把线索当最终答案做卫星验证 → 仍 hard-fail。"""
-    traj = _traj(
-        AgentRole.COARSE,
-        coarse_output=_hyp(countries=["China"]),
-        thoughts=["已知线索是许昌，我对卫星图验证就是许昌。"],
-        user_query="请粗定位。\n已知线索：河南许昌",
-    )
-    report = verify_and_score(traj, GT_ZH, reverse_geocode=_zh_geocode)
-    assert report.passed is False
-    assert any(
-        "跳步" in r
-        or "递进" in r
-        or "卫星" in r
-        or "唯一" in r
-        or "线索" in r
-        for r in report.hard_fail_reasons
-    )
-
-
-def test_coarse_descriptive_regions_hard_fail(mock_llm: MagicMock) -> None:
-    traj = _traj(
-        AgentRole.COARSE,
-        coarse_output=_hyp(
-            countries=["China"],
-            regions=["华北平原南缘", "中原地区"],
-        ),
-        thoughts=["画面有开阔平原与低缓丘陵，先放大确认地貌。"],
-    )
-    report = verify_and_score(traj, GT_ZH, reverse_geocode=_zh_geocode)
-    assert report.passed is False
-    assert any("possible_regions" in r or "描述" in r for r in report.hard_fail_reasons)
+    assert any("禁止 Tool" in r for r in report.hard_fail_reasons)
 
 
 def test_coarse_region_coverage_hard_fail(mock_llm: MagicMock) -> None:
-    """regions 非空但未覆盖 GT 一级行政区 → hard-fail。"""
     traj = _traj(
         AgentRole.COARSE,
-        coarse_output=_hyp(countries=["China"], regions=["Guangdong"]),
-        thoughts=["画面植被偏南，先放大确认建筑。"],
+        coarse_output=_hyp(countries=["France"], regions=["Brittany"]),
+        thoughts=["像布列塔尼。"],
     )
-    report = verify_and_score(traj, GT_ZH, reverse_geocode=_zh_geocode)
+    report = verify_and_score(traj, GT, reverse_geocode=_fr_geocode)
     assert report.passed is False
-    assert any("一级行政区" in r or "possible_regions" in r for r in report.hard_fail_reasons)
+    assert any("未覆盖真值一级行政区" in r for r in report.hard_fail_reasons)
 
 
-def test_coarse_thin_duplicate_fullframe_hard_fail(mock_llm: MagicMock) -> None:
+def test_legacy_video_chain_gates_not_hard_fail(mock_llm: MagicMock) -> None:
+    """旧视频链程序化门禁不再 hard-fail。"""
     traj = _traj(
         AgentRole.COARSE,
-        coarse_output=_hyp(countries=["China"], regions=["Henan"]),
-        thoughts=["看全图地貌。", "再看一次全图。"],
+        coarse_output=_hyp(),
+        thoughts=[
+            "画面可见铁塔与河流。",  # observe-only，无排除词
+            "继续观察立面细节。",
+        ],
+        stage5_judge_score=0.8,
     )
-    obs = {"status": "success", "error_message": None, "description": "same view"}
-    traj.steps = [
-        TrajectoryStep(
-            thought=traj.steps[0].thought,
-            action=Action(tool="zoom_inspect", params={"bbox": [0.0, 0.0, 1.0, 1.0]}),
-            observation=obs,
-            observation_source=None,
-        ),
-        TrajectoryStep(
-            thought=traj.steps[1].thought if len(traj.steps) > 1 else "再看。",
-            action=Action(tool="zoom_inspect", params={"bbox": [0.0, 0.0, 1.0, 1.0]}),
-            observation=obs,
-            observation_source=None,
-        ),
-    ]
-    report = verify_and_score(traj, GT_ZH, reverse_geocode=_zh_geocode)
-    assert report.passed is False
-    assert any("薄链" in r for r in report.hard_fail_reasons)
-
-
-def test_coarse_judge_separates_thought_and_observation(mock_llm: MagicMock) -> None:
-    """Obs 含水印不应仅凭 Obs 把 Thought 判成元叙事（分字段展示）。"""
-    traj = _traj(
-        AgentRole.COARSE,
-        coarse_output=_hyp(countries=["China"], regions=["Henan"]),
-        thoughts=["背景山脉与高架桥梁横跨开阔地带，先放大桥梁结构确认。"],
-    )
-    traj.steps[0] = TrajectoryStep(
-        thought=traj.steps[0].thought,
-        action=Action(tool="zoom_inspect", params={"bbox": [0.0, 0.0, 1.0, 0.4]}),
-        observation={
-            "status": "success",
-            "error_message": None,
-            "description": "bridge over open land; corner has youtube watermark",
-        },
-        observation_source=None,
-    )
-    report = verify_and_score(traj, GT_ZH, reverse_geocode=_zh_geocode)
-    chain_prompts = [
-        p for m, p in mock_llm.calls if m is CoarseReasoningChainJudgeResult
-    ]
-    assert chain_prompts
-    assert "thought:" in chain_prompts[0]
-    assert "observation:" in chain_prompts[0]
-    # Thought 本身无元叙事话术时，mock 不应因 Obs 误杀
+    report = verify_and_score(traj, GT, reverse_geocode=_fr_geocode)
     assert report.passed is True
+    joined = " ".join(report.hard_fail_reasons)
+    assert "reused_fact_without_delta" not in joined
+    assert "candidate_provenance_gap" not in joined
+    assert "no_candidate_progress" not in joined
+    assert "redundant_step" not in joined

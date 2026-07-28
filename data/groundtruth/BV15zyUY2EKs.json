@@ -1,0 +1,12 @@
+{
+  "video_id": "BV15zyUY2EKs",
+  "query": "呼伦贝尔职业技术学院",
+  "latitude": 49.175032,
+  "longitude": 119.7327285,
+  "formatted_address": "呼伦贝尔职业技术学院, 辉河路, 巴彦托海镇, 鄂温克族自治旗, 呼伦贝尔市 ᠬᠥᠯᠥᠨ ᠪᠤᠶᠢᠷ, 内蒙古自治区 ᠦᠪᠦᠷ ᠮᠣᠩᠭᠤᠯ ᠤᠨ ᠥᠪᠡᠷᠲᠡᠭᠡᠨ ᠵᠠᠰᠠᠬᠣ ᠣᠷᠣᠨ, 021000, 中国",
+  "place_type": "college",
+  "status": "success",
+  "answer_timestamp": 619.45,
+  "source": "prep_groundtruth+manual_query",
+  "needs_review": true
+}

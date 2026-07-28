@@ -1,0 +1,11 @@
+{
+  "video_id": "BV13m61BJEQC",
+  "query": "郑州黄河文化公园",
+  "latitude": 34.9475818,
+  "longitude": 113.517007,
+  "formatted_address": "郑州黄河文化公园",
+  "place_type": "park",
+  "status": "success",
+  "source": "existing",
+  "needs_review": false
+}

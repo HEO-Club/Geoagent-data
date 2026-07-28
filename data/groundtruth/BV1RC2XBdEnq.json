@@ -1,0 +1,12 @@
+{
+  "video_id": "BV1RC2XBdEnq",
+  "query": "中山沙溪镇",
+  "latitude": 22.5114054,
+  "longitude": 113.3160118,
+  "formatted_address": "沙溪镇, 中山市, 广东省, 中国",
+  "place_type": "administrative",
+  "status": "success",
+  "answer_timestamp": 582.9,
+  "source": "prep_groundtruth+manual_query",
+  "needs_review": true
+}

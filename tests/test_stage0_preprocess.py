@@ -74,7 +74,8 @@ class TestSegmentByAgentRole:
         # VERIFIER 仅覆盖筛选后的验证证据窗，不得包含宣布答案句本身
         assert by_role[AgentRole.VERIFIER].start_time >= 32.0
         assert by_role[AgentRole.VERIFIER].end_time == pytest.approx(38.0)
-        assert by_role[AgentRole.COARSE].end_time == pytest.approx(12.0)
+        # 「打开地图」不再切 FINE；「街景…确认具体位置」才切
+        assert by_role[AgentRole.COARSE].end_time == pytest.approx(20.0)
 
     def test_verifier_zero_length_without_evidence(self) -> None:
         transcript = [
@@ -92,7 +93,22 @@ class TestSegmentByAgentRole:
         assert ver.start_time == pytest.approx(ver.end_time)
         assert ver.start_time == pytest.approx(12.0)
 
-    def test_midpoint_fallback_without_fine_cue(self) -> None:
+    def test_open_map_does_not_start_fine(self) -> None:
+        transcript = [
+            _seg(0.0, 5.0, "宏观上看像南欧。"),
+            _seg(5.0, 10.0, "接着打开地图排查候选区域。"),
+            _seg(10.0, 15.0, "排除平原城市后收窄到山区。"),
+            _seg(20.0, 22.0, "答案就是罗马。"),
+        ]
+        segments = segment_by_agent_role(
+            transcript, 20.0, post_answer_evidence_windows=[]
+        )
+        coarse = next(s for s in segments if s.agent_role == AgentRole.COARSE)
+        # 无精查线索：接近答案的短缓冲，而非中点/打开地图
+        assert coarse.end_time > 15.0
+        assert coarse.end_time < 20.0
+
+    def test_near_answer_fallback_without_fine_cue(self) -> None:
         transcript = [
             _seg(0.0, 5.0, "宏观上看像南欧。"),
             _seg(5.0, 10.0, "继续观察屋顶。"),
@@ -101,9 +117,11 @@ class TestSegmentByAgentRole:
         segments = segment_by_agent_role(transcript, 10.0, post_answer_evidence_windows=[])
         coarse = next(s for s in segments if s.agent_role == AgentRole.COARSE)
         fine = next(s for s in segments if s.agent_role == AgentRole.FINE)
-        assert coarse.end_time == pytest.approx(5.0)
-        assert fine.start_time == pytest.approx(5.0)
+        # span=10 → buffer=min(30,1.5)=1.5 → fine_start=8.5；禁止中点 5.0
+        assert coarse.end_time == pytest.approx(8.5)
+        assert fine.start_time == pytest.approx(8.5)
         assert fine.end_time == pytest.approx(10.0)
+        assert coarse.end_time > 5.0
 
 
 class TestPostAnswerEvidenceWindows:

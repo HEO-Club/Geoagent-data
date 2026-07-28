@@ -14,10 +14,10 @@ from pipeline.schemas import (
     Move,
     NormalizationMode,
     NormalizedStep,
+    ObservationExecutionResult,
     ObservationSource,
 )
 from pipeline.stage4_observe import (
-    ObservationSynthesisExhausted,
     generate_observations,
     resolve_image_for_step,
 )
@@ -173,8 +173,9 @@ def test_expands_composed_actions_with_narration(
     assert len(coarse_results) == 2
     assert all(r.source is ObservationSource.LLM_SYNTHESIZED for r in coarse_results)
     assert all(r.status == "success" for r in coarse_results)
+    # COARSE 不注入自由旁白；合成靠 EvidenceIntent.source_claims
     assert seen_narrations
-    assert all("旁白线索" in n for n in seen_narrations)
+    assert all(n in ("", "(empty)") for n in seen_narrations)
 
     fine_results = generate_observations(
         steps[2:],
@@ -222,21 +223,36 @@ def test_synth_retry_exhausted_raises(
     assert result.source is ObservationSource.LLM_SYNTHESIZED
     assert result.observation is None
 
-    # generate_observations 层必须拒样
+    # 全角色：合成耗尽标 error（诚实失败），流水线继续
     steps = [
         _step(
             [Action(tool="zoom_inspect", params={"bbox": [0.1, 0.2, 0.3, 0.4]})],
         )
     ]
-    with pytest.raises(ObservationSynthesisExhausted, match="不得入库"):
-        generate_observations(
-            steps,
-            str(img),
-            AgentRole.COARSE,
-            registry_path=str(env_registry),
-            use_cache=False,
-        )
+    coarse_out = generate_observations(
+        steps,
+        str(img),
+        AgentRole.COARSE,
+        registry_path=str(env_registry),
+        use_cache=False,
+    )
+    assert len(coarse_out) == 1
+    assert coarse_out[0].status == "error"
+    assert coarse_out[0].observation is not None
+    assert coarse_out[0].observation.get("status") == "error"
+    assert "no in-scene geography" not in str(coarse_out[0].observation.get("description") or "")
     assert calls["n"] == 4  # 又一轮重试 2 次
+
+    fine_out = generate_observations(
+        steps,
+        str(img),
+        AgentRole.FINE,
+        registry_path=str(env_registry),
+        use_cache=False,
+    )
+    assert len(fine_out) == 1
+    assert fine_out[0].status == "error"
+    assert calls["n"] == 6
 
 
 def test_synth_retry_succeeds_on_second_attempt(
@@ -461,3 +477,308 @@ def test_generate_observations_uses_per_step_keyframes(
     assert len(seen) == 2
     # 两步应基于不同源帧裁剪（路径不同）
     assert seen[0] != seen[1]
+
+
+def test_resolve_image_prefers_mid_window_for_primary_scene(tmp_path: Path) -> None:
+    from pipeline.evidence_routing import (
+        ContentType,
+        EvidenceIntent,
+        SemanticRoute,
+        embed_evidence_intent,
+    )
+
+    frames = []
+    for t in (0.0, 100.0, 180.0, 200.0):
+        p = tmp_path / f"t{t:.3f}.jpg"
+        p.write_bytes(b"x")
+        frames.append(str(p))
+    intent = EvidenceIntent(
+        target_object="老照片地貌",
+        content_type=ContentType.PRIMARY_SCENE,
+        target_features=["高地", "桥"],
+        route=SemanticRoute.COARSE,
+    )
+    step = NormalizedStep(
+        move=Move(
+            start_time=175.0,
+            end_time=195.0,
+            narration="高地与桥",
+            screen_action="看照片",
+            visible_clues=[],
+            agent_role=AgentRole.COARSE,
+        ),
+        thought_draft=embed_evidence_intent("草稿", intent),
+        actions=[Action(tool="zoom_inspect", params={"bbox": [0.1, 0.1, 0.5, 0.5]})],
+        normalization_mode=NormalizationMode.MATCHED,
+        matched_tool_confidence=0.9,
+        fallback_reason=None,
+    )
+    chosen = resolve_image_for_step(
+        step, image_path=frames[0], keyframes=frames
+    )
+    # 应落在 Move 窗口附近，而非全局 t0
+    assert Path(chosen).name != "t0.000.jpg"
+
+
+def test_interface_only_returns_empty_without_narration_fabrication(
+    env_registry: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pipeline.evidence_routing import (
+        ContentType,
+        EvidenceIntent,
+        SemanticRoute,
+        embed_evidence_intent,
+    )
+
+    img = tmp_path / "t0.000.jpg"
+    img.write_bytes(b"x")
+    calls = {"n": 0}
+
+    def boom(*_a: Any, **_k: Any) -> Any:
+        calls["n"] += 1
+        raise AssertionError("interface_only 不应调用合成 LLM")
+
+    monkeypatch.setattr("pipeline.tools.base.call_structured", boom)
+    intent = EvidenceIntent(
+        target_object="界面",
+        content_type=ContentType.INTERFACE_ONLY,
+        route=SemanticRoute.NON_TRAINING,
+    )
+    step = NormalizedStep(
+        move=Move(
+            start_time=0.0,
+            end_time=1.0,
+            narration="高地桥平原",  # 旁白有地貌词，但内容区是 interface
+            screen_action="聊天置顶",
+            visible_clues=[],
+            agent_role=AgentRole.COARSE,
+        ),
+        thought_draft=embed_evidence_intent("ui", intent),
+        actions=[Action(tool="zoom_inspect", params={"bbox": [0.0, 0.0, 1.0, 1.0]})],
+        normalization_mode=NormalizationMode.MATCHED,
+        matched_tool_confidence=0.9,
+        fallback_reason=None,
+    )
+    results = generate_observations(
+        [step],
+        str(img),
+        AgentRole.COARSE,
+        keyframes=[str(img)],
+        registry_path=str(env_registry),
+        use_cache=False,
+    )
+    assert calls["n"] == 0
+    assert results[0].status == "empty"
+    assert "高地" not in str(results[0].observation)
+
+
+def test_pick_agent1_representative_skips_t0_ui(tmp_path: Path) -> None:
+    from pipeline.evidence_routing import (
+        ContentType,
+        EvidenceIntent,
+        SemanticRoute,
+        embed_evidence_intent,
+    )
+    from pipeline.stage4_observe import pick_agent1_representative_image
+
+    frames = []
+    for t in (0.0, 50.0, 180.0):
+        p = tmp_path / f"t{t:.3f}.jpg"
+        p.write_bytes(b"x")
+        frames.append(str(p))
+    intent = EvidenceIntent(
+        target_object="老照片",
+        content_type=ContentType.PRIMARY_SCENE,
+        route=SemanticRoute.COARSE,
+    )
+    step = NormalizedStep(
+        move=Move(
+            start_time=170.0,
+            end_time=190.0,
+            narration="看照片",
+            screen_action="放大",
+            visible_clues=[],
+            agent_role=AgentRole.COARSE,
+        ),
+        thought_draft=embed_evidence_intent("t", intent),
+        actions=[],
+        normalization_mode=NormalizationMode.THOUGHT_ONLY,
+        matched_tool_confidence=None,
+        fallback_reason="x",
+    )
+    picked = pick_agent1_representative_image(
+        [], [step], keyframes=frames, fallback=frames[0]
+    )
+    assert Path(picked).name != "t0.000.jpg"
+
+
+def test_pick_agent1_skips_early_meta_primary_scene(tmp_path: Path) -> None:
+    """开场元叙事即使标成 PRIMARY_SCENE 也不得当代表帧。"""
+    from pipeline.evidence_routing import (
+        ContentType,
+        EvidenceIntent,
+        SemanticRoute,
+        embed_evidence_intent,
+    )
+    from pipeline.stage4_observe import pick_agent1_representative_image
+
+    frames = []
+    for t in (5.0, 39.0, 148.0):
+        p = tmp_path / f"t{t:.3f}.jpg"
+        p.write_bytes(b"x")
+        frames.append(str(p))
+    meta_intent = EvidenceIntent(
+        target_object="拍摄地",
+        content_type=ContentType.PRIMARY_SCENE,
+        target_features=["照片", "半年"],
+        route=SemanticRoute.COARSE,
+    )
+    geo_intent = EvidenceIntent(
+        target_object="高地",
+        content_type=ContentType.PRIMARY_SCENE,
+        target_features=["高地", "屋顶"],
+        route=SemanticRoute.COARSE,
+    )
+    meta_step = NormalizedStep(
+        move=Move(
+            start_time=0.0,
+            end_time=4.6,
+            narration="为了找到这张照片的拍摄地,我足足花了半年的时间。",
+            screen_action="片头",
+            visible_clues=[],
+            agent_role=AgentRole.COARSE,
+        ),
+        thought_draft=embed_evidence_intent("meta", meta_intent),
+        actions=[Action(tool="zoom_inspect", params={"bbox": [0, 0, 1, 1]})],
+        normalization_mode=NormalizationMode.MATCHED,
+        matched_tool_confidence=0.9,
+        fallback_reason=None,
+    )
+    geo_step = NormalizedStep(
+        move=Move(
+            start_time=39.0,
+            end_time=44.0,
+            narration="细看照片可以看到下方建筑屋顶，拍摄点在高地。",
+            screen_action="放大",
+            visible_clues=["屋顶", "高地"],
+            agent_role=AgentRole.COARSE,
+        ),
+        thought_draft=embed_evidence_intent("geo", geo_intent),
+        actions=[Action(tool="zoom_inspect", params={"bbox": [0.2, 0.2, 0.5, 0.5]})],
+        normalization_mode=NormalizationMode.MATCHED,
+        matched_tool_confidence=0.9,
+        fallback_reason=None,
+    )
+    empty_obs = ObservationExecutionResult(
+        action=meta_step.actions[0],
+        observation={
+            "status": "empty",
+            "error_message": None,
+            "description": "no in-scene geography visible in content region",
+        },
+        source=ObservationSource.LLM_SYNTHESIZED,
+        status="empty",
+        error_message=None,
+        cache_hit=False,
+    )
+    good_obs = ObservationExecutionResult(
+        action=geo_step.actions[0],
+        observation={
+            "status": "success",
+            "error_message": None,
+            "description": "下方可见建筑屋顶，呈俯视",
+        },
+        source=ObservationSource.LLM_SYNTHESIZED,
+        status="success",
+        error_message=None,
+        cache_hit=False,
+    )
+    picked = pick_agent1_representative_image(
+        [empty_obs, good_obs],
+        [meta_step, geo_step],
+        keyframes=frames,
+        fallback=frames[0],
+    )
+    assert Path(picked).name == "t39.000.jpg"
+
+
+def test_visual_tool_retries_neighbor_frame_on_empty(
+    env_registry: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """首帧 empty 时换近邻关键帧再合成，拿到 success。"""
+    frames = []
+    for name in ("t20.000.jpg", "t21.000.jpg", "t22.000.jpg"):
+        p = tmp_path / name
+        p.write_bytes(b"img")
+        frames.append(str(p))
+
+    calls: list[str] = []
+
+    def fake_execute(
+        action: Action,
+        image_path: str,
+        agent_role: AgentRole,
+        **kwargs: Any,
+    ) -> ObservationExecutionResult:
+        _ = action, agent_role, kwargs
+        calls.append(Path(image_path).name)
+        # 选帧优先 Move 中点 t21；首帧 empty 后应回退到近邻帧。
+        if Path(image_path).name == "t21.000.jpg":
+            return ObservationExecutionResult(
+                action=action,
+                observation={
+                    "status": "empty",
+                    "error_message": None,
+                    "description": "no in-scene geography visible in content region",
+                },
+                source=ObservationSource.LLM_SYNTHESIZED,
+                status="empty",
+                error_message=None,
+                cache_hit=False,
+            )
+        return ObservationExecutionResult(
+            action=action,
+            observation={
+                "status": "success",
+                "error_message": None,
+                "description": "elevated ground and river bank",
+            },
+            source=ObservationSource.LLM_SYNTHESIZED,
+            status="success",
+            error_message=None,
+            cache_hit=False,
+        )
+
+    monkeypatch.setattr("pipeline.stage4_observe.execute_action", fake_execute)
+    step = NormalizedStep(
+        move=Move(
+            start_time=20.0,
+            end_time=22.0,
+            narration="高地俯视",
+            screen_action="放大",
+            visible_clues=[],
+            agent_role=AgentRole.COARSE,
+        ),
+        thought_draft="观察高地",
+        actions=[Action(tool="zoom_inspect", params={"bbox": [0.1, 0.1, 0.4, 0.4]})],
+        normalization_mode=NormalizationMode.MATCHED,
+        matched_tool_confidence=0.9,
+        fallback_reason=None,
+    )
+    results = generate_observations(
+        [step],
+        frames[0],
+        AgentRole.COARSE,
+        keyframes=frames,
+        registry_path=str(env_registry),
+        use_cache=False,
+    )
+    assert len(results) == 1
+    assert results[0].status == "success"
+    assert calls[0] == "t21.000.jpg"
+    assert len(calls) >= 2
+    assert any(name in ("t20.000.jpg", "t22.000.jpg") for name in calls[1:])
