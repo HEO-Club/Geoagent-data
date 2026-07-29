@@ -1,0 +1,172 @@
+{
+  "trees": [
+    {
+      "canonical": {
+        "name": "visualelementextractor",
+        "description": "Auto-created from freeform tool 'VisualElementExtractor'",
+        "params": [
+          {
+            "name": "query",
+            "type": "string",
+            "required": false,
+            "description": "自由参数占位"
+          }
+        ],
+        "observation_fields": [
+          {
+            "name": "result",
+            "type": "string",
+            "nullable": true,
+            "description": "自由 observation 汇总"
+          }
+        ],
+        "is_terminal": false
+      },
+      "variants": []
+    },
+    {
+      "canonical": {
+        "name": "geographicrangefilter",
+        "description": "Auto-created from freeform tool 'GeographicRangeFilter'",
+        "params": [
+          {
+            "name": "query",
+            "type": "string",
+            "required": false,
+            "description": "自由参数占位"
+          }
+        ],
+        "observation_fields": [
+          {
+            "name": "result",
+            "type": "string",
+            "nullable": true,
+            "description": "自由 observation 汇总"
+          }
+        ],
+        "is_terminal": false
+      },
+      "variants": []
+    },
+    {
+      "canonical": {
+        "name": "landmarkcrossreferencer",
+        "description": "Auto-created from freeform tool 'LandmarkCrossReferencer'",
+        "params": [
+          {
+            "name": "query",
+            "type": "string",
+            "required": false,
+            "description": "自由参数占位"
+          }
+        ],
+        "observation_fields": [
+          {
+            "name": "result",
+            "type": "string",
+            "nullable": true,
+            "description": "自由 observation 汇总"
+          }
+        ],
+        "is_terminal": false
+      },
+      "variants": []
+    },
+    {
+      "canonical": {
+        "name": "poisearchinpark",
+        "description": "Auto-created from freeform tool 'POISearchInPark'",
+        "params": [
+          {
+            "name": "query",
+            "type": "string",
+            "required": false,
+            "description": "自由参数占位"
+          }
+        ],
+        "observation_fields": [
+          {
+            "name": "result",
+            "type": "string",
+            "nullable": true,
+            "description": "自由 observation 汇总"
+          }
+        ],
+        "is_terminal": false
+      },
+      "variants": []
+    },
+    {
+      "canonical": {
+        "name": "historicalphotomatcher",
+        "description": "Auto-created from freeform tool 'HistoricalPhotoMatcher'",
+        "params": [
+          {
+            "name": "query",
+            "type": "string",
+            "required": false,
+            "description": "自由参数占位"
+          }
+        ],
+        "observation_fields": [
+          {
+            "name": "result",
+            "type": "string",
+            "nullable": true,
+            "description": "自由 observation 汇总"
+          }
+        ],
+        "is_terminal": false
+      },
+      "variants": []
+    },
+    {
+      "canonical": {
+        "name": "historicalbridgeverifier",
+        "description": "Auto-created from freeform tool 'HistoricalBridgeVerifier'",
+        "params": [
+          {
+            "name": "query",
+            "type": "string",
+            "required": false,
+            "description": "自由参数占位"
+          }
+        ],
+        "observation_fields": [
+          {
+            "name": "result",
+            "type": "string",
+            "nullable": true,
+            "description": "自由 observation 汇总"
+          }
+        ],
+        "is_terminal": false
+      },
+      "variants": []
+    },
+    {
+      "canonical": {
+        "name": "finallocationsynthesizer",
+        "description": "Auto-created from freeform tool 'FinalLocationSynthesizer'",
+        "params": [
+          {
+            "name": "query",
+            "type": "string",
+            "required": false,
+            "description": "自由参数占位"
+          }
+        ],
+        "observation_fields": [
+          {
+            "name": "result",
+            "type": "string",
+            "nullable": true,
+            "description": "自由 observation 汇总"
+          }
+        ],
+        "is_terminal": false
+      },
+      "variants": []
+    }
+  ]
+}
