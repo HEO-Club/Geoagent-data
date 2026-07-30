@@ -1,4 +1,4 @@
-"""阶段2：视频 + 字幕 → 自由 TAO 逻辑链。"""
+"""阶段2：视频 + 字幕 → 地理图片定位 agent 自由 TAO 链。"""
 
 from __future__ import annotations
 
@@ -18,10 +18,16 @@ from pipeline.schemas.transcript import TranscriptSegment
 logger = logging.getLogger(__name__)
 
 DEFAULT_SYSTEM_HINT = (
-    "你是地理定位推理蒸馏器。根据视频关键帧与字幕，复现博主的地理定位推理逻辑链。"
-    "删除社交开场、纯 UI、无关科普等无增益内容。"
-    "每步包含 thought、自定义 tool 名、params、observation。"
-    "tool 名由你发明，无需匹配任何预置工具池。"
+    "你从地理定位讲解视频中，蒸馏一条可供 SFT 训练的地理图片定位 agent 的 ReAct/TAO 轨迹。"
+    "Agent 面对的是待定位图片与场景证据，不是读字幕的观众。"
+    "讲解内容参考（含时间戳旁白）仅为你的内部蒸馏材料；"
+    "产物 thought / params / observation / notes 中禁止出现「字幕」「旁白」「博主说」「视频里提到」等元话语；"
+    "线索应写成 agent 已观察到的视觉/地理证据或工作假设。"
+    "社交开场、纯 UI、无关感慨等无增益内容静默跳过：不要生成对应步骤，也不要在 notes 里罗列删了什么；"
+    "notes 默认 null（或极短质量备注，禁止去噪清单）。"
+    "每步 thought 必须体现：当前假设/已确认状态 + 仍缺什么信息 → 因此调用本步 tool；"
+    "禁止空转复述；禁止预知本步 observation。"
+    "每步包含 thought、自定义 tool 名、params、observation；tool 名由你发明，无需匹配任何预置工具池。"
     "禁止使用或猜测 groundtruth / 官方真值坐标。"
 )
 
@@ -64,11 +70,11 @@ def run_stage2(
     out_path: str | None = None,
     image_path: str | None = None,
 ) -> FreeFormTrajectory:
-    """视频+字幕 → 自由 TAO 逻辑链（内容优先，无统一 tool schema）。
+    """蒸馏为地理图片定位 agent 自由 TAO（内容优先，无统一 tool schema）。
 
     Args:
         video_path: 视频路径。
-        transcript: 阶段1 字幕。
+        transcript: 阶段1 字幕（仅作内部蒸馏材料，不得写入产物元话语）。
         out_path: 可选落盘路径；默认 intermediate/{id}/stage2_freeform_tao.json。
         image_path: 可选代表图；缺省时从视频抽若干概览帧。
 
@@ -91,10 +97,11 @@ def run_stage2(
     prompt = (
         f"{DEFAULT_SYSTEM_HINT}\n\n"
         f"视频 ID: {video_id}\n"
-        "字幕（带时间戳）：\n"
+        "讲解内容参考（仅供蒸馏，禁止写入产物）：\n"
         f"{_format_transcript(transcript)}\n\n"
         "请输出 steps：每步 thought / tool / params / observation；"
-        "notes 可简述删除了哪些无用部分。\n"
+        "每步 thought 写清当前假设缺口与为何调用本步 tool；"
+        "notes 默认 null。\n"
         "observation 用 JSON 对象；终端步可 observation=null。"
     )
     result = call_structured(
