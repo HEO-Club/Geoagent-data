@@ -1,7 +1,7 @@
 # 图片地理定位 Agent 训练数据集生成流水线 — 项目规格
 
-版本：3.0.1 | 生成时间：2026-07-29  
-修订说明：v3.0.1 删除旧 stage0–7，主包收口为 `pipeline/` / `tests/`。v3.0.0 三阶段架构（字幕 → 自由 TAO → tool 树归一化 JSONL）。旧规格见 `SPEC_legacy_v2.md`。
+版本：3.0.2 | 生成时间：2026-08-01  
+修订说明：v3.0.2 `working_scope` 双端注入。v3.0.1 删除旧 stage0–7，主包收口为 `pipeline/` / `tests/`。v3.0.0 三阶段架构（字幕 → 自由 TAO → tool 树归一化 JSONL）。旧规格见 `SPEC_legacy_v2.md`。
 
 ## 0. 给 Cursor 的元指令（先读这一段）
 
@@ -29,8 +29,8 @@
 ### 1.2 三阶段
 
 1. **阶段1（字幕）**：根据视频生成带时间戳字幕。
-2. **阶段2（自由 TAO）**：以视频 + 字幕（字幕仅蒸馏材料）蒸馏一条 **agent 视角**、内容准确的地理图片定位 TAO 链；thought 写「假设缺口 → 为何调 tool」，不得暴露字幕/旁白来源；去噪静默（不进链、不做删除清单）；不维护 tool 池；tool 由模型发明；无统一 tool schema。
-3. **阶段3（格式化）**：维护 tool 树；归并自由 tool；输出标准 JSONL。
+2. **阶段2（自由 TAO）**：以视频 + 字幕（字幕仅蒸馏材料）先抽取外部给定工作范围，再蒸馏一条 **agent 视角**、内容准确的地理图片定位 TAO 链；thought 写「假设缺口 → 为何调 tool」，不得暴露字幕/旁白来源；去噪静默（不进链、不做删除清单）；不维护 tool 池；tool 由模型发明；无统一 tool schema。
+3. **阶段3（格式化）**：维护 tool 树；归并自由 tool；将 `working_scope` 写入训练 `user_query`；输出标准 JSONL。
 
 ### 1.3 输入
 
@@ -43,12 +43,22 @@
 - 禁止真实 Tool API；禁止 GT 进生成上下文
 - 宁缺毋滥；禁止样本特化硬门禁
 
+### 1.5 外部给定线索 / 工作范围（沿用 v2 分层，单 Agent）
+
+- **抽取输入**：仅阶段1 字幕；**禁止**读 groundtruth。
+- **`raw_given_clue`**：问题设置段外部沟通原话；角色区分 `photo_location_constraint` / `person_or_social_attribute` / `other_non_location`。
+- **`working_scope`**：仅当存在拍摄地硬边界（`bound_kind=inside`）或可核验软先验（`bound_kind=near`，含「籍贯 ∧ 离家不远 ⇒ 籍贯地附近」）时规范化；`region` 为展示短语（如「河南许昌附近」）；**禁止**把软先验升格成「X内」。
+- **`candidate_hypothesis`**（博主演绎候选）：可抽取供审计，**不得**写入蒸馏 prompt 的已知范围块或训练 `user_query`。
+- **人物属性**：默认不另写「已知线索」段；仅当能推出合法 `working_scope` 时注入展示短语。
+- **阶段2 蒸馏 prompt**：有有效 `working_scope` 时增加「Agent 已知工作范围」块（只写展示短语，禁止来源话术）；thought 须将其当先验，不得写「字幕/网友说」。
+- **阶段3 `user_query`**：无 scope 时为 `Locate the place shown in the image.`；有 scope 时追加一行 `Working scope: {region}`。
+
 ## 2. 系统总体架构
 
 ```
 阶段1  视频 → TranscriptSegment 列表
-阶段2  视频 + 字幕 → FreeFormTrajectory
-阶段3  FreeFormTrajectory + tool_trees → Trajectory → DatasetEntry JSONL
+阶段2  字幕 → working_scope；视频 + 字幕 + working_scope → FreeFormTrajectory
+阶段3  FreeFormTrajectory + tool_trees → Trajectory（user_query 含 working_scope）→ DatasetEntry JSONL
 
 编排：run_stage{1,2,3}.py / run_one_video.py / batch_run.py
 Tool 树：tool_trees.json
@@ -91,7 +101,7 @@ geo-agent-dataset/
 
 ## 4. 数据 Schema
 
-见 `pipeline/schemas/`：`TranscriptSegment`、`FreeFormStep`/`FreeFormTrajectory`、`ToolTree`/`ToolForest`、`Trajectory`、`DatasetEntry`（无 agent_role / 强制 GT / verified）。
+见 `pipeline/schemas/`：`TranscriptSegment`、`RawGivenClue`/`WorkingScope`/`ClueExtractionResult`、`FreeFormStep`/`FreeFormTrajectory`（含可选 `working_scope`）、`ToolTree`/`ToolForest`、`Trajectory`、`DatasetEntry`（无 agent_role / 强制 GT / verified）。
 
 ## 5. 阶段接口
 
@@ -99,9 +109,11 @@ geo-agent-dataset/
 def run_stage1(video_path: str, *, anchor_transcript_path: str | None = None,
                out_path: str | None = None) -> list[TranscriptSegment]: ...
 
+def extract_working_scope(transcript: list[TranscriptSegment]) -> ClueExtractionResult: ...
 def run_stage2(video_path: str, transcript: list[TranscriptSegment],
                *, out_path: str | None = None) -> FreeFormTrajectory: ...
 
+def build_user_query(working_scope: WorkingScope | None = None) -> str: ...
 def ensure_tool_trees(freeform: FreeFormTrajectory, trees_path: Path) -> ToolForest: ...
 def remap_trajectory(...) -> Trajectory: ...
 def format_dataset_entry(traj: Trajectory, *, source_video: str) -> DatasetEntry: ...

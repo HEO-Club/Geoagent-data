@@ -7,9 +7,19 @@ from pathlib import Path
 
 import pytest
 
+from pipeline.schemas.clues import BoundKind, WorkingScope
 from pipeline.schemas.freeform import FreeFormStep, FreeFormTrajectory
 from pipeline.schemas.tools import ToolDefinition, ToolForest, ToolTree
 from pipeline.stage3_normalize_format import format_jsonl, map_tools, trees
+
+
+def test_build_user_query_with_and_without_scope() -> None:
+    assert format_jsonl.build_user_query(None) == format_jsonl.DEFAULT_USER_QUERY
+    q = format_jsonl.build_user_query(
+        WorkingScope(region="河南许昌附近", bound_kind=BoundKind.near)
+    )
+    assert q.startswith(format_jsonl.DEFAULT_USER_QUERY)
+    assert "Working scope: 河南许昌附近" in q
 
 
 def test_exact_match_and_variant(tmp_path: Path) -> None:
@@ -93,5 +103,73 @@ def test_remap_and_format(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
     assert "Thought:" in entry.messages[2].content
     blob = json.dumps([m.content for m in entry.messages], ensure_ascii=False)
     assert "web_lookup" in blob
+    assert entry.messages[1].content.startswith(format_jsonl.DEFAULT_USER_QUERY)
+    assert "Working scope:" not in entry.messages[1].content
     shard = tmp_path / "output" / "shards" / "clip.jsonl"
     assert shard.is_file()
+
+
+def test_run_stage3_injects_working_scope_into_user_query(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("INTERMEDIATE_DIR", str(tmp_path / "intermediate"))
+    monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "output"))
+    monkeypatch.setenv("TOOL_TREES_PATH", str(tmp_path / "tool_trees.json"))
+    from pipeline.config import clear_settings_cache
+
+    clear_settings_cache()
+
+    freeform = FreeFormTrajectory(
+        source_video="scoped",
+        working_scope=WorkingScope(region="河南许昌附近", bound_kind=BoundKind.near),
+        steps=[
+            FreeFormStep(
+                thought="search",
+                tool="web_lookup",
+                params={"q": "x"},
+                observation={"hits": []},
+            )
+        ],
+    )
+    entry = format_jsonl.run_stage3(
+        freeform,
+        trees_path=tmp_path / "tool_trees.json",
+        image_path="scene.jpg",
+        matcher=lambda _n, _f: None,
+    )
+    user = entry.messages[1].content
+    assert "Working scope: 河南许昌附近" in user
+    assert "Locate the place shown in the image." in user
+
+
+def test_run_stage3_explicit_user_query_overrides_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("INTERMEDIATE_DIR", str(tmp_path / "intermediate"))
+    monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "output"))
+    monkeypatch.setenv("TOOL_TREES_PATH", str(tmp_path / "tool_trees.json"))
+    from pipeline.config import clear_settings_cache
+
+    clear_settings_cache()
+
+    freeform = FreeFormTrajectory(
+        source_video="override",
+        working_scope=WorkingScope(region="河南许昌附近", bound_kind=BoundKind.near),
+        steps=[
+            FreeFormStep(
+                thought="t",
+                tool="web_lookup",
+                params={},
+                observation={"ok": True},
+            )
+        ],
+    )
+    entry = format_jsonl.run_stage3(
+        freeform,
+        trees_path=tmp_path / "tool_trees.json",
+        image_path="scene.jpg",
+        user_query="Custom query only.",
+        matcher=lambda _n, _f: None,
+    )
+    assert entry.messages[1].content.startswith("Custom query only.")
+    assert "Working scope:" not in entry.messages[1].content

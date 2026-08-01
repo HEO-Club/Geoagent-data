@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from pipeline.config import get_settings
+from pipeline.schemas.clues import WorkingScope
 from pipeline.schemas.dataset import ChatMessage, DatasetEntry
 from pipeline.schemas.freeform import FreeFormTrajectory
 from pipeline.schemas.tools import ToolForest
@@ -19,6 +20,13 @@ DEFAULT_SYSTEM_PROMPT = (
     "You are a geolocation agent. Reason step by step with Thought/Action/Observation."
 )
 DEFAULT_USER_QUERY = "Locate the place shown in the image."
+
+
+def build_user_query(working_scope: WorkingScope | None = None) -> str:
+    """由 working_scope 生成训练用 user_query（仅展示短语，无来源话术）。"""
+    if working_scope is None or not working_scope.region.strip():
+        return DEFAULT_USER_QUERY
+    return f"{DEFAULT_USER_QUERY}\nWorking scope: {working_scope.region.strip()}"
 
 
 def _json_dumps(obj: Any) -> str:
@@ -124,11 +132,16 @@ def run_stage3(
     settings = get_settings()
     forest_path = Path(trees_path) if trees_path else Path(settings.TOOL_TREES_PATH)
     forest = ensure_tool_trees(freeform, forest_path, matcher=matcher)
+    resolved_query = (
+        user_query
+        if user_query is not None
+        else build_user_query(freeform.working_scope)
+    )
     traj = remap_trajectory(
         freeform,
         forest,
         system_prompt=system_prompt or DEFAULT_SYSTEM_PROMPT,
-        user_query=user_query or DEFAULT_USER_QUERY,
+        user_query=resolved_query,
         image_path=image_path,
     )
     entry = format_dataset_entry(traj, source_video=freeform.source_video)

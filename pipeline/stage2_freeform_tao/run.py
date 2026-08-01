@@ -12,8 +12,10 @@ from pydantic import BaseModel, Field
 from pipeline.config import get_settings
 from pipeline.llm import call_structured
 from pipeline.media.keyframes import extract_keyframes, video_duration_sec
+from pipeline.schemas.clues import WorkingScope
 from pipeline.schemas.freeform import FreeFormStep, FreeFormTrajectory
 from pipeline.schemas.transcript import TranscriptSegment
+from pipeline.stage2_freeform_tao.extract_scope import extract_working_scope
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +25,8 @@ DEFAULT_SYSTEM_HINT = (
     "讲解内容参考（含时间戳旁白）仅为你的内部蒸馏材料；"
     "产物 thought / params / observation / notes 中禁止出现「字幕」「旁白」「博主说」「视频里提到」等元话语；"
     "线索应写成 agent 已观察到的视觉/地理证据或工作假设。"
+    "若提供「Agent 已知工作范围」，它来自问题设置的外部给定先验（非地理推理结论、非博主演绎候选）；"
+    "须当作已知先验使用，禁止在 thought 中解释来源，禁止把博主候选升格为已知范围。"
     "社交开场、纯 UI、无关感慨等无增益内容静默跳过：不要生成对应步骤，也不要在 notes 里罗列删了什么；"
     "notes 默认 null（或极短质量备注，禁止去噪清单）。"
     "每步 thought 必须体现：当前假设/已确认状态 + 仍缺什么信息 → 因此调用本步 tool；"
@@ -63,6 +67,16 @@ def _pick_overview_timestamps(duration: float, count: int = 6) -> list[float]:
     return [duration * i / (count - 1) for i in range(count)]
 
 
+def _format_scope_block(working_scope: WorkingScope | None) -> str:
+    """蒸馏 prompt 中的已知工作范围块（仅展示短语）。"""
+    if working_scope is None:
+        return "Agent 已知工作范围：无外部工作范围。\n"
+    return (
+        "Agent 已知工作范围（外部给定先验，禁止解释来源）：\n"
+        f"{working_scope.region}\n"
+    )
+
+
 def run_stage2(
     video_path: str,
     transcript: list[TranscriptSegment],
@@ -79,7 +93,7 @@ def run_stage2(
         image_path: 可选代表图；缺省时从视频抽若干概览帧。
 
     Returns:
-        FreeFormTrajectory 软信封。
+        FreeFormTrajectory 软信封（含可选 working_scope）。
     """
     settings = get_settings()
     video_id = Path(video_path).stem
@@ -94,9 +108,13 @@ def run_stage2(
         except Exception as exc:  # noqa: BLE001
             logger.warning("stage2 keyframe extract failed: %s", exc)
 
+    extraction = extract_working_scope(transcript)
+    working_scope = extraction.working_scope
+
     prompt = (
         f"{DEFAULT_SYSTEM_HINT}\n\n"
         f"视频 ID: {video_id}\n"
+        f"{_format_scope_block(working_scope)}"
         "讲解内容参考（仅供蒸馏，禁止写入产物）：\n"
         f"{_format_transcript(transcript)}\n\n"
         "请输出 steps：每步 thought / tool / params / observation；"
@@ -122,6 +140,7 @@ def run_stage2(
             for s in result.steps
         ],
         notes=result.notes,
+        working_scope=working_scope,
     )
 
     dest = Path(out_path) if out_path else (

@@ -2,6 +2,14 @@
 
 from __future__ import annotations
 
+from pipeline.schemas.clues import (
+    BoundKind,
+    CandidateHypothesis,
+    ClueExtractionResult,
+    ClueRole,
+    RawGivenClue,
+    WorkingScope,
+)
 from pipeline.schemas.dataset import ChatMessage, DatasetEntry, ManifestV2
 from pipeline.schemas.freeform import FreeFormStep, FreeFormTrajectory
 from pipeline.schemas.tools import (
@@ -17,7 +25,11 @@ from pipeline.schemas.transcript import Stage1Result, TranscriptSegment
 
 __all__ = [
     "Action",
+    "BoundKind",
+    "CandidateHypothesis",
     "ChatMessage",
+    "ClueExtractionResult",
+    "ClueRole",
     "DatasetEntry",
     "FreeFormStep",
     "FreeFormTrajectory",
@@ -25,6 +37,7 @@ __all__ = [
     "MatchDecision",
     "ObservationField",
     "ParamSpec",
+    "RawGivenClue",
     "Stage1Result",
     "ToolDefinition",
     "ToolForest",
@@ -32,4 +45,5 @@ __all__ = [
     "Trajectory",
     "TrajectoryStep",
     "TranscriptSegment",
+    "WorkingScope",
 ]
