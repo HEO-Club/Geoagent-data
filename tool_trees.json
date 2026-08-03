@@ -167,6 +167,23 @@
         "is_terminal": false
       },
       "variants": []
+    },
+    {
+      "canonical": {
+        "name": "final_answer",
+        "description": "Submit the final geolocation answer after the evidence chain is complete.",
+        "params": [
+          {
+            "name": "location",
+            "type": "string_or_string_array",
+            "required": true,
+            "description": "最终地点；多道题时按顺序列出地点数组"
+          }
+        ],
+        "observation_fields": [],
+        "is_terminal": true
+      },
+      "variants": []
     }
   ]
 }

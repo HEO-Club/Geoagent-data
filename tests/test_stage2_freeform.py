@@ -38,8 +38,14 @@ def test_run_stage2_mock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
         params = {"region": "center"}
         observation = {"species_hint": "bamboo"}
 
+    class _FinalStep:
+        thought = "植被与气候证据已经收敛，因此提交最终地点。"
+        tool = "final_answer"
+        params = {"location": "广东省广州市"}
+        observation = None
+
     class _Result:
-        steps = [_Step()]
+        steps = [_Step(), _FinalStep()]
         notes = None
 
     captured: dict[str, str] = {}
@@ -57,8 +63,10 @@ def test_run_stage2_mock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     traj = stage2.run_stage2(str(video), transcript)
     assert isinstance(traj, FreeFormTrajectory)
     assert traj.source_video == "vid"
-    assert len(traj.steps) == 1
+    assert len(traj.steps) == 2
     assert traj.steps[0].tool == "inspect_plants"
+    assert traj.steps[-1].tool == "final_answer"
+    assert traj.steps[-1].params == {"location": "广东省广州市"}
     assert "字幕" not in traj.steps[0].thought
     assert traj.notes is None
     assert traj.working_scope is None
@@ -72,6 +80,9 @@ def test_run_stage2_mock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     assert "河南许昌附近" not in prompt
     assert "notes 可简述删除了哪些无用部分" not in prompt
     assert "字幕（带时间戳）" not in prompt
+    assert "不得自行补写材料中没有的坐标" in prompt
+    assert '"tool":"final_answer"' in prompt
+    assert '"params":{"location":"最终地点"}' in prompt
 
     path = tmp_path / "intermediate" / "vid" / "stage2_freeform_tao.json"
     assert path.is_file()
@@ -109,8 +120,14 @@ def test_run_stage2_injects_working_scope(
         params = {"q": "park"}
         observation = {"hits": []}
 
+    class _FinalStep:
+        thought = "已完成范围内地标核验，因此提交最终地点。"
+        tool = "final_answer"
+        params = {"location": "河南省许昌市某公园"}
+        observation = None
+
     class _Result:
-        steps = [_Step()]
+        steps = [_Step(), _FinalStep()]
         notes = None
 
     captured: dict[str, str] = {}
@@ -137,3 +154,51 @@ def test_run_stage2_injects_working_scope(
     loaded = FreeFormTrajectory.model_validate_json(path.read_text(encoding="utf-8"))
     assert loaded.working_scope is not None
     assert loaded.working_scope.region == "河南许昌附近"
+
+
+@pytest.mark.parametrize(
+    ("tool", "params", "observation"),
+    [
+        ("finalize_location", {"location": "甲地"}, None),
+        ("final_answer", {"result": "甲地"}, None),
+        ("final_answer", {"site": "甲地"}, None),
+        ("final_answer", {"location": ""}, None),
+        ("final_answer", {"location": "甲地", "confidence": "高"}, None),
+        ("final_answer", {"location": "甲地"}, {"result": "甲地"}),
+    ],
+)
+def test_llm_result_rejects_noncanonical_final_answer(
+    tool: str,
+    params: dict,
+    observation: dict | None,
+) -> None:
+    with pytest.raises(ValueError):
+        stage2._LLMFreeFormResult.model_validate(
+            {
+                "steps": [
+                    {
+                        "thought": "提交答案",
+                        "tool": tool,
+                        "params": params,
+                        "observation": observation,
+                    }
+                ]
+            }
+        )
+
+
+def test_llm_result_accepts_single_or_multiple_locations() -> None:
+    for location in ["甲地", ["甲地", "乙地"]]:
+        result = stage2._LLMFreeFormResult.model_validate(
+            {
+                "steps": [
+                    {
+                        "thought": "提交答案",
+                        "tool": "final_answer",
+                        "params": {"location": location},
+                        "observation": None,
+                    }
+                ]
+            }
+        )
+        assert result.steps[-1].params["location"] == location

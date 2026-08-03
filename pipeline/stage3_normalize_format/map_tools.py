@@ -26,6 +26,7 @@ from pipeline.stage3_normalize_format.trees import (
 )
 
 MatcherFn = Callable[[str, ToolForest], Optional[str]]
+RESERVED_TERMINAL_TOOLS = {"final_answer", "submit_answer", "done"}
 
 
 def _slug_tool_name(name: str) -> str:
@@ -57,7 +58,7 @@ def _default_definition_from_free(tool_name: str) -> ToolDefinition:
                 description="自由 observation 汇总",
             )
         ],
-        is_terminal=slug in {"submit_answer", "final_answer", "done"},
+        is_terminal=slug in RESERVED_TERMINAL_TOOLS,
     )
 
 
@@ -125,7 +126,11 @@ def ensure_tool_trees(
                     forest = add_variant(forest, existing.canonical.name, raw)
                 continue
 
-            mapped = match_fn(raw, forest)
+            # 保留终端工具不能被语义 matcher 吸收到普通工具树，否则 Stage 3
+            # 会把答案动作错误地当成仍需 Observation 的中间动作。
+            mapped = None if _slug_tool_name(raw) in RESERVED_TERMINAL_TOOLS else (
+                match_fn(raw, forest)
+            )
             if mapped:
                 forest = add_variant(forest, mapped, raw)
                 continue

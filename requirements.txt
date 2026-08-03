@@ -12,6 +12,7 @@ python-dotenv
 geopy
 pillow
 opencv-python
+imageio-ffmpeg
 
 # 工程与测试
 tenacity

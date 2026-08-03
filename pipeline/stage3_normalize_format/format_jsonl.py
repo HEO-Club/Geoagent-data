@@ -63,7 +63,11 @@ def remap_trajectory(
             if t.canonical.name == canonical:
                 tree = t
                 break
-        is_terminal = bool(tree.canonical.is_terminal) if tree else False
+        # ``final_answer`` 是阶段2的保留终端契约；即使旧 tool 树曾将其
+        # 错误映射到非终端 canonical，也不得在答案后补伪造的 result=null。
+        is_terminal = step.tool == "final_answer" or (
+            bool(tree.canonical.is_terminal) if tree else False
+        )
         steps.append(
             TrajectoryStep(
                 thought=step.thought,

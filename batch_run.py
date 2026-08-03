@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 def _load_jobs(path: str) -> list[dict[str, Any]]:
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(raw, list):
-        raise ValueError("jobs 文件须为 JSON 数组")
+        raise TypeError("jobs 文件须为 JSON 数组")
     return raw
 
 
@@ -30,7 +30,9 @@ def _run_job(job: dict[str, Any]) -> str:
     entry = run_one_video(
         video,
         video_id=job.get("video_id"),
-        anchor_transcript_path=job.get("anchor_transcript_path"),
+        anchor_transcript_path=(
+            job.get("anchor_transcript_path") or job.get("transcript_path")
+        ),
         image_path=job.get("image_path") or "",
         stage3_matcher=lambda _n, _f: None,
     )
@@ -46,8 +48,8 @@ async def _bounded_run(jobs: list[dict[str, Any]], concurrency: int) -> list[str
             try:
                 eid = await asyncio.to_thread(_run_job, job)
                 results.append(eid)
-            except Exception as exc:  # noqa: BLE001
-                logger.exception("job failed %s: %s", job.get("video_path"), exc)
+            except Exception:
+                logger.exception("job failed %s", job.get("video_path"))
 
     await asyncio.gather(*(one(j) for j in jobs))
     return results

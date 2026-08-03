@@ -1,7 +1,7 @@
 # 图片地理定位 Agent 训练数据集生成流水线 — 项目规格
 
-版本：3.0.2 | 生成时间：2026-08-01  
-修订说明：v3.0.2 `working_scope` 双端注入。v3.0.1 删除旧 stage0–7，主包收口为 `pipeline/` / `tests/`。v3.0.0 三阶段架构（字幕 → 自由 TAO → tool 树归一化 JSONL）。旧规格见 `SPEC_legacy_v2.md`。
+版本：3.0.3 | 生成时间：2026-08-03
+修订说明：v3.0.3 统一阶段2终端契约为 `final_answer` + `params.location`，并禁止无来源的精细 Observation。v3.0.2 `working_scope` 双端注入。v3.0.1 删除旧 stage0–7，主包收口为 `pipeline/` / `tests/`。v3.0.0 三阶段架构（字幕 → 自由 TAO → tool 树归一化 JSONL）。旧规格见 `SPEC_legacy_v2.md`。
 
 ## 0. 给 Cursor 的元指令（先读这一段）
 
@@ -29,7 +29,7 @@
 ### 1.2 三阶段
 
 1. **阶段1（字幕）**：根据视频生成带时间戳字幕。
-2. **阶段2（自由 TAO）**：以视频 + 字幕（字幕仅蒸馏材料）先抽取外部给定工作范围，再蒸馏一条 **agent 视角**、内容准确的地理图片定位 TAO 链；thought 写「假设缺口 → 为何调 tool」，不得暴露字幕/旁白来源；去噪静默（不进链、不做删除清单）；不维护 tool 池；tool 由模型发明；无统一 tool schema。
+2. **阶段2（自由 TAO）**：以视频 + 字幕（字幕仅蒸馏材料）先抽取外部给定工作范围，再蒸馏一条 **agent 视角**、内容准确的地理图片定位 TAO 链；thought 写「假设缺口 → 为何调 tool」，不得暴露字幕/旁白来源；去噪静默（不进链、不做删除清单）；中间 tool 由模型发明、无统一 tool schema；末步固定为 `final_answer`，且 `params` 仅含非空 `location`（多题可为地点数组）、`observation=null`。
 3. **阶段3（格式化）**：维护 tool 树；归并自由 tool；将 `working_scope` 写入训练 `user_query`；输出标准 JSONL。
 
 ### 1.3 输入
@@ -39,7 +39,7 @@
 
 ### 1.4 质量铁律
 
-- 阶段2 内容忠实、静默去噪、agent 视角决策链；阶段3 格式归一
+- 阶段2 内容忠实、静默去噪、agent 视角决策链；Observation 不得补写材料中不存在的精细数据；阶段3 格式归一
 - 禁止真实 Tool API；禁止 GT 进生成上下文
 - 宁缺毋滥；禁止样本特化硬门禁
 

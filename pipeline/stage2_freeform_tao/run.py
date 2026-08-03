@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from pipeline.config import get_settings
 from pipeline.llm import call_structured
@@ -33,6 +33,13 @@ DEFAULT_SYSTEM_HINT = (
     "禁止空转复述；禁止预知本步 observation。"
     "每步包含 thought、自定义 tool 名、params、observation；tool 名由你发明，无需匹配任何预置工具池。"
     "禁止使用或猜测 groundtruth / 官方真值坐标。"
+    "Observation 只能复现讲解材料中明确展示、报告的工具结果，或直接可见的画面事实；"
+    "不得把常识推测包装成已执行工具的返回，不得自行补写材料中没有的坐标、距离、角度、像素差、"
+    "日期时间、编号、候选数量、置信度百分比等精细数据。"
+    "材料只支持定性判断时必须保持定性；材料明确表示尚待核验时，Observation 也必须保留未核验状态。"
+    "最后一步必须且只能使用 tool=final_answer，params 必须且只能包含 location；"
+    "单地点写字符串，多道题写地点字符串数组，地点名称须忠实保留讲解最终结论，不得换成 result/site/answer 等字段；"
+    "最后一步 observation 必须为 null。"
 )
 
 
@@ -50,6 +57,34 @@ class _LLMFreeFormResult(BaseModel):
 
     steps: list[_LLMFreeFormStep] = Field(default_factory=list)
     notes: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validate_final_answer(self) -> "_LLMFreeFormResult":
+        """硬校验统一终端答案，避免模型只“准备总结”却不落答案。"""
+        if not self.steps:
+            raise ValueError("steps 不能为空，且末步必须输出 final_answer")
+        if any(step.tool == "final_answer" for step in self.steps[:-1]):
+            raise ValueError("final_answer 只能出现在最后一步")
+
+        final = self.steps[-1]
+        if final.tool != "final_answer":
+            raise ValueError("最后一步 tool 必须严格等于 final_answer")
+        if set(final.params) != {"location"}:
+            raise ValueError("final_answer.params 必须且只能包含 location")
+        location = final.params["location"]
+        if isinstance(location, str):
+            valid_location = bool(location.strip())
+        elif isinstance(location, list):
+            valid_location = bool(location) and all(
+                isinstance(item, str) and bool(item.strip()) for item in location
+            )
+        else:
+            valid_location = False
+        if not valid_location:
+            raise ValueError("final_answer.params.location 必须是非空地点或地点数组")
+        if final.observation is not None:
+            raise ValueError("final_answer.observation 必须为 null")
+        return self
 
 
 def _format_transcript(transcript: list[TranscriptSegment]) -> str:
@@ -120,7 +155,10 @@ def run_stage2(
         "请输出 steps：每步 thought / tool / params / observation；"
         "每步 thought 写清当前假设缺口与为何调用本步 tool；"
         "notes 默认 null。\n"
-        "observation 用 JSON 对象；终端步可 observation=null。"
+        "普通步骤 observation 用 JSON 对象。无论前面有多少步，最后一步必须严格写成："
+        '{"thought":"基于已有证据提交最终地点","tool":"final_answer",'
+        '"params":{"location":"最终地点"},"observation":null}。'
+        "若视频包含多道独立定位题，location 使用字符串数组并按讲解顺序列出全部最终地点。"
     )
     result = call_structured(
         prompt,

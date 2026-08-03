@@ -173,3 +173,55 @@ def test_run_stage3_explicit_user_query_overrides_scope(
     )
     assert entry.messages[1].content.startswith("Custom query only.")
     assert "Working scope:" not in entry.messages[1].content
+
+
+def test_final_answer_is_reserved_terminal_and_keeps_location(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "tool_trees.json"
+    trees.save_forest(
+        ToolForest(
+            trees=[
+                ToolTree(
+                    canonical=ToolDefinition(
+                        name="location_synthesizer",
+                        description="ordinary legacy tool",
+                        is_terminal=False,
+                    ),
+                    variants=[],
+                )
+            ]
+        ),
+        path,
+    )
+    freeform = FreeFormTrajectory(
+        source_video="terminal",
+        steps=[
+            FreeFormStep(
+                thought="证据已经闭合，提交最终答案。",
+                tool="final_answer",
+                params={"location": "山东省淄博市淄川区马棚村"},
+                observation=None,
+            )
+        ],
+    )
+
+    def bad_matcher(_name: str, _forest: ToolForest) -> str | None:
+        return "location_synthesizer"
+
+    forest = map_tools.ensure_tool_trees(freeform, path, matcher=bad_matcher)
+    final_tree = next(t for t in forest.trees if t.canonical.name == "final_answer")
+    assert final_tree.canonical.is_terminal is True
+
+    traj = format_jsonl.remap_trajectory(
+        freeform,
+        forest,
+        system_prompt="system",
+        user_query="query",
+        image_path="scene.jpg",
+    )
+    assert traj.steps[-1].action.tool == "final_answer"
+    assert traj.steps[-1].action.params == {
+        "location": "山东省淄博市淄川区马棚村"
+    }
+    assert traj.steps[-1].observation is None
