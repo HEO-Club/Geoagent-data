@@ -184,6 +184,126 @@
         "is_terminal": true
       },
       "variants": []
+    },
+    {
+      "canonical": {
+        "name": "zoom_traffic_analysis",
+        "description": "Auto-created from freeform tool 'zoom_traffic_analysis'",
+        "params": [
+          {
+            "name": "query",
+            "type": "string",
+            "required": false,
+            "description": "自由参数占位"
+          }
+        ],
+        "observation_fields": [
+          {
+            "name": "result",
+            "type": "string",
+            "nullable": true,
+            "description": "自由 observation 汇总"
+          }
+        ],
+        "is_terminal": false
+      },
+      "variants": []
+    },
+    {
+      "canonical": {
+        "name": "logo_reverse_search",
+        "description": "Auto-created from freeform tool 'logo_reverse_search'",
+        "params": [
+          {
+            "name": "query",
+            "type": "string",
+            "required": false,
+            "description": "自由参数占位"
+          }
+        ],
+        "observation_fields": [
+          {
+            "name": "result",
+            "type": "string",
+            "nullable": true,
+            "description": "自由 observation 汇总"
+          }
+        ],
+        "is_terminal": false
+      },
+      "variants": []
+    },
+    {
+      "canonical": {
+        "name": "landmark_bridge_identify",
+        "description": "Auto-created from freeform tool 'landmark_bridge_identify'",
+        "params": [
+          {
+            "name": "query",
+            "type": "string",
+            "required": false,
+            "description": "自由参数占位"
+          }
+        ],
+        "observation_fields": [
+          {
+            "name": "result",
+            "type": "string",
+            "nullable": true,
+            "description": "自由 observation 汇总"
+          }
+        ],
+        "is_terminal": false
+      },
+      "variants": []
+    },
+    {
+      "canonical": {
+        "name": "satellite_intersection_filter",
+        "description": "Auto-created from freeform tool 'satellite_intersection_filter'",
+        "params": [
+          {
+            "name": "query",
+            "type": "string",
+            "required": false,
+            "description": "自由参数占位"
+          }
+        ],
+        "observation_fields": [
+          {
+            "name": "result",
+            "type": "string",
+            "nullable": true,
+            "description": "自由 observation 汇总"
+          }
+        ],
+        "is_terminal": false
+      },
+      "variants": []
+    },
+    {
+      "canonical": {
+        "name": "detail_cross_verify",
+        "description": "Auto-created from freeform tool 'detail_cross_verify'",
+        "params": [
+          {
+            "name": "query",
+            "type": "string",
+            "required": false,
+            "description": "自由参数占位"
+          }
+        ],
+        "observation_fields": [
+          {
+            "name": "result",
+            "type": "string",
+            "nullable": true,
+            "description": "自由 observation 汇总"
+          }
+        ],
+        "is_terminal": false
+      },
+      "variants": []
     }
   ]
 }
