@@ -73,6 +73,9 @@ def test_extract_working_scope_mock(monkeypatch) -> None:  # type: ignore[no-unt
     def _fake_call(prompt: str, schema, **_k):  # type: ignore[no-untyped-def]
         assert "禁止使用或猜测 groundtruth" in prompt
         assert "candidate_hypotheses" in prompt
+        assert "渠道无关" in prompt
+        assert "拍摄城市" in prompt
+        assert "不得写入 working_scope" in prompt
         assert schema is ClueExtractionResult
         return expected
 
