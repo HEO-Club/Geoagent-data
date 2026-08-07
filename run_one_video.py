@@ -11,11 +11,17 @@ from pipeline.orchestrator import run_one_video
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="单视频流水线：阶段1–3")
+    parser = argparse.ArgumentParser(description="单视频流水线：阶段1 → 审核切分 → 阶段2–3")
     parser.add_argument("--video", required=True)
     parser.add_argument("--video-id", default=None)
     parser.add_argument("--anchor-transcript", default=None)
-    parser.add_argument("--image", default="")
+    parser.add_argument("--image", default="", help="可选回退单图（无审核帧时）")
+    parser.add_argument(
+        "--images",
+        nargs="*",
+        default=None,
+        help="可选回退多图（无审核帧时）",
+    )
     parser.add_argument(
         "--no-skip",
         action="store_true",
@@ -24,20 +30,27 @@ def main() -> None:
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
     get_settings()
-    entry = run_one_video(
+    entries = run_one_video(
         args.video,
         video_id=args.video_id,
         anchor_transcript_path=args.anchor_transcript,
         image_path=args.image,
+        image_paths=args.images,
         skip_completed=not args.no_skip,
         stage3_matcher=lambda _n, _f: None,
     )
     print(
         json.dumps(
             {
-                "id": entry.id,
-                "source_video": entry.source_video,
-                "messages": len(entry.messages),
+                "count": len(entries),
+                "entries": [
+                    {
+                        "id": e.id,
+                        "source_video": e.source_video,
+                        "messages": len(e.messages),
+                    }
+                    for e in entries
+                ],
             },
             ensure_ascii=False,
         )

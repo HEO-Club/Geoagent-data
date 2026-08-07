@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     MAX_CONCURRENT_VIDEOS: int = 1
     STAGE2_BEST_OF_K: int = 1
 
+    # 阶段1.5 审核切分
+    AUDIT_SPARSE_FRAME_COUNT: int = 8
+    AUDIT_MAX_KEYFRAMES_PER_TASK: int = 8
+
     TOOL_TREES_PATH: str = "tool_trees.json"
     INTERMEDIATE_DIR: str = "data/intermediate"
     OUTPUT_DIR: str = "data/output"

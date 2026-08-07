@@ -50,7 +50,7 @@ def test_soft_envelope_and_dataset_schemas() -> None:
         id="t1",
         system_prompt="sys",
         user_query="q",
-        image_path="img.jpg",
+        image_paths=["img.jpg"],
         steps=[
             TrajectoryStep(
                 thought="t",
@@ -78,10 +78,15 @@ def test_soft_envelope_and_dataset_schemas() -> None:
 
 
 def test_orchestrator_stage_order() -> None:
-    """编排仅含三阶段，不依赖已删除的旧 stage 模块。"""
+    """编排含审核切分，不依赖已删除的旧 stage 模块。"""
     import pipeline.orchestrator as orch
 
-    assert orch.STAGE_ORDER == ("stage1", "stage2", "stage3")
+    assert orch.STAGE_ORDER == (
+        "stage1",
+        "stage_audit_split",
+        "stage2",
+        "stage3",
+    )
     mod = importlib.import_module("pipeline.orchestrator")
     for name in (
         "stage0_preprocess",

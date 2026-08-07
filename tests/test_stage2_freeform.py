@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -83,6 +84,8 @@ def test_run_stage2_mock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     assert "不得自行补写材料中没有的坐标" in prompt
     assert '"tool":"final_answer"' in prompt
     assert '"params":{"location":"最终地点"}' in prompt
+    assert "求助者" in prompt
+    assert "待定位图" in prompt
 
     path = tmp_path / "intermediate" / "vid" / "stage2_freeform_tao.json"
     assert path.is_file()
@@ -202,3 +205,74 @@ def test_llm_result_accepts_single_or_multiple_locations() -> None:
             }
         )
         assert result.steps[-1].params["location"] == location
+
+
+def test_stage2_rewrites_meta_leak_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    video = tmp_path / "leak.mp4"
+    video.write_bytes(b"x")
+    monkeypatch.setenv("INTERMEDIATE_DIR", str(tmp_path / "intermediate"))
+    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
+    from pipeline.config import clear_settings_cache
+
+    clear_settings_cache()
+
+    monkeypatch.setattr(stage2, "video_duration_sec", lambda _p: 10.0)
+    monkeypatch.setattr(stage2, "extract_keyframes", lambda *_a, **_k: [])
+    monkeypatch.setattr(
+        stage2,
+        "extract_working_scope",
+        lambda _t: ClueExtractionResult(working_scope=None),
+    )
+
+    class _LeakStep:
+        thought = "对比求助者发来的两张图"
+        tool = "compare"
+        params = {"image_1": "第一张求助图"}
+        observation = {"ok": True}
+
+    class _FinalLeak:
+        thought = "提交"
+        tool = "final_answer"
+        params = {"location": "甲地"}
+        observation = None
+
+    class _CleanStep:
+        thought = "对比图1与图2的路旁特征"
+        tool = "compare"
+        params = {"image_1": "图1"}
+        observation = {"ok": True}
+
+    class _FinalClean:
+        thought = "提交"
+        tool = "final_answer"
+        params = {"location": "甲地"}
+        observation = None
+
+    calls = {"n": 0}
+
+    def _fake(prompt: str, schema: Any, **_k: Any):  # type: ignore[no-untyped-def]
+        calls["n"] += 1
+        if calls["n"] == 1:
+
+            class _R1:
+                steps = [_LeakStep(), _FinalLeak()]
+                notes = None
+
+            return _R1()
+
+        class _R2:
+            steps = [_CleanStep(), _FinalClean()]
+            notes = None
+
+        return _R2()
+
+    monkeypatch.setattr(stage2, "call_structured", _fake)
+    traj = stage2.run_stage2(
+        str(video),
+        [TranscriptSegment(start=0, end=1, text="两张图")],
+    )
+    assert calls["n"] == 2
+    assert "求助" not in traj.steps[0].thought
+    assert "图1" in traj.steps[0].thought

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -21,9 +21,12 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_SYSTEM_HINT = (
     "你从地理定位讲解视频中，蒸馏一条可供 SFT 训练的地理图片定位 agent 的 ReAct/TAO 轨迹。"
-    "Agent 面对的是待定位图片与场景证据，不是读字幕的观众。"
+    "Agent 面对的是待定位图片与场景证据，不是读字幕的观众，也不是视频讲解员。"
     "讲解内容参考（含时间戳旁白）仅为你的内部蒸馏材料；"
-    "产物 thought / params / observation / notes 中禁止出现「字幕」「旁白」「博主说」「视频里提到」等元话语；"
+    "产物 thought / params / observation / notes 中禁止出现渠道与媒介元话语，包括但不限于："
+    "「字幕」「旁白」「博主说」「视频里提到」「求助者」「网友」「评论区」「私信」"
+    "「观众」「UP主」「本期视频」「求助图」；"
+    "待定位图一律称为「图中 / 待定位图 / 图1 / 图2」。"
     "线索应写成 agent 已观察到的视觉/地理证据或工作假设。"
     "若提供「Agent 已知工作范围」，它来自问题设置的外部给定先验（非地理推理结论、非博主演绎候选）；"
     "须当作已知先验使用，禁止在 thought 中解释来源，禁止把博主候选升格为已知范围。"
@@ -38,8 +41,24 @@ DEFAULT_SYSTEM_HINT = (
     "日期时间、编号、候选数量、置信度百分比等精细数据。"
     "材料只支持定性判断时必须保持定性；材料明确表示尚待核验时，Observation 也必须保留未核验状态。"
     "最后一步必须且只能使用 tool=final_answer，params 必须且只能包含 location；"
-    "单地点写字符串，多道题写地点字符串数组，地点名称须忠实保留讲解最终结论，不得换成 result/site/answer 等字段；"
+    "单地点写字符串；若本任务内讲解给出多个并列最终地点，可用地点字符串数组；"
+    "地点名称须忠实保留讲解最终结论，不得换成 result/site/answer 等字段；"
     "最后一步 observation 必须为 null。"
+)
+
+# 通用渠道元话语（非样本特判）；命中则触发一次口吻重写
+META_LEAK_TERMS = (
+    "求助者",
+    "网友",
+    "评论区",
+    "私信",
+    "观众",
+    "博主",
+    "UP主",
+    "本期视频",
+    "求助图",
+    "字幕",
+    "旁白",
 )
 
 
@@ -112,30 +131,89 @@ def _format_scope_block(working_scope: WorkingScope | None) -> str:
     )
 
 
+def _steps_blob(steps: list[_LLMFreeFormStep] | list[FreeFormStep] | list[Any]) -> str:
+    payload: list[dict] = []
+    for step in steps:
+        if hasattr(step, "model_dump"):
+            payload.append(step.model_dump())  # type: ignore[union-attr]
+        else:
+            payload.append(
+                {
+                    "thought": step.thought,
+                    "tool": step.tool,
+                    "params": dict(step.params or {}),
+                    "observation": step.observation,
+                }
+            )
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def trajectory_has_meta_leak(steps: list[_LLMFreeFormStep] | list[FreeFormStep]) -> bool:
+    """检测产物是否含渠道元话语。"""
+    parts: list[str] = []
+    for step in steps:
+        parts.append(step.thought)
+        parts.append(json.dumps(step.params or {}, ensure_ascii=False))
+        if step.observation is not None:
+            parts.append(json.dumps(step.observation, ensure_ascii=False))
+    blob = "\n".join(parts)
+    return any(term in blob for term in META_LEAK_TERMS)
+
+
+def _rewrite_agent_voice(
+    result: _LLMFreeFormResult,
+    *,
+    images: list[str] | None,
+) -> _LLMFreeFormResult:
+    """命中元话语时做一次口吻重写。"""
+    prompt = (
+        f"{DEFAULT_SYSTEM_HINT}\n\n"
+        "下列轨迹含渠道元话语，请原样保留推理结构与 final_answer.location，"
+        "仅把 thought/params/observation 改写成地理定位 agent 口吻"
+        "（用「图中/待定位图/图1/图2」，删除求助者/网友等词）。\n"
+        f"{_steps_blob(result.steps)}\n"
+    )
+    return call_structured(
+        prompt,
+        _LLMFreeFormResult,
+        images=images or None,
+        lane="llm",
+    )
+
+
 def run_stage2(
     video_path: str,
     transcript: list[TranscriptSegment],
     *,
     out_path: str | None = None,
     image_path: str | None = None,
+    image_paths: list[str] | None = None,
+    source_video: str | None = None,
 ) -> FreeFormTrajectory:
     """蒸馏为地理图片定位 agent 自由 TAO（内容优先，无统一 tool schema）。
 
     Args:
         video_path: 视频路径。
-        transcript: 阶段1 字幕（仅作内部蒸馏材料，不得写入产物元话语）。
+        transcript: 字幕（仅作内部蒸馏材料，不得写入产物元话语）。
         out_path: 可选落盘路径；默认 intermediate/{id}/stage2_freeform_tao.json。
-        image_path: 可选代表图；缺省时从视频抽若干概览帧。
+        image_path: 兼容单图；与 ``image_paths`` 二选一优先后者。
+        image_paths: 任务关键帧（可多图）；编排器应传入审核切分结果。
+        source_video: 写入产物的来源 id；默认视频 stem。
 
     Returns:
         FreeFormTrajectory 软信封（含可选 working_scope）。
     """
     settings = get_settings()
-    video_id = Path(video_path).stem
+    video_id = (source_video or Path(video_path).stem).strip() or Path(
+        video_path
+    ).stem
     images: list[str] = []
-    if image_path:
+    if image_paths:
+        images = [p for p in image_paths if str(p).strip()]
+    elif image_path:
         images = [image_path]
     else:
+        # 独立 CLI 兼容：无审核帧时回退均匀概览帧
         try:
             duration = video_duration_sec(video_path)
             stamps = _pick_overview_timestamps(duration)
@@ -158,7 +236,7 @@ def run_stage2(
         "普通步骤 observation 用 JSON 对象。无论前面有多少步，最后一步必须严格写成："
         '{"thought":"基于已有证据提交最终地点","tool":"final_answer",'
         '"params":{"location":"最终地点"},"observation":null}。'
-        "若视频包含多道独立定位题，location 使用字符串数组并按讲解顺序列出全部最终地点。"
+        "若本任务内讲解给出多个并列最终地点，location 使用字符串数组。"
     )
     result = call_structured(
         prompt,
@@ -166,6 +244,9 @@ def run_stage2(
         images=images or None,
         lane="llm",
     )
+    if trajectory_has_meta_leak(result.steps):
+        logger.info("stage2 meta leak detected; rewriting agent voice once")
+        result = _rewrite_agent_voice(result, images=images or None)
     traj = FreeFormTrajectory(
         source_video=video_id,
         steps=[

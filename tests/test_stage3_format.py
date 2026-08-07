@@ -91,7 +91,7 @@ def test_remap_and_format(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
     entry = format_jsonl.run_stage3(
         freeform,
         trees_path=tmp_path / "tool_trees.json",
-        image_path="scene.jpg",
+        image_paths=["scene.jpg", "scene2.jpg"],
         matcher=lambda _n, _f: None,
     )
     assert entry.source_video == "clip"
@@ -101,6 +101,8 @@ def test_remap_and_format(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
     assert roles[2] == "assistant"
     assert roles[3] == "tool"
     assert "Thought:" in entry.messages[2].content
+    assert "[Image: scene.jpg]" in entry.messages[1].content
+    assert "[Image: scene2.jpg]" in entry.messages[1].content
     blob = json.dumps([m.content for m in entry.messages], ensure_ascii=False)
     assert "web_lookup" in blob
     assert entry.messages[1].content.startswith(format_jsonl.DEFAULT_USER_QUERY)
@@ -134,7 +136,7 @@ def test_run_stage3_injects_working_scope_into_user_query(
     entry = format_jsonl.run_stage3(
         freeform,
         trees_path=tmp_path / "tool_trees.json",
-        image_path="scene.jpg",
+        image_paths=["scene.jpg"],
         matcher=lambda _n, _f: None,
     )
     user = entry.messages[1].content
@@ -167,7 +169,7 @@ def test_run_stage3_explicit_user_query_overrides_scope(
     entry = format_jsonl.run_stage3(
         freeform,
         trees_path=tmp_path / "tool_trees.json",
-        image_path="scene.jpg",
+        image_paths=["scene.jpg"],
         user_query="Custom query only.",
         matcher=lambda _n, _f: None,
     )
@@ -218,8 +220,9 @@ def test_final_answer_is_reserved_terminal_and_keeps_location(
         forest,
         system_prompt="system",
         user_query="query",
-        image_path="scene.jpg",
+        image_paths=["scene.jpg"],
     )
+    assert traj.image_paths == ["scene.jpg"]
     assert traj.steps[-1].action.tool == "final_answer"
     assert traj.steps[-1].action.params == {
         "location": "山东省淄博市淄川区马棚村"
