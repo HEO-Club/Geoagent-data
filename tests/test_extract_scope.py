@@ -76,6 +76,7 @@ def test_extract_working_scope_mock(monkeypatch) -> None:  # type: ignore[no-unt
         assert "渠道无关" in prompt
         assert "拍摄城市" in prompt
         assert "不得写入 working_scope" in prompt
+        assert "国家" in prompt or "地区" in prompt
         assert schema is ClueExtractionResult
         return expected
 

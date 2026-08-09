@@ -23,8 +23,9 @@ from pipeline.schemas.transcript import TranscriptSegment
 
 logger = logging.getLogger(__name__)
 
-AUDIT_FRAME_RETRY = 3
 MULTI_STAMP_MIN_GAP = 45.0
+# video_derived：仅去掉同镜头连拍，勿用静图多图的大间隔误并不同源输入。
+VIDEO_DERIVED_NEAR_GAP = 10.0
 
 AUDIT_SYSTEM_HINT = (
     "你审核讲解视频是否适合蒸馏为「图片/静帧地理定位」训练样本。"
@@ -36,39 +37,66 @@ AUDIT_SYSTEM_HINT = (
     "旁白「打开地图就能看到某某地」≠ 定位题。\n"
     "- has_unresolved_target=true → decision=accept："
     "存在一个或多个独立的待定位输入。\n"
+    "选关键帧前先理解整段定位过程，区分过程角色：\n"
+    "- (A) 待定位实拍输入：人眼/相机拍到的、被定位的现场场景或静帧；\n"
+    "- (B) 推理工具与核验步骤：用地图或影像底图比对、街景浏览确认等工具画面；\n"
+    "- (C) 答案揭晓：钉点指出「就是这里」、揭晓界面等。\n"
     "切分粒度（关键）：一个 task = 一次独立定位题 = 一条最终答案链。\n"
     "- 同题多图（多张待定位原图共同支撑同一最终地点，或后图只是精化前图）"
     "必须合并为 **一个** task，设 multi_target_images=true，"
     "并给出每张待定位原图出现的时间戳。\n"
+    "- **同一最终地点 / 同一条答案链必须合并为一个 task**"
+    "（即使线索形态不同，如环境特征与建筑外观）。\n"
     "- 仅当不同目标、不同最终地点、彼此独立出题时才拆成多个 task。\n"
     "- 禁止把「同一条推理链里的第二张参考图」拆成第二个 task。\n"
     "target_kind：\n"
     "- still_image：明确静图/待定位原图；\n"
-    "- video_derived：对视频/连续场景定位（仍入库）。\n"
-    "keyframe_timestamps = 待定位原图/目标场景 **全屏或主画面出现** 的时刻；"
-    "禁止截讲解用地图应用、街景应用、钉点标注、对比 UI、过程画面。"
-    "旁白刚提到第二张图时若画面仍是地图/讲解 UI，该时刻无效。\n"
+    "- video_derived：对源视频/连续实拍场景定位（仍入库）。\n"
+    "keyframe_timestamps **只选过程角色 (A)**："
+    "去掉讲解后 agent 仍要据之定位的实拍主画面（定位输入本身）。\n"
+    "当 multi_target_images=true 或 video_derived 时："
+    "须一次列出**每一个**独立 (A) 实拍输入的代表时刻（同题列全）；"
+    "漏报任一输入镜头会导致样本不完整；张数随独立输入走。\n"
+    "**摘要与时间戳对齐**：task_summary 若枚举多个独立实拍输入"
+    "（镜头/静帧/目标建筑外观对照等），keyframe_timestamps 必须各有代表时刻；"
+    "摘要写了 N 个输入却只给少于 N 个戳 = 不完整。\n"
+    "比对/核验旁白段里若穿插「目标建筑外观、早期实拍静帧」等被定位画面，仍属 (A) 应选；"
+    "同段地图底图、街景浏览、钉点揭晓仍属 (B)(C)，不得选。\n"
+    "**禁止选 (B)(C)**：工具步骤与答案揭晓不是待定位图，"
+    "即使画面「很地理」也不得写入 keyframe_timestamps。\n"
+    "判断靠过程角色，不靠外观品类清单。"
+    "若 task_summary 写外观/镜头等实拍，时间戳必须落在对应实拍段，"
+    "不得用工具段或揭晓段顶替。\n"
+    "旁白刚提到下一输入时若画面仍是工具/讲解辅助界面，该时刻无效。\n"
     "- still_image 且非同题多图：默认 1 个时间戳；\n"
-    "- multi_target_images=true 或 video_derived：可多帧，均为目标画面。\n"
+    "- multi_target_images=true：每张待定位实拍原图各 1 个时间戳；\n"
+    "- video_derived：每个独立源实拍输入镜头各 1 个时间戳。\n"
+    "time_start/time_end 与可选 segment 索引 = **整条答案链旁白窗口**："
+    "从问题设定到最终地点结论（含地图比对叙述与揭晓句），"
+    "不得裁成「仅关键帧所在中段」。"
+    "时间窗管蒸馏材料完整性；keyframe_timestamps 仍只选 (A)。\n"
     "每个 task 给出 time_start/time_end、keyframe_timestamps（至少 1 个；"
     "同题多图至少 2 个）、multi_target_images、可选 segment 索引、task_summary。"
     "不要输出图像路径。"
 )
 
 FRAME_VERIFY_HINT = (
-    "判断这张视频截帧是否可作为「待定位原图」写入训练关键帧。"
-    "只输出 kind 与简短 reason。\n"
-    "- target_photo：待定位静帧照片/实拍占主画面（人物站在路上、建筑、广场等），"
-    "允许底部字幕条、角落频道水印、轻微红线/圆圈标注。\n"
-    "- teaching_ui（出现任一即判，优先于 target_photo）："
-    "电子地图/导航界面；百度/高德等街景浏览器"
-    "（路面方向箭头、东/西/北导航箭头、角落小地图、底部街景缩略图条、缩放控件、路名版权条）；"
-    "大红定位钉/「刚才在这里」气泡；左右分屏对比板/多图拼贴讲解板；"
-    "大段标题文案或难度星级条盖住照片的片头包装卡；"
-    "评论区/私信/社交帖截图（用户名条、点赞评论图标、正文框内嵌缩略图）。\n"
-    "- other：黑屏、片尾、与定位目标无关。\n"
-    "嵌在评论里的小图不算 target_photo；须照片本身全屏或主画面。"
-    "不得把街景应用界面判为 target_photo。"
+    "判断这张视频截帧是否可作为「定位输入」写入训练关键帧。"
+    "只输出 kind 与简短 reason。用过程角色判断，不要按控件/App 品类清单执法。\n"
+    "先问：这是被定位的实拍，还是解题时调用的工具/核验画面？\n"
+    "- target_photo：主画面是待定位的实拍场景"
+    "（地面/现场镜头、静帧照片或目标建筑外观实拍占主画面）。"
+    "即使叠有讲解字幕、箭头、方位字，仍判 target_photo。"
+    "全屏建筑外观实拍即使夹在核验旁白时间线，仍判 target_photo。\n"
+    "- teaching_ui：主内容是定位过程中的工具或核验画面"
+    "（用地图/影像底图比对、街景浏览、答案钉点揭晓等），"
+    "即使画面「很地理」也不是待定位输入；"
+    "亦含纯讲解辅助可视化或过程推演板。\n"
+    "不得仅因源实拍上有讲解标注就判 teaching_ui；"
+    "也不得把工具步骤画面当成 target_photo。\n"
+    "- other：仅黑屏、片尾、或与定位目标完全无关的画面；"
+    "不得因源实拍上有方位字/箭头/字幕叠字就判 other。\n"
+    "须输入画面本身全屏或主画面。"
 )
 
 
@@ -110,12 +138,6 @@ class _LLMFrameVerdict(BaseModel):
     reason: str = ""
 
 
-class _LLMKeyframeRetry(BaseModel):
-    """验收失败后请求替代时间戳。"""
-
-    keyframe_timestamps: list[float] = Field(default_factory=list)
-
-
 class _LLMTaskMergeResult(BaseModel):
     """多 task 合并复核。"""
 
@@ -126,8 +148,18 @@ class _LLMTaskMergeResult(BaseModel):
 def _seed_photo_mention_timestamps(
     transcript: list[TranscriptSegment],
 ) -> list[float]:
-    """从字幕中「照片/图」提及处取候选时刻（含邻域偏移，非样本特判）。"""
-    keys = ("照片", "这张图", "第二张", "原图", "两张图", "放大照片", "求助图")
+    """从字幕中照片/镜头提及处取候选时刻（含邻域偏移，非样本特判）。"""
+    keys = (
+        "照片",
+        "这张图",
+        "第二张",
+        "原图",
+        "两张图",
+        "放大照片",
+        "求助图",
+        "镜头",
+        "首先来看",
+    )
     mids: list[float] = []
     for seg in transcript:
         text = seg.text or ""
@@ -175,6 +207,8 @@ def _maybe_merge_same_question_tasks(
         "若多张待定位原图共同支撑同一最终地点（或后图精化前图），"
         "必须合并为 **一个** task，设 multi_target_images=true，"
         "并给出每张待定位原图出现的 keyframe_timestamps。\n"
+        "**同一最终地点 / 同一条答案链必须合并**"
+        "（即使线索形态不同，如河道环境与建筑外观）。\n"
         "仅当不同目标、不同最终地点时才保留多个 task。\n"
         f"视频 ID: {video_id}\n"
         f"当前 tasks JSON:\n{json.dumps(payload, ensure_ascii=False)}\n"
@@ -292,43 +326,6 @@ def verify_keyframe_kind(image_path: str) -> FrameKind:
     return verdict.kind
 
 
-def _request_alt_timestamps(
-    *,
-    video_id: str,
-    task_id: str,
-    t0: float,
-    t1: float,
-    rejected: list[float],
-    need: int,
-    transcript: list[TranscriptSegment],
-    overview_images: list[str] | None = None,
-) -> list[float]:
-    """验收失败后请模型给出替代目标图时间戳。"""
-    prompt = (
-        "先前给出的关键帧时间戳截到了地图/街景/讲解 UI/片头包装，或与已有原图时刻过近。\n"
-        "请重新给出对准「待定位原图/照片本图」全屏或主画面出现的时间戳"
-        f"（需要 {need} 个）。\n"
-        "优先选：问题设置阶段去掉标题卡后、原图单独占主画面的时刻；"
-        "旁白提到第二张图之后、画面已切到第二张照片的时刻"
-        "（同题多图时两帧时间应明显拉开）。\n"
-        "不要选：地图钉点、街景应用（有方向箭头/小地图）、讲解分屏、片头大字标题卡。\n"
-        f"视频 ID: {video_id}\n"
-        f"task: {task_id}\n"
-        f"时间窗: {t0:.1f}-{t1:.1f}s\n"
-        f"已拒绝时间戳: {rejected}\n"
-        "字幕（含段索引）：\n"
-        f"{_format_transcript(transcript)}\n"
-        "只输出 keyframe_timestamps。"
-    )
-    draft = call_structured(
-        prompt,
-        _LLMKeyframeRetry,
-        images=overview_images or None,
-        lane="vlm",
-    )
-    return list(draft.keyframe_timestamps or [])
-
-
 def _prioritize_diverse_probe_order(stamps: list[float]) -> list[float]:
     """探测顺序：最早与最晚优先，便于同题多图拉开时间。"""
     if len(stamps) <= 2:
@@ -362,21 +359,28 @@ def _materialize_task_images(
     t1: float,
     max_kf: int,
     transcript: list[TranscriptSegment],
-    overview_images: list[str] | None = None,
 ) -> tuple[list[float], list[str], bool]:
-    """截帧 + 视觉验收；返回 (stamps, paths, multi_flag)。"""
+    """截帧 + 原则软验收（单次探测，不凑数重试）；返回 (stamps, paths, multi_flag)。"""
     multi = bool(raw.multi_target_images)
+    video_derived = raw.target_kind == TargetKind.video_derived
     min_need = 2 if multi else 1
     # 同题多图常跨整段讲解；钳制窗过窄会把早期求助原图排除
     try:
         duration = float(video_duration_sec(video_path))
     except Exception:  # noqa: BLE001
         duration = max(t1, t0, 1.0)
-    # 同题多图：时间分散门槛随片长放大，避免同一原图的连续变体占满槽位
-    multi_gap = (
-        max(MULTI_STAMP_MIN_GAP, float(duration) * 0.2) if multi else MULTI_STAMP_MIN_GAP
-    )
-    if multi:
+    # still_image 同题多图：大间隔防同图变体；video_derived：小间隔仅去同镜头连拍
+    if video_derived:
+        near_gap = VIDEO_DERIVED_NEAR_GAP
+        require_span = False
+    elif multi:
+        near_gap = max(MULTI_STAMP_MIN_GAP, float(duration) * 0.2)
+        require_span = True
+    else:
+        near_gap = MULTI_STAMP_MIN_GAP
+        require_span = False
+    use_near_dedup = multi or video_derived
+    if multi or video_derived:
         clamp_start, clamp_end = 0.0, max(duration, t1, 1.0)
     else:
         clamp_start, clamp_end = t0, (t1 if t1 > t0 else t0 + 0.1)
@@ -391,126 +395,73 @@ def _materialize_task_images(
     )
     accepted_stamps: list[float] = []
     accepted_paths: list[str] = []
-    rejected_stamps: list[float] = []
     tried: set[str] = set()
     frame_dir = Path(get_settings().INTERMEDIATE_DIR) / video_id
 
-    def _need_more() -> bool:
-        if len(accepted_paths) < min_need:
-            return True
-        if multi and not _multi_span_ok(accepted_stamps, multi_gap):
-            return True
-        return False
-
-    def _try_stamps(stamps: list[float]) -> None:
-        for stamp in stamps:
-            if len(accepted_paths) >= max_kf and (
-                not multi or _multi_span_ok(accepted_stamps, multi_gap)
-            ):
-                return
-            key = f"{stamp:.3f}"
-            if key in tried:
-                continue
-            tried.add(key)
-            try:
-                paths = extract_keyframes(
-                    video_path, [stamp], out_dir=str(frame_dir)
-                )
-                paths = _prefix_keyframes(paths, task_id)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "task %s stamp %.3f extract failed: %s",
-                    task_id,
-                    stamp,
-                    exc,
-                )
-                continue
-            if not paths:
-                continue
-            path = paths[0]
-            kind = verify_keyframe_kind(path)
-            if kind == FrameKind.target_photo:
-                if multi and _is_near_duplicate_stamp(
-                    stamp, accepted_stamps, multi_gap
-                ):
-                    logger.info(
-                        "skip near-duplicate stamp %.3f task=%s",
-                        stamp,
-                        task_id,
-                    )
-                    _unlink_quiet(path)
-                    continue
-                # multi 已满但时间不分散：用更晚的帧替换最近邻
-                if multi and len(accepted_paths) >= max_kf:
-                    if not _multi_span_ok(accepted_stamps, multi_gap):
-                        nearest_i = min(
-                            range(len(accepted_stamps)),
-                            key=lambda i: abs(accepted_stamps[i] - stamp),
-                        )
-                        if abs(accepted_stamps[nearest_i] - stamp) < multi_gap:
-                            _unlink_quiet(path)
-                            continue
-                        _unlink_quiet(accepted_paths[nearest_i])
-                        accepted_stamps[nearest_i] = stamp
-                        accepted_paths[nearest_i] = path
-                    continue
-                accepted_stamps.append(stamp)
-                accepted_paths.append(path)
-            else:
-                logger.info(
-                    "drop frame %s kind=%s task=%s",
-                    path,
-                    kind.value,
-                    task_id,
-                )
-                rejected_stamps.append(stamp)
-                _unlink_quiet(path)
-
-    _try_stamps(pending)
-    attempt = 0
-    while _need_more() and attempt < AUDIT_FRAME_RETRY:
-        attempt += 1
-        need = max(1, min_need - len(accepted_paths))
-        if (
-            multi
-            and len(accepted_paths) >= 1
-            and not _multi_span_ok(accepted_stamps, multi_gap)
+    for stamp in pending:
+        if len(accepted_paths) >= max_kf and (
+            not require_span or _multi_span_ok(accepted_stamps, near_gap)
         ):
-            need = 1
-        alt = _request_alt_timestamps(
-            video_id=video_id,
-            task_id=task_id,
-            t0=clamp_start,
-            t1=clamp_end,
-            rejected=rejected_stamps + accepted_stamps,
-            need=need,
-            transcript=transcript,
-            overview_images=overview_images,
-        )
-        alt_clamped = _clamp_timestamps(
-            alt, start=clamp_start, end=clamp_end, max_n=max(max_kf * 2, 8)
-        )
-        _try_stamps(alt_clamped)
-
-    # 仍不足时再放宽到全片求一次
-    if _need_more():
-        alt = _request_alt_timestamps(
-            video_id=video_id,
-            task_id=task_id,
-            t0=0.0,
-            t1=max(duration, 1.0),
-            rejected=rejected_stamps + accepted_stamps,
-            need=max(1, min_need - len(accepted_paths)),
-            transcript=transcript,
-            overview_images=overview_images,
-        )
-        alt_clamped = _clamp_timestamps(
-            alt,
-            start=0.0,
-            end=max(duration, 1.0),
-            max_n=max(max_kf * 2, 8),
-        )
-        _try_stamps(alt_clamped)
+            break
+        key = f"{stamp:.3f}"
+        if key in tried:
+            continue
+        tried.add(key)
+        try:
+            paths = extract_keyframes(
+                video_path, [stamp], out_dir=str(frame_dir)
+            )
+            paths = _prefix_keyframes(paths, task_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "task %s stamp %.3f extract failed: %s",
+                task_id,
+                stamp,
+                exc,
+            )
+            continue
+        if not paths:
+            continue
+        path = paths[0]
+        kind = verify_keyframe_kind(path)
+        if kind == FrameKind.target_photo:
+            if use_near_dedup and _is_near_duplicate_stamp(
+                stamp, accepted_stamps, near_gap
+            ):
+                logger.info(
+                    "skip near-duplicate stamp %.3f task=%s",
+                    stamp,
+                    task_id,
+                )
+                _unlink_quiet(path)
+                continue
+            # still multi 已满但时间不分散：用更晚的帧替换最近邻
+            if require_span and len(accepted_paths) >= max_kf:
+                if not _multi_span_ok(accepted_stamps, near_gap):
+                    nearest_i = min(
+                        range(len(accepted_stamps)),
+                        key=lambda i: abs(accepted_stamps[i] - stamp),
+                    )
+                    if abs(accepted_stamps[nearest_i] - stamp) < near_gap:
+                        _unlink_quiet(path)
+                        continue
+                    _unlink_quiet(accepted_paths[nearest_i])
+                    accepted_stamps[nearest_i] = stamp
+                    accepted_paths[nearest_i] = path
+                continue
+            if len(accepted_paths) >= max_kf:
+                _unlink_quiet(path)
+                continue
+            accepted_stamps.append(stamp)
+            accepted_paths.append(path)
+        else:
+            logger.info(
+                "drop frame %s kind=%s task=%s",
+                path,
+                kind.value,
+                task_id,
+            )
+            _unlink_quiet(path)
 
     if not accepted_paths:
         raise RuntimeError(f"task {task_id} 未能截取任何被定位关键帧")
@@ -660,7 +611,6 @@ def run_audit_split(
                 t1=t1,
                 max_kf=max_kf,
                 transcript=transcript,
-                overview_images=overview_images or None,
             )
             tasks.append(
                 GeoTaskSpec(

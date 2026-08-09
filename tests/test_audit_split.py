@@ -38,11 +38,19 @@ def _fake_extract_factory(captured: dict[str, Any] | None = None):
     return fake_extract
 
 
-def _route_call(draft: Any, *, frame_kind: audit.FrameKind | None = None):
-    """按 schema 分流：审核草稿 / 帧验收 / 重试时间戳。"""
+def _route_call(
+    draft: Any,
+    *,
+    frame_kind: audit.FrameKind | None = None,
+    merge_tasks: list[Any] | None = None,
+    call_log: list[str] | None = None,
+):
+    """按 schema 分流：审核草稿 / 帧验收 / 合并复核。"""
 
     def _fake(prompt: str, schema: Any, **_k: Any) -> Any:  # noqa: ANN401
         name = getattr(schema, "__name__", "")
+        if call_log is not None:
+            call_log.append(name)
         if name == "_LLMFrameVerdict":
             kind = frame_kind or audit.FrameKind.target_photo
 
@@ -53,17 +61,15 @@ def _route_call(draft: Any, *, frame_kind: audit.FrameKind | None = None):
             v.kind = kind
             v.reason = "mock"
             return v
-        if name == "_LLMKeyframeRetry":
-
-            class _R:
-                keyframe_timestamps = [4.0, 7.0]
-
-            return _R()
         if name == "_LLMTaskMergeResult":
 
             class _M:
-                tasks = list(getattr(draft, "tasks", []) or [])
-                reason = "keep"
+                tasks = list(
+                    merge_tasks
+                    if merge_tasks is not None
+                    else (getattr(draft, "tasks", []) or [])
+                )
+                reason = "mock merge"
 
             return _M()
         return draft
@@ -275,12 +281,6 @@ def test_teaching_ui_frame_discarded(
                 reason = "mock"
 
             return _V()
-        if name == "_LLMKeyframeRetry":
-
-            class _R:
-                keyframe_timestamps: list[float] = []
-
-            return _R()
         return _Draft()
 
     monkeypatch.setattr(audit, "call_structured", _fake)
@@ -323,16 +323,13 @@ def test_multi_target_raises_if_only_one_valid_frame(
         [
             audit.FrameKind.target_photo,
             audit.FrameKind.teaching_ui,
-            # retries also teaching
-            audit.FrameKind.teaching_ui,
-            audit.FrameKind.teaching_ui,
-            audit.FrameKind.teaching_ui,
-            audit.FrameKind.teaching_ui,
         ]
     )
+    call_log: list[str] = []
 
     def _fake(prompt: str, schema: Any, **_k: Any) -> Any:  # noqa: ANN401
         name = getattr(schema, "__name__", "")
+        call_log.append(name)
         if name == "_LLMFrameVerdict":
 
             class _V:
@@ -340,18 +337,13 @@ def test_multi_target_raises_if_only_one_valid_frame(
                 reason = "mock"
 
             return _V()
-        if name == "_LLMKeyframeRetry":
-
-            class _R:
-                keyframe_timestamps = [6.0, 8.0]
-
-            return _R()
         return _Draft()
 
     monkeypatch.setattr(audit, "call_structured", _fake)
 
     with pytest.raises(RuntimeError, match="有效关键帧不足 2 张"):
         audit.run_audit_split(str(video), _transcript())
+    assert "_LLMKeyframeRetry" not in call_log
 
 
 def test_video_derived_allows_multiple_frames(
@@ -489,15 +481,213 @@ def test_run_audit_split_multi_task(
     assert "第二张" in sliced[0].text
 
 
-def test_frame_verify_hint_rejects_streetview_ui() -> None:
-    """验收提示须明确街景/地图 UI、片头与评论区截图。"""
+def test_frame_verify_hint_is_principle_based() -> None:
+    """验收提示用过程角色原则：实拍输入 vs 工具/核验，不靠品类清单。"""
     hint = audit.FRAME_VERIFY_HINT
-    assert "街景" in hint
-    assert "方向箭头" in hint or "小地图" in hint
-    assert "片头" in hint or "标题" in hint
-    assert "评论区" in hint
+    assert "定位输入" in hint or "待定位" in hint
     assert "target_photo" in hint
     assert "teaching_ui" in hint
+    assert "实拍" in hint
+    assert "工具" in hint or "核验" in hint
+    assert "箭头" in hint or "字幕" in hint
+    assert "建筑外观" in hint
+    assert "黑屏" in hint
+    assert "不得因源实拍上有方位字" in hint or "不得因源实拍上有" in hint
+    assert "卫星" not in hint
+    assert "谷歌" not in hint
+
+
+def test_audit_system_hint_lists_all_localization_inputs() -> None:
+    hint = audit.AUDIT_SYSTEM_HINT
+    assert "定位输入" in hint or "实拍" in hint
+    assert "同一最终地点" in hint
+    assert "每一个" in hint or "列全" in hint
+    assert "过程角色" in hint
+    assert "工具" in hint
+    assert "揭晓" in hint
+    assert "品类清单" in hint or "过程角色" in hint
+    assert "整条答案链" in hint
+    assert "摘要与时间戳对齐" in hint or "摘要" in hint
+    assert "建筑外观" in hint
+    assert "卫星" not in hint
+    assert "谷歌" not in hint
+
+
+def test_seed_timestamps_include_shot_mentions() -> None:
+    """通用「镜头/首先来看」旁白应产生探测种子。"""
+    segs = [
+        TranscriptSegment(
+            start=32.0,
+            end=66.0,
+            text="首先来看这个镜头，酒店就在主河道旁。",
+        ),
+        TranscriptSegment(
+            start=66.0,
+            end=100.0,
+            text="接下来镜头二，河道往西北延伸。",
+        ),
+    ]
+    stamps = audit._seed_photo_mention_timestamps(segs)
+    assert stamps
+    assert any(30.0 <= t <= 70.0 for t in stamps)
+
+
+def test_video_derived_keeps_nearby_distinct_shots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """video_derived 下间隔约 15–20s 的独立源镜头不应被近邻去重丢掉。"""
+    video = tmp_path / "neardup.mp4"
+    video.write_bytes(b"x")
+    monkeypatch.setenv("INTERMEDIATE_DIR", str(tmp_path / "intermediate"))
+    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
+    from pipeline.config import clear_settings_cache
+
+    clear_settings_cache()
+
+    monkeypatch.setattr(audit, "video_duration_sec", lambda _p: 100.0)
+    monkeypatch.setattr(audit, "extract_keyframes", _fake_extract_factory())
+
+    class _Task:
+        time_start = 0.0
+        time_end = 100.0
+        target_kind = TargetKind.video_derived
+        keyframe_timestamps = [40.0, 58.0, 75.0]
+        multi_target_images = True
+        segment_start_idx = 0
+        segment_end_idx = 1
+        task_summary = "多源镜头"
+
+    class _Draft:
+        decision = AuditDecision.accept
+        reason = "同题多输入"
+        has_unresolved_target = True
+        tasks = [_Task()]
+
+    monkeypatch.setattr(audit, "call_structured", _route_call(_Draft()))
+
+    result = audit.run_audit_split(str(video), _transcript())
+    stamps = result.tasks[0].keyframe_timestamps
+    assert len(stamps) >= 3
+    assert any(abs(s - 40.0) < 1e-3 for s in stamps)
+    assert any(abs(s - 58.0) < 1e-3 for s in stamps)
+    assert any(abs(s - 75.0) < 1e-3 for s in stamps)
+
+
+def test_video_derived_near_gap_constant() -> None:
+    assert audit.VIDEO_DERIVED_NEAR_GAP == 10.0
+    assert audit._is_near_duplicate_stamp(50.0, [40.0], 10.0) is False
+    assert audit._is_near_duplicate_stamp(48.0, [40.0], 10.0) is True
+
+
+def test_merge_same_final_location_into_one_task(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """同最终地点的多草稿须合并为 1 个 task。"""
+    video = tmp_path / "sameloc.mp4"
+    video.write_bytes(b"x")
+    monkeypatch.setenv("INTERMEDIATE_DIR", str(tmp_path / "intermediate"))
+    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
+    from pipeline.config import clear_settings_cache
+
+    clear_settings_cache()
+
+    monkeypatch.setattr(audit, "video_duration_sec", lambda _p: 100.0)
+    monkeypatch.setattr(audit, "extract_keyframes", _fake_extract_factory())
+
+    class _T1:
+        time_start = 0.0
+        time_end = 50.0
+        target_kind = TargetKind.video_derived
+        keyframe_timestamps = [10.0, 40.0]
+        multi_target_images = True
+        segment_start_idx = 0
+        segment_end_idx = 0
+        task_summary = "河道线索定位酒店"
+
+    class _T2:
+        time_start = 50.0
+        time_end = 90.0
+        target_kind = TargetKind.video_derived
+        keyframe_timestamps = [70.0]
+        multi_target_images = False
+        segment_start_idx = 1
+        segment_end_idx = 1
+        task_summary = "外观线索定位同一酒店"
+
+    class _Merged:
+        time_start = 0.0
+        time_end = 90.0
+        target_kind = TargetKind.video_derived
+        keyframe_timestamps = [10.0, 40.0, 70.0]
+        multi_target_images = True
+        segment_start_idx = 0
+        segment_end_idx = 1
+        task_summary = "同酒店多源镜头"
+
+    class _Draft:
+        decision = AuditDecision.accept
+        reason = "两段线索"
+        has_unresolved_target = True
+        tasks = [_T1(), _T2()]
+
+    monkeypatch.setattr(
+        audit,
+        "call_structured",
+        _route_call(_Draft(), merge_tasks=[_Merged()]),
+    )
+
+    result = audit.run_audit_split(str(video), _transcript())
+    assert len(result.tasks) == 1
+    assert result.tasks[0].multi_target_images is True
+    assert len(result.tasks[0].image_paths) >= 2
+
+
+def test_no_keyframe_retry_when_all_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """提案戳全被软验收拒绝时直接失败，不触发凑数重试。"""
+    video = tmp_path / "noretry.mp4"
+    video.write_bytes(b"x")
+    monkeypatch.setenv("INTERMEDIATE_DIR", str(tmp_path / "intermediate"))
+    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
+    from pipeline.config import clear_settings_cache
+
+    clear_settings_cache()
+
+    monkeypatch.setattr(audit, "video_duration_sec", lambda _p: 20.0)
+    monkeypatch.setattr(audit, "extract_keyframes", _fake_extract_factory())
+
+    class _Task:
+        time_start = 0.0
+        time_end = 10.0
+        target_kind = TargetKind.still_image
+        keyframe_timestamps = [1.0, 5.0]
+        multi_target_images = False
+        segment_start_idx = 0
+        segment_end_idx = 0
+        task_summary = "单图"
+
+    class _Draft:
+        decision = AuditDecision.accept
+        reason = "有目标"
+        has_unresolved_target = True
+        tasks = [_Task()]
+
+    call_log: list[str] = []
+    monkeypatch.setattr(
+        audit,
+        "call_structured",
+        _route_call(
+            _Draft(),
+            frame_kind=audit.FrameKind.teaching_ui,
+            call_log=call_log,
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="未能截取任何被定位关键帧"):
+        audit.run_audit_split(str(video), _transcript())
+    assert "_LLMKeyframeRetry" not in call_log
+    assert not hasattr(audit, "_request_alt_timestamps")
 
 
 def test_max_keyframes_still_multi_capped() -> None:
