@@ -29,6 +29,12 @@ class Settings(BaseSettings):
     LLM_IMAGE_MAX_SIDE: int = 768
     LLM_IMAGE_JPEG_QUALITY: int = 75
 
+    ASR_PROVIDER: str = "qwen"
+    ASR_BASE_URL: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    ASR_MODEL: str = "qwen3-asr-flash"
+    ASR_LANGUAGE: str = "zh"
+    STAGE1_ALLOW_VLM_FALLBACK: bool = True
+
     VLM_PROVIDER: str = "qwen"
     VLM_BASE_URL: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     VLM_MODEL: str = "qwen3.7-plus"
@@ -36,12 +42,22 @@ class Settings(BaseSettings):
     LLM_PROVIDER: str = "kimi"
     LLM_BASE_URL: str = "https://api.moonshot.cn/v1"
     LLM_MODEL: str = "kimi-k3"
+    LLM_ANTHROPIC_BASE_URLS: str = "https://api.anthropic.com"
+    LLM_ANTHROPIC_MODEL: str = "claude-sonnet-5"
+    LLM_ANTHROPIC_API_KEY: str = ""
+    LLM_ANTHROPIC_STREAM: bool = False
+    LLM_MAX_OUTPUT_TOKENS: int = 8192
+    ALLOW_INSECURE_LLM_ENDPOINTS: bool = False
     GEMINI_MODEL: str = "gemini-2.0-flash"
     KIMI_REASONING_EFFORT: str = "low"
     LLM_TIMEOUT_SEC: float = 300.0
 
     MAX_CONCURRENT_VIDEOS: int = 1
     STAGE2_BEST_OF_K: int = 1
+
+    # 阶段1.5 审核切分
+    AUDIT_SPARSE_FRAME_COUNT: int = 8
+    AUDIT_MAX_KEYFRAMES_PER_TASK: int = 8
 
     TOOL_TREES_PATH: str = "tool_trees.json"
     INTERMEDIATE_DIR: str = "data/intermediate"

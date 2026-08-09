@@ -16,7 +16,14 @@ def main() -> None:
     parser.add_argument("--freeform", required=True, help="stage2_freeform_tao.json")
     parser.add_argument("--trees", default=None, help="tool_trees.json 路径")
     parser.add_argument("--out-jsonl", default=None)
-    parser.add_argument("--image", default="")
+    parser.add_argument("--image", default="", help="可选单图（兼容）")
+    parser.add_argument(
+        "--images",
+        nargs="*",
+        default=None,
+        help="任务关键帧（可多图）",
+    )
+    parser.add_argument("--shard-id", default=None, help="分片名，默认 source_video")
     parser.add_argument("--system-prompt", default=None)
     parser.add_argument("--user-query", default=None)
     args = parser.parse_args()
@@ -28,6 +35,8 @@ def main() -> None:
         trees_path=args.trees,
         out_jsonl_path=args.out_jsonl,
         image_path=args.image,
+        image_paths=args.images,
+        shard_id=args.shard_id,
         system_prompt=args.system_prompt,
         user_query=args.user_query,
         matcher=lambda _name, _forest: None,

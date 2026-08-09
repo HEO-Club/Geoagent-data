@@ -1,7 +1,7 @@
 # 图片地理定位 Agent 训练数据集生成流水线 — 项目规格
 
-版本：3.0.1 | 生成时间：2026-07-29  
-修订说明：v3.0.1 删除旧 stage0–7，主包收口为 `pipeline/` / `tests/`。v3.0.0 三阶段架构（字幕 → 自由 TAO → tool 树归一化 JSONL）。旧规格见 `SPEC_legacy_v2.md`。
+版本：3.1.3 | 生成时间：2026-08-07
+修订说明：v3.1.3 切分粒度改为「一次定位题=一个 task」（同题多图合并）；关键帧经视觉验收剔除讲解 UI；阶段2 强化 agent 口吻禁渠道元话语。v3.1.2 中间产物根目录平铺。旧规格见 `SPEC_legacy_v2.md`。
 
 ## 0. 给 Cursor 的元指令（先读这一段）
 
@@ -24,14 +24,20 @@
 
 ### 1.1 最终目标
 
-从「用图片做地理定位」的讲解视频中，蒸馏出**一条**可训练的 ReAct 轨迹，供单一地理定位 agent 做 SFT。
+从「用图片做地理定位」的讲解视频中，蒸馏出可训练的 ReAct 轨迹，供单一地理定位 agent 做 SFT。一视频可产出**多条**样本（每定位任务一条链 / 一条 JSONL）。
 
-### 1.2 三阶段
+### 1.2 阶段
 
 1. **阶段1（字幕）**：根据视频生成带时间戳字幕。
-2. **阶段2（自由 TAO）**：根据视频与字幕总结内容准确的 TAO 逻辑链；不维护 tool 池；tool 由模型发明；无统一 tool schema。
-3. **阶段3（格式化）**：维护 tool 树；归并自由 tool；输出标准 JSONL。
-
+2. **阶段1.5（审核切分）**：结合字幕 + 稀疏抽帧做语义审核（禁止词表特判）：
+   - **拒识主问句**：去掉讲解/旁白/答案后，是否仍存在需 agent 定位的图或场景？无 → `decision=reject`。
+   - **切分粒度**：一个 task = 一次独立定位题 = 一条最终 `final_answer` 链。同题多图（共同支撑同一地点、或后图精化前图）合并为 **一个** task 且 `multi_target_images=true`；**同一最终地点必须合并为一个 task**；仅不同目标/不同最终地点才拆多 task。
+   - **task 时间窗**：`time_start`/`time_end`（及可选 segment 索引）覆盖**整条答案链旁白**（问题设定 → 推理比对叙述 → 最终地点结论），不得裁成仅关键帧中段；时间窗管蒸馏材料完整性。
+   - **关键帧 = 待定位实拍输入**（去掉讲解后 agent 仍要据之定位的现场/静帧）；截帧后经 VLM 原则验收。定位过程中的工具/核验/揭晓步骤帧（`teaching_ui`）不得入 `image_paths`。软验收不得因讲解标注叠加而否定源实拍主画面，也不得把工具步骤画面当成定位输入；核验旁白段内穿插的目标建筑外观等实拍仍属定位输入。
+   - **`video_derived` / 同题多输入**：提案须先理解定位过程角色，一次列全各独立**实拍**定位输入代表帧（张数随输入镜头走，受配置上限约束）；`task_summary` 枚举的每个实拍输入须各有时间戳；不得用工具步骤或揭晓帧充数。
+   - 数量：`still_image` 默认 1 帧；`multi_target_images` 或 `video_derived` 允许多帧（multi 验收后至少 2 张）。
+3. **阶段2（自由 TAO）**：**按 task** 以字幕切片 + `image_paths` 蒸馏 agent 视角 TAO；产物禁止「求助者/网友/评论区」等渠道元话语，待定位图称「图中/待定位图/图1·图2」。末步 `final_answer` + `params.location`。
+4. **阶段3（格式化）**：**按 task** 维护 tool 树、写入 `working_scope` 到 `user_query`、输出标准 JSONL（`image_paths`）。
 ### 1.3 输入
 
 - 原始视频；可选 ASR（仅阶段1 时间锚）
@@ -39,18 +45,28 @@
 
 ### 1.4 质量铁律
 
-- 阶段2 内容忠实、去噪；阶段3 格式归一
+- 阶段2 内容忠实、静默去噪、agent 视角决策链；Observation 不得补写材料中不存在的精细数据；阶段3 格式归一
 - 禁止真实 Tool API；禁止 GT 进生成上下文
 - 宁缺毋滥；禁止样本特化硬门禁
+
+### 1.5 外部给定线索 / 工作范围（沿用 v2 分层，单 Agent）
+
+- **抽取输入**：仅该 task 的字幕切片；**禁止**读 groundtruth。
+- **`raw_given_clue`**：问题设置段外部沟通原话；角色区分 `photo_location_constraint` / `person_or_social_attribute` / `other_non_location`。
+- **`working_scope`**：仅当存在拍摄地硬边界（`bound_kind=inside`）或可核验软先验（`bound_kind=near`，含「籍贯 ∧ 离家不远 ⇒ 籍贯地附近」）时规范化；`region` 为展示短语；**禁止**把软先验升格成「X内」。城市级「拍摄地/拍摄城市就是 X」属硬边界；抽取看约束语义而非来源渠道（渠道无关）。
+- **`candidate_hypothesis`**（博主演绎候选）：可抽取供审计，**不得**写入蒸馏 prompt 的已知范围块或训练 `user_query`。
+- **阶段2 蒸馏 prompt**：有有效 `working_scope` 时增加「Agent 已知工作范围」块；thought 须将其当先验，不得写「字幕/网友说」。
+- **阶段3 `user_query`**：无 scope 时为 `Locate the place shown in the image.`；有 scope 时追加一行 `Working scope: {region}`。
 
 ## 2. 系统总体架构
 
 ```
-阶段1  视频 → TranscriptSegment 列表
-阶段2  视频 + 字幕 → FreeFormTrajectory
-阶段3  FreeFormTrajectory + tool_trees → Trajectory → DatasetEntry JSONL
+阶段1    视频 → TranscriptSegment 列表
+阶段1.5  字幕 + 稀疏帧 → AuditSplitResult（reject | tasks[] + 关键帧）
+阶段2    每 task：字幕切片 + image_paths → FreeFormTrajectory
+阶段3    每 task：FreeFormTrajectory + tool_trees → Trajectory（image_paths）→ DatasetEntry JSONL
 
-编排：run_stage{1,2,3}.py / run_one_video.py / batch_run.py
+编排：run_stage{1,2,3}.py / run_stage_audit.py / run_one_video.py / batch_run.py
 Tool 树：tool_trees.json
 ```
 
@@ -66,11 +82,13 @@ geo-agent-dataset/
 │   ├── schemas/
 │   ├── media/
 │   ├── stage1_transcript/
+│   ├── stage_audit_split/
 │   ├── stage2_freeform_tao/
 │   ├── stage3_normalize_format/
 │   └── orchestrator.py
 ├── tool_trees.json
 ├── run_stage1.py
+├── run_stage_audit.py
 ├── run_stage2.py
 ├── run_stage3.py
 ├── run_one_video.py
@@ -82,16 +100,18 @@ geo-agent-dataset/
     ├── intermediate/{video_id}/
     │   ├── manifest_v2.json
     │   ├── stage1_transcript.json
-    │   ├── stage2_freeform_tao.json
-    │   └── stage3_trajectory.json
+    │   ├── stage_audit_split.json
+    │   ├── {task_id}_t*.jpg
+    │   ├── {task_id}_stage2_freeform_tao.json
+    │   └── {task_id}_stage3_trajectory.json
     └── output/
-        ├── shards/{video_id}.jsonl
+        ├── shards/{task_id}.jsonl
         └── geolocate_agent.jsonl
 ```
 
 ## 4. 数据 Schema
 
-见 `pipeline/schemas/`：`TranscriptSegment`、`FreeFormStep`/`FreeFormTrajectory`、`ToolTree`/`ToolForest`、`Trajectory`、`DatasetEntry`（无 agent_role / 强制 GT / verified）。
+见 `pipeline/schemas/`：`TranscriptSegment`、`AuditSplitResult`/`GeoTaskSpec`、`RawGivenClue`/`WorkingScope`/`ClueExtractionResult`、`FreeFormStep`/`FreeFormTrajectory`、`ToolTree`/`ToolForest`、`Trajectory`（`image_paths: list[str]`）、`DatasetEntry`。
 
 ## 5. 阶段接口
 
@@ -99,13 +119,19 @@ geo-agent-dataset/
 def run_stage1(video_path: str, *, anchor_transcript_path: str | None = None,
                out_path: str | None = None) -> list[TranscriptSegment]: ...
 
-def run_stage2(video_path: str, transcript: list[TranscriptSegment],
-               *, out_path: str | None = None) -> FreeFormTrajectory: ...
+def run_audit_split(video_path: str, transcript: list[TranscriptSegment],
+                    *, out_path: str | None = None) -> AuditSplitResult: ...
 
+def extract_working_scope(transcript: list[TranscriptSegment]) -> ClueExtractionResult: ...
+def run_stage2(video_path: str, transcript: list[TranscriptSegment],
+               *, image_paths: list[str] | None = None,
+               out_path: str | None = None) -> FreeFormTrajectory: ...
+
+def build_user_query(working_scope: WorkingScope | None = None) -> str: ...
 def ensure_tool_trees(freeform: FreeFormTrajectory, trees_path: Path) -> ToolForest: ...
 def remap_trajectory(...) -> Trajectory: ...
 def format_dataset_entry(traj: Trajectory, *, source_video: str) -> DatasetEntry: ...
-def run_stage3(freeform: FreeFormTrajectory, ...) -> DatasetEntry: ...
+def run_stage3(freeform: FreeFormTrajectory, ..., image_paths: list[str] | None = None) -> DatasetEntry: ...
 ```
 
 ## 6. Tool 树规则

@@ -5,12 +5,12 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Optional
 
 from pydantic import BaseModel, Field
 
 from pipeline.config import get_settings
-from pipeline.llm import call_structured
+from pipeline.llm import call_audio_text, call_structured
+from pipeline.media.audio import extract_audio_range
 from pipeline.media.keyframes import (
     extract_keyframes_range,
     video_duration_sec,
@@ -24,9 +24,9 @@ DEFAULT_MAX_FRAMES = 4
 
 
 class _WindowSpeech(BaseModel):
-    """单时间窗口播转录。"""
+    """无语音时，从画面可见字幕恢复的单窗口文本。"""
 
-    text: str = Field(description="该时间窗内博主口播的中文转录；无语音则空串")
+    text: str = Field(description="关键帧中可见的中文字幕正文；不可见则空串")
 
 
 def load_anchor_transcript(path: str | Path) -> list[TranscriptSegment]:
@@ -45,7 +45,7 @@ def build_time_windows(
     duration_sec: float,
     *,
     window_sec: float = DEFAULT_WINDOW_SEC,
-    anchor: Optional[list[TranscriptSegment]] = None,
+    anchor: list[TranscriptSegment] | None = None,
 ) -> list[tuple[float, float]]:
     """构造分窗时间区间。"""
     if duration_sec <= 0:
@@ -54,8 +54,8 @@ def build_time_windows(
     if anchor:
         sorted_anchor = sorted(anchor, key=lambda s: s.start)
         windows: list[tuple[float, float]] = []
-        chunk_start: Optional[float] = None
-        chunk_end: Optional[float] = None
+        chunk_start: float | None = None
+        chunk_end: float | None = None
         for seg in sorted_anchor:
             s = max(0.0, float(seg.start))
             e = min(duration_sec, float(seg.end))
@@ -97,7 +97,7 @@ def _pick_frames(paths: list[str], max_frames: int = DEFAULT_MAX_FRAMES) -> list
     if max_frames == 1:
         return [paths[len(paths) // 2]]
     idxs = [
-        int(round(i * (len(paths) - 1) / (max_frames - 1)))
+        round(i * (len(paths) - 1) / (max_frames - 1))
         for i in range(max_frames)
     ]
     return [paths[i] for i in idxs]
@@ -110,18 +110,50 @@ def transcribe_window(
     *,
     max_frames: int = DEFAULT_MAX_FRAMES,
 ) -> TranscriptSegment:
-    """对单时间窗抽关键帧并 VLM 转录。"""
+    """对单时间窗优先做音频 ASR；无结果时退回关键帧 VLM。"""
     if end <= start:
         return TranscriptSegment(start=start, end=end, text="")
+    settings = get_settings()
+
+    try:
+        audio_path = extract_audio_range(video_path, (start, end))
+    except (OSError, RuntimeError, ValueError) as exc:
+        logger.warning(
+            "stage1 audio extract failed %.2f-%.2f: %s; use VLM fallback",
+            start,
+            end,
+            exc,
+        )
+    else:
+        text = call_audio_text(audio_path).strip()
+        if text:
+            return TranscriptSegment(
+                start=float(start), end=float(end), text=text
+            )
+        logger.info(
+            "stage1 ASR returned empty %.2f-%.2f; use VLM fallback",
+            start,
+            end,
+        )
+
+    if not settings.STAGE1_ALLOW_VLM_FALLBACK:
+        logger.info(
+            "stage1 VLM fallback disabled %.2f-%.2f; keep empty audio window",
+            start,
+            end,
+        )
+        return TranscriptSegment(start=start, end=end, text="")
+
     duration = end - start
     fps = min(1.0, max(0.2, (max_frames + 1) / max(duration, 1e-6)))
     frames = extract_keyframes_range(video_path, (start, end), fps=fps)
     images = _pick_frames(frames, max_frames=max_frames)
     prompt = (
-        "你正在为地理定位讲解视频做分窗口播转录。\n"
+        "你正在为地理定位讲解视频恢复画面中可见的字幕。\n"
         f"本窗时间：{start:.2f}s – {end:.2f}s。\n"
-        "根据所附关键帧写出该时间窗内博主口播的中文正文。\n"
-        "规则：只转录本窗口播；无清晰语音则 text 为空串；"
+        "音频 ASR 在本窗没有得到文本，请只读取所附关键帧中实际可见的"
+        "中文字幕、自动字幕或讲解正文。\n"
+        "规则：不得根据画面猜测口播；无清晰可见文字则 text 为空串；"
         "不要输出时间戳或解释性前缀。\n"
         "只输出结构化字段 text。"
     )

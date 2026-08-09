@@ -6,6 +6,8 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
+from pipeline.schemas.clues import WorkingScope
+
 
 class FreeFormStep(BaseModel):
     """自由 TAO 单步：字段存在即可，tool/params 不做统一 schema。"""
@@ -22,3 +24,4 @@ class FreeFormTrajectory(BaseModel):
     source_video: str
     steps: list[FreeFormStep] = Field(default_factory=list)
     notes: Optional[str] = None
+    working_scope: Optional[WorkingScope] = None

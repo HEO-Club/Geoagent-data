@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from pipeline.config import get_settings
+from pipeline.schemas.clues import WorkingScope
 from pipeline.schemas.dataset import ChatMessage, DatasetEntry
 from pipeline.schemas.freeform import FreeFormTrajectory
 from pipeline.schemas.tools import ToolForest
@@ -19,6 +20,13 @@ DEFAULT_SYSTEM_PROMPT = (
     "You are a geolocation agent. Reason step by step with Thought/Action/Observation."
 )
 DEFAULT_USER_QUERY = "Locate the place shown in the image."
+
+
+def build_user_query(working_scope: WorkingScope | None = None) -> str:
+    """由 working_scope 生成训练用 user_query（仅展示短语，无来源话术）。"""
+    if working_scope is None or not working_scope.region.strip():
+        return DEFAULT_USER_QUERY
+    return f"{DEFAULT_USER_QUERY}\nWorking scope: {working_scope.region.strip()}"
 
 
 def _json_dumps(obj: Any) -> str:
@@ -37,13 +45,28 @@ def _normalize_observation(
     return observation
 
 
+def _resolve_image_paths(
+    *,
+    image_paths: list[str] | None,
+    image_path: str | None,
+) -> list[str]:
+    if image_paths:
+        cleaned = [p.strip() for p in image_paths if str(p).strip()]
+        if cleaned:
+            return cleaned
+    if image_path and str(image_path).strip():
+        return [str(image_path).strip()]
+    return ["unknown.jpg"]
+
+
 def remap_trajectory(
     freeform: FreeFormTrajectory,
     forest: ToolForest,
     *,
     system_prompt: str,
     user_query: str,
-    image_path: str,
+    image_paths: list[str] | None = None,
+    image_path: str | None = None,
     trajectory_id: str | None = None,
 ) -> Trajectory:
     """自由链 → 单 Agent 标准 Trajectory（canonical tools）。"""
@@ -55,7 +78,11 @@ def remap_trajectory(
             if t.canonical.name == canonical:
                 tree = t
                 break
-        is_terminal = bool(tree.canonical.is_terminal) if tree else False
+        # ``final_answer`` 是阶段2的保留终端契约；即使旧 tool 树曾将其
+        # 错误映射到非终端 canonical，也不得在答案后补伪造的 result=null。
+        is_terminal = step.tool == "final_answer" or (
+            bool(tree.canonical.is_terminal) if tree else False
+        )
         steps.append(
             TrajectoryStep(
                 thought=step.thought,
@@ -69,7 +96,9 @@ def remap_trajectory(
         id=trajectory_id or str(uuid.uuid4()),
         system_prompt=system_prompt,
         user_query=user_query,
-        image_path=image_path,
+        image_paths=_resolve_image_paths(
+            image_paths=image_paths, image_path=image_path
+        ),
         steps=steps,
     )
 
@@ -81,11 +110,12 @@ def _format_assistant_content(step: TrajectoryStep) -> str:
 
 def trajectory_to_messages(traj: Trajectory) -> list[ChatMessage]:
     """将 Trajectory 展开为 chat messages（loss：仅 assistant）。"""
+    images_block = "\n".join(f"[Image: {p}]" for p in traj.image_paths)
     messages: list[ChatMessage] = [
         ChatMessage(role="system", content=traj.system_prompt),
         ChatMessage(
             role="user",
-            content=f"{traj.user_query}\n[Image: {traj.image_path}]",
+            content=f"{traj.user_query}\n{images_block}",
         ),
     ]
     for step in traj.steps:
@@ -116,6 +146,8 @@ def run_stage3(
     out_trajectory_path: str | None = None,
     out_jsonl_path: str | None = None,
     image_path: str = "",
+    image_paths: list[str] | None = None,
+    shard_id: str | None = None,
     system_prompt: str | None = None,
     user_query: str | None = None,
     matcher=None,
@@ -124,12 +156,19 @@ def run_stage3(
     settings = get_settings()
     forest_path = Path(trees_path) if trees_path else Path(settings.TOOL_TREES_PATH)
     forest = ensure_tool_trees(freeform, forest_path, matcher=matcher)
+    resolved_query = (
+        user_query
+        if user_query is not None
+        else build_user_query(freeform.working_scope)
+    )
     traj = remap_trajectory(
         freeform,
         forest,
         system_prompt=system_prompt or DEFAULT_SYSTEM_PROMPT,
-        user_query=user_query or DEFAULT_USER_QUERY,
-        image_path=image_path,
+        user_query=resolved_query,
+        image_paths=image_paths,
+        image_path=image_path or None,
+        trajectory_id=shard_id,
     )
     entry = format_dataset_entry(traj, source_video=freeform.source_video)
 
@@ -143,7 +182,8 @@ def run_stage3(
     if out_jsonl_path:
         shard = Path(out_jsonl_path)
     else:
-        shard = Path(settings.OUTPUT_DIR) / "shards" / f"{video_id}.jsonl"
+        name = (shard_id or video_id).strip() or video_id
+        shard = Path(settings.OUTPUT_DIR) / "shards" / f"{name}.jsonl"
     shard.parent.mkdir(parents=True, exist_ok=True)
     shard.write_text(entry.model_dump_json() + "\n", encoding="utf-8")
 

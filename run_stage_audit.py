@@ -1,4 +1,4 @@
-"""阶段2 CLI：视频 + 字幕 → 自由 TAO。"""
+"""阶段1.5 CLI：字幕 → 审核切分。"""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from pathlib import Path
 
 from pipeline.config import get_settings
 from pipeline.schemas.transcript import TranscriptSegment
-from pipeline.stage2_freeform_tao.run import run_stage2
+from pipeline.stage_audit_split.run import run_audit_split
 
 
 def _load_transcript(path: str) -> list[TranscriptSegment]:
@@ -24,30 +24,27 @@ def _load_transcript(path: str) -> list[TranscriptSegment]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="阶段2：视频+字幕 → 自由 TAO")
+    parser = argparse.ArgumentParser(description="阶段1.5：审核切分定位任务")
     parser.add_argument("--video", required=True)
     parser.add_argument("--transcript", required=True, help="阶段1 字幕 JSON")
     parser.add_argument("--out", default=None)
-    parser.add_argument("--image", default=None, help="可选单图（兼容）")
-    parser.add_argument(
-        "--images",
-        nargs="*",
-        default=None,
-        help="任务关键帧（可多图）",
-    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
     get_settings()
-    traj = run_stage2(
+    result = run_audit_split(
         args.video,
         _load_transcript(args.transcript),
         out_path=args.out,
-        image_path=args.image,
-        image_paths=args.images,
     )
     print(
         json.dumps(
-            {"source_video": traj.source_video, "steps": len(traj.steps)},
+            {
+                "video_id": result.video_id,
+                "decision": result.decision.value,
+                "reason": result.reason,
+                "tasks": len(result.tasks),
+                "task_ids": [t.task_id for t in result.tasks],
+            },
             ensure_ascii=False,
         )
     )

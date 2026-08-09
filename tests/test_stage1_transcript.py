@@ -34,6 +34,31 @@ def test_merge_adjacent() -> None:
     assert [s.text for s in merged] == ["a", "b"]
 
 
+def test_transcribe_window_falls_back_to_vlm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audio = tmp_path / "silent.mp3"
+    audio.write_bytes(b"audio")
+    image = tmp_path / "frame.jpg"
+    image.write_bytes(b"image")
+
+    monkeypatch.setattr(stage1, "extract_audio_range", lambda *_a, **_k: str(audio))
+    monkeypatch.setattr(stage1, "call_audio_text", lambda *_a, **_k: "")
+    monkeypatch.setattr(
+        stage1,
+        "extract_keyframes_range",
+        lambda *_a, **_k: [str(image)],
+    )
+    monkeypatch.setattr(
+        stage1,
+        "call_structured",
+        lambda *_a, **_k: _Speech("画面字幕"),
+    )
+
+    segment = stage1.transcribe_window("demo.mp4", 0.0, 10.0)
+    assert segment.text == "画面字幕"
+
+
 def test_run_stage1_with_mocks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -49,20 +74,25 @@ def test_run_stage1_with_mocks(
 
     monkeypatch.setattr(stage1, "video_duration_sec", lambda _p: 60.0)
 
-    def fake_extract(*_a: Any, **_k: Any) -> list[str]:
-        img = tmp_path / "f.jpg"
-        img.write_bytes(b"x")
-        return [str(img)]
+    def fake_extract_audio(*_a: Any, **_k: Any) -> str:
+        audio = tmp_path / "f.mp3"
+        audio.write_bytes(b"x")
+        return str(audio)
 
-    monkeypatch.setattr(stage1, "extract_keyframes_range", fake_extract)
+    monkeypatch.setattr(stage1, "extract_audio_range", fake_extract_audio)
 
     calls = {"n": 0}
 
-    def fake_call(prompt: str, response_model: Any, **kwargs: Any) -> Any:
+    def fake_call(_audio_path: str, **_kwargs: Any) -> str:
         calls["n"] += 1
-        return _Speech(text=f"window-{calls['n']}")
+        return f"window-{calls['n']}"
 
-    monkeypatch.setattr(stage1, "call_structured", fake_call)
+    monkeypatch.setattr(stage1, "call_audio_text", fake_call)
+    monkeypatch.setattr(
+        stage1,
+        "call_structured",
+        lambda *_a, **_k: pytest.fail("ASR 非空时不应调用 VLM fallback"),
+    )
 
     segs = stage1.run_stage1(str(video), window_sec=30.0, max_frames=2)
     assert len(segs) == 2
