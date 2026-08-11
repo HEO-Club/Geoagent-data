@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from pipeline.config import get_settings
-from pipeline.schemas.audit import AuditDecision, AuditSplitResult
+from pipeline.schemas.audit import AuditDecision, TaskStatus
 from pipeline.schemas.dataset import DatasetEntry, ManifestV2
 from pipeline.schemas.transcript import TranscriptSegment
 from pipeline.stage1_transcript.run import run_stage1
@@ -134,18 +134,32 @@ def run_one_video(
         return []
 
     entries: list[DatasetEntry] = []
-    fallback_images = (
-        [p for p in (image_paths or []) if str(p).strip()]
-        or ([image_path] if image_path.strip() else [])
+    fallback_images = [p for p in (image_paths or []) if str(p).strip()] or (
+        [image_path] if image_path.strip() else []
     )
 
     for task in audit.tasks:
         video_dir = Path(settings.INTERMEDIATE_DIR) / vid
-        freeform_path = video_dir / f"{task.task_id}_stage2_freeform_tao.json"
-        traj_path = video_dir / f"{task.task_id}_stage3_trajectory.json"
+        task_dir = video_dir / "tasks" / task.task_id
+        task_dir.mkdir(parents=True, exist_ok=True)
+        freeform_path = task_dir / "stage2_freeform_tao.json"
+        traj_path = task_dir / "stage3_trajectory.json"
         shard_path = Path(settings.OUTPUT_DIR) / "shards" / f"{task.task_id}.jsonl"
         stage2_key = _task_stage_key(task.task_id, "stage2")
         stage3_key = _task_stage_key(task.task_id, "stage3")
+
+        if task.status != TaskStatus.accepted:
+            skipped = task.status.value
+            manifest.stages[stage2_key] = skipped
+            manifest.stages[stage3_key] = skipped
+            save_manifest(manifest)
+            logger.info(
+                "skip downstream for %s status=%s reason=%s",
+                task.task_id,
+                task.status.value,
+                task.status_reason,
+            )
+            continue
 
         task_images = list(task.image_paths) or list(fallback_images)
         task_transcript = slice_transcript_for_task(transcript, task)

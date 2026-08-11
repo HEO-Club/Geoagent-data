@@ -12,6 +12,7 @@ from pipeline.schemas.audit import (
     AuditDecision,
     AuditSplitResult,
     GeoTaskSpec,
+    TaskStatus,
     TargetKind,
 )
 from pipeline.schemas.freeform import FreeFormStep, FreeFormTrajectory
@@ -67,7 +68,15 @@ def test_run_one_video_e2e(
                     image_paths=[str(frame)],
                     segment_start_idx=0,
                     segment_end_idx=0,
-                )
+                ),
+                GeoTaskSpec(
+                    task_id="e2e__t02",
+                    time_start=1.0,
+                    time_end=2.0,
+                    target_kind=TargetKind.still_image,
+                    status=TaskStatus.rejected,
+                    status_reason="答案不明确",
+                ),
             ],
         )
         out = Path(kwargs["out_path"]) if kwargs.get("out_path") else (
@@ -119,6 +128,15 @@ def test_run_one_video_e2e(
     assert manifest.stages["stage_audit_split"] == "done"
     assert manifest.stages["task:e2e__t01:stage2"] == "done"
     assert manifest.stages["task:e2e__t01:stage3"] == "done"
+    assert manifest.stages["task:e2e__t02:stage2"] == "rejected"
+    assert manifest.stages["task:e2e__t02:stage3"] == "rejected"
+    task_dir = tmp_path / "intermediate" / "e2e" / "tasks" / "e2e__t01"
+    assert (task_dir / "stage2_freeform_tao.json").is_file()
+    assert (task_dir / "stage3_trajectory.json").is_file()
+    rejected_dir = (
+        tmp_path / "intermediate" / "e2e" / "tasks" / "e2e__t02"
+    )
+    assert not (rejected_dir / "stage2_freeform_tao.json").exists()
 
     n = orchestrator.merge_jsonl_shards(tmp_path / "output")
     assert n >= 1

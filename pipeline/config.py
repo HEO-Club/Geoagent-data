@@ -58,6 +58,11 @@ class Settings(BaseSettings):
     # 阶段1.5 审核切分
     AUDIT_SPARSE_FRAME_COUNT: int = 8
     AUDIT_MAX_KEYFRAMES_PER_TASK: int = 8
+    AUDIT_MAX_CANDIDATE_PROBES: int = 12
+    AUDIT_FALLBACK_PROBE_COUNT: int = 8
+    AUDIT_TASK_BOUNDARY_TOLERANCE_SEC: float = 20.0
+    AUDIT_MIN_FRAME_QUALITY: float = 0.65
+    AUDIT_VISUAL_HASH_DISTANCE: int = 6
 
     TOOL_TREES_PATH: str = "tool_trees.json"
     INTERMEDIATE_DIR: str = "data/intermediate"

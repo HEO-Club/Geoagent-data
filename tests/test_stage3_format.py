@@ -13,6 +13,14 @@ from pipeline.schemas.tools import ToolDefinition, ToolForest, ToolTree
 from pipeline.stage3_normalize_format import format_jsonl, map_tools, trees
 
 
+def test_non_ascii_tool_slugs_are_stable_and_distinct() -> None:
+    first = map_tools._slug_tool_name("观察待定位图像")
+    second = map_tools._slug_tool_name("分析索塔外形")
+    assert first.startswith("custom_tool_")
+    assert first == map_tools._slug_tool_name("观察待定位图像")
+    assert first != second
+
+
 def test_build_user_query_with_and_without_scope() -> None:
     assert format_jsonl.build_user_query(None) == format_jsonl.DEFAULT_USER_QUERY
     q = format_jsonl.build_user_query(

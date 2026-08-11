@@ -164,6 +164,7 @@ def _rewrite_agent_voice(
     result: _LLMFreeFormResult,
     *,
     images: list[str] | None,
+    max_attempts: int | None = None,
 ) -> _LLMFreeFormResult:
     """命中元话语时做一次口吻重写。"""
     prompt = (
@@ -178,6 +179,7 @@ def _rewrite_agent_voice(
         _LLMFreeFormResult,
         images=images or None,
         lane="llm",
+        max_attempts=max_attempts,
     )
 
 
@@ -189,6 +191,7 @@ def run_stage2(
     image_path: str | None = None,
     image_paths: list[str] | None = None,
     source_video: str | None = None,
+    max_attempts: int | None = None,
 ) -> FreeFormTrajectory:
     """蒸馏为地理图片定位 agent 自由 TAO（内容优先，无统一 tool schema）。
 
@@ -199,6 +202,7 @@ def run_stage2(
         image_path: 兼容单图；与 ``image_paths`` 二选一优先后者。
         image_paths: 任务关键帧（可多图）；编排器应传入审核切分结果。
         source_video: 写入产物的来源 id；默认视频 stem。
+        max_attempts: 可选单次运行重试上限；默认沿用全局配置。
 
     Returns:
         FreeFormTrajectory 软信封（含可选 working_scope）。
@@ -243,10 +247,15 @@ def run_stage2(
         _LLMFreeFormResult,
         images=images or None,
         lane="llm",
+        max_attempts=max_attempts,
     )
     if trajectory_has_meta_leak(result.steps):
         logger.info("stage2 meta leak detected; rewriting agent voice once")
-        result = _rewrite_agent_voice(result, images=images or None)
+        result = _rewrite_agent_voice(
+            result,
+            images=images or None,
+            max_attempts=max_attempts,
+        )
     traj = FreeFormTrajectory(
         source_video=video_id,
         steps=[

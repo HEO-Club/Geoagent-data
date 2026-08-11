@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Callable
 from pathlib import Path
@@ -34,7 +35,13 @@ def _slug_tool_name(name: str) -> str:
     s = name.strip().lower().replace("-", "_").replace(" ", "_")
     s = re.sub(r"[^a-z0-9_]+", "_", s)
     s = re.sub(r"_+", "_", s).strip("_")
-    return s or "unnamed_tool"
+    if s:
+        return s
+    # 中文等非 ASCII tool 名不能全部退化成同一个 unnamed_tool，否则同一条
+    # 轨迹里的第二个中文工具就会发生 canonical 冲突。语义 matcher无法归并
+    # 时，用稳定摘要保留“不同自由工具”的身份，避免把它们误并为同一工具。
+    digest = hashlib.sha256(name.strip().encode("utf-8")).hexdigest()[:10]
+    return f"custom_tool_{digest}"
 
 
 def _default_definition_from_free(tool_name: str) -> ToolDefinition:
