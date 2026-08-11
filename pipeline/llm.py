@@ -467,7 +467,7 @@ def _create_anthropic_structured(
         if stream_override is None
         else bool(stream_override)
     )
-    if use_stream:
+    if use_stream and callable(getattr(client.messages, "stream", None)):
         # SSE 会在长生成期间持续产生事件，避免 Cloudflare 对无响应体的
         # 非流式请求触发 524；最终仍使用完整 Message 做同一套结构校验。
         # httpx 的 read timeout 会被 SSE 心跳持续刷新，因此另设整次请求的

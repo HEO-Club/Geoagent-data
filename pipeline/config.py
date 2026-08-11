@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     LLM_ANTHROPIC_BASE_URLS: str = "https://api.anthropic.com"
     LLM_ANTHROPIC_MODEL: str = "claude-sonnet-5"
     LLM_ANTHROPIC_API_KEY: str = ""
-    LLM_ANTHROPIC_STREAM: bool = False
+    LLM_ANTHROPIC_STREAM: bool = True
     LLM_MAX_OUTPUT_TOKENS: int = 8192
     ALLOW_INSECURE_LLM_ENDPOINTS: bool = False
     GEMINI_MODEL: str = "gemini-2.0-flash"
@@ -64,6 +64,7 @@ class Settings(BaseSettings):
     AUDIT_MIN_FRAME_QUALITY: float = 0.65
     AUDIT_VISUAL_HASH_DISTANCE: int = 6
 
+    TOOL_CATALOG_PATH: str = "canonical_tool_catalog.json"
     TOOL_TREES_PATH: str = "tool_trees.json"
     INTERMEDIATE_DIR: str = "data/intermediate"
     OUTPUT_DIR: str = "data/output"

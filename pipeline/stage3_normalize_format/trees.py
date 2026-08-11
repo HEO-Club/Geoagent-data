@@ -7,7 +7,7 @@ from pathlib import Path
 
 from filelock import FileLock
 
-from pipeline.schemas.tools import ToolDefinition, ToolForest, ToolTree
+from pipeline.schemas.tools import ToolDefinition, ToolForest, ToolOperation, ToolTree
 
 
 def _lock_path(path: Path) -> Path:
@@ -54,8 +54,14 @@ def resolve_canonical_name(forest: ToolForest, tool_name: str) -> str | None:
     return tree.canonical.name if tree else None
 
 
-def add_variant(forest: ToolForest, canonical_name: str, variant: str) -> ToolForest:
-    """向已有树追加 variant（幂等）。"""
+def add_variant(
+    forest: ToolForest,
+    canonical_name: str,
+    variant: str,
+    *,
+    operation: str | None = None,
+) -> ToolForest:
+    """向已有树追加 variant，并记录该写法对应的 canonical operation。"""
     trees: list[ToolTree] = []
     for tree in forest.trees:
         if tree.canonical.name == canonical_name:
@@ -65,10 +71,71 @@ def add_variant(forest: ToolForest, canonical_name: str, variant: str) -> ToolFo
                 and variant.lower() != tree.canonical.name.lower()
             ):
                 variants.append(variant)
-            trees.append(ToolTree(canonical=tree.canonical, variants=variants))
+            variant_operations = dict(tree.variant_operations)
+            if operation:
+                variant_operations[variant.lower()] = operation.strip().lower()
+            trees.append(
+                ToolTree(
+                    canonical=tree.canonical,
+                    variants=variants,
+                    variant_operations=variant_operations,
+                )
+            )
         else:
             trees.append(tree)
     return ToolForest(trees=trees)
+
+
+def add_operation(
+    forest: ToolForest,
+    canonical_name: str,
+    operation: str,
+    description: str,
+) -> ToolForest:
+    """给同一执行器补充一种受解释约束的操作，不创建新 tool。"""
+    op = operation.strip().lower().replace("-", "_").replace(" ", "_")
+    trees: list[ToolTree] = []
+    for tree in forest.trees:
+        if tree.canonical.name != canonical_name:
+            trees.append(tree)
+            continue
+        known = {item.name for item in tree.canonical.operations}
+        canonical = tree.canonical
+        if op and op not in known:
+            canonical = canonical.model_copy(
+                update={
+                    "operations": list(canonical.operations)
+                    + [
+                        ToolOperation(
+                            name=op,
+                            description=description.strip()
+                            or f"使用 {canonical_name} 执行 {op}",
+                        )
+                    ]
+                }
+            )
+        trees.append(
+            ToolTree(
+                canonical=canonical,
+                variants=list(tree.variants),
+                variant_operations=dict(tree.variant_operations),
+            )
+        )
+    return ToolForest(trees=trees)
+
+
+def resolve_operation(forest: ToolForest, tool_name: str) -> str | None:
+    """解析自由 tool 写法在 canonical executor 下对应的 operation。"""
+    tree = find_tree_for_name(forest, tool_name)
+    if tree is None:
+        return None
+    key = tool_name.strip().lower()
+    mapped = tree.variant_operations.get(key)
+    if mapped:
+        return mapped
+    if key == tree.canonical.name.lower() and tree.canonical.operations:
+        return tree.canonical.operations[0].name
+    return None
 
 
 def create_tree(
@@ -76,6 +143,7 @@ def create_tree(
     canonical: ToolDefinition,
     *,
     initial_variant: str | None = None,
+    initial_operation: str | None = None,
 ) -> ToolForest:
     """新建一棵树；canonical.name 不得重复。"""
     if find_tree_for_name(forest, canonical.name) is not None:
@@ -83,8 +151,15 @@ def create_tree(
     variants: list[str] = []
     if initial_variant and initial_variant.lower() != canonical.name.lower():
         variants.append(initial_variant)
+    variant_operations: dict[str, str] = {}
+    if initial_variant and initial_operation:
+        variant_operations[initial_variant.lower()] = initial_operation
     trees = list(forest.trees) + [
-        ToolTree(canonical=canonical, variants=variants)
+        ToolTree(
+            canonical=canonical,
+            variants=variants,
+            variant_operations=variant_operations,
+        )
     ]
     return ToolForest(trees=trees)
 

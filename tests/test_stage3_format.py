@@ -9,7 +9,7 @@ import pytest
 
 from pipeline.schemas.clues import BoundKind, WorkingScope
 from pipeline.schemas.freeform import FreeFormStep, FreeFormTrajectory
-from pipeline.schemas.tools import ToolDefinition, ToolForest, ToolTree
+from pipeline.schemas.tools import MatchDecision, ToolDefinition, ToolForest, ToolTree
 from pipeline.stage3_normalize_format import format_jsonl, map_tools, trees
 
 
@@ -113,6 +113,14 @@ def test_remap_and_format(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
     assert "[Image: scene2.jpg]" in entry.messages[1].content
     blob = json.dumps([m.content for m in entry.messages], ensure_ascii=False)
     assert "web_lookup" in blob
+    traj_data = json.loads(
+        (tmp_path / "intermediate" / "clip" / "stage3_trajectory.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    params = traj_data["steps"][0]["action"]["params"]
+    assert set(params) == {"operation", "purpose", "inputs"}
+    assert params["inputs"] == {"q": "tower"}
     assert entry.messages[1].content.startswith(format_jsonl.DEFAULT_USER_QUERY)
     assert "Working scope:" not in entry.messages[1].content
     shard = tmp_path / "output" / "shards" / "clip.jsonl"
@@ -232,7 +240,156 @@ def test_final_answer_is_reserved_terminal_and_keeps_location(
     )
     assert traj.image_paths == ["scene.jpg"]
     assert traj.steps[-1].action.tool == "final_answer"
-    assert traj.steps[-1].action.params == {
-        "location": "山东省淄博市淄川区马棚村"
-    }
+    assert traj.steps[-1].action.params == {"location": "山东省淄博市淄川区马棚村"}
     assert traj.steps[-1].observation is None
+
+
+def test_reasoning_events_do_not_create_fake_tools_and_keep_thought_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TOOL_CATALOG_PATH", "canonical_tool_catalog.json")
+    from pipeline.config import clear_settings_cache
+
+    clear_settings_cache()
+    freeform = FreeFormTrajectory.model_validate(
+        {
+            "source_video": "events",
+            "steps": [
+                {
+                    "event_type": "reasoning",
+                    "thought": "根据已有余晖证据排除较早天黑的候选。",
+                    "tool": None,
+                    "params": {},
+                    "observation": None,
+                },
+                {
+                    "event_type": "reasoning",
+                    "thought": "剩余范围仍过大，需要查询 OSM 水面。",
+                    "tool": None,
+                    "params": {},
+                    "observation": None,
+                },
+                {
+                    "event_type": "tool_call",
+                    "thought": "查询云南全部水面要素。",
+                    "tool": "custom_overpass_water_query",
+                    "params": {"area": "云南", "tags": ["water"]},
+                    "observation": {"count": 12},
+                },
+                {
+                    "event_type": "final",
+                    "thought": "证据闭合。",
+                    "tool": "final_answer",
+                    "params": {"location": "甲地"},
+                    "observation": None,
+                },
+            ],
+        }
+    )
+
+    def matcher(name: str, _forest: ToolForest) -> MatchDecision | None:
+        if name == "custom_overpass_water_query":
+            return MatchDecision(
+                raw_tool=name,
+                action="map",
+                canonical_name="osm_query",
+                operation="query",
+                operation_description="按区域和标签查询水面要素",
+                confidence=0.99,
+            )
+        return None
+
+    entry = format_jsonl.run_stage3(
+        freeform,
+        trees_path=tmp_path / "runtime_tools.json",
+        out_trajectory_path=str(tmp_path / "trajectory.json"),
+        out_jsonl_path=str(tmp_path / "sample.jsonl"),
+        image_paths=["scene.jpg"],
+        matcher=matcher,
+    )
+    roles = [message.role for message in entry.messages]
+    assert roles == [
+        "system",
+        "user",
+        "assistant",
+        "assistant",
+        "assistant",
+        "tool",
+        "assistant",
+    ]
+    assert "Action:" not in entry.messages[2].content
+    assert "Action:" not in entry.messages[3].content
+    assert '"tool": "osm_query"' in entry.messages[4].content
+    runtime = trees.load_forest(tmp_path / "runtime_tools.json")
+    assert trees.find_tree_for_name(runtime, "custom_overpass_water_query")
+    assert trees.resolve_operation(runtime, "custom_overpass_water_query") == "query"
+
+
+def test_high_confidence_pseudo_tool_is_demoted_to_reasoning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TOOL_CATALOG_PATH", "canonical_tool_catalog.json")
+    from pipeline.config import clear_settings_cache
+
+    clear_settings_cache()
+    freeform = FreeFormTrajectory(
+        source_video="demote",
+        steps=[
+            FreeFormStep(
+                thought="根据上一轮日落时间排除江苏。",
+                tool="apply_time_consistency_filter",
+                params={"capture_time": "18:54"},
+                observation={"eliminated": "江苏"},
+            )
+        ],
+    )
+
+    def matcher(name: str, _forest: ToolForest) -> MatchDecision | None:
+        return MatchDecision(
+            raw_tool=name,
+            action="reasoning",
+            confidence=0.98,
+            reason="没有访问外部执行器，只在合并已有证据",
+        )
+
+    forest = map_tools.ensure_tool_trees(
+        freeform, tmp_path / "runtime_tools.json", matcher=matcher
+    )
+    assert freeform.steps[0].event_type == "reasoning"
+    assert freeform.steps[0].tool is None
+    assert "江苏" in freeform.steps[0].thought
+    assert trees.find_tree_for_name(forest, "apply_time_consistency_filter") is None
+
+
+def test_explicit_external_llm_call_maps_to_catalog_tool_without_demotion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TOOL_CATALOG_PATH", "canonical_tool_catalog.json")
+    from pipeline.config import clear_settings_cache
+
+    clear_settings_cache()
+    freeform = FreeFormTrajectory(
+        source_video="llm_call",
+        steps=[
+            FreeFormStep(
+                thought="调用高级推理模型补充百米建筑候选。",
+                tool="AI推理咨询",
+                params={"query": "北京天津百米建筑"},
+                observation={"result": ["天津国际大厦", "首都大厦"]},
+            )
+        ],
+    )
+
+    def fail_matcher(*_args: object, **_kwargs: object) -> dict[str, MatchDecision]:
+        raise AssertionError("目录精确命中时不应再调用语义 matcher")
+
+    monkeypatch.setattr(map_tools, "llm_semantic_match_batch", fail_matcher)
+    forest = map_tools.ensure_tool_trees(
+        freeform, tmp_path / "runtime_tools.json", matcher=None
+    )
+
+    matched = trees.find_tree_for_name(forest, "AI推理咨询")
+    assert matched is not None
+    assert matched.canonical.name == "llm_query"
+    assert trees.resolve_operation(forest, "AI推理咨询") == "consult"
+    assert freeform.steps[0].event_type == "tool_call"

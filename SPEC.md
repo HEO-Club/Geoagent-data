@@ -1,7 +1,7 @@
 # 图片地理定位 Agent 训练数据集生成流水线 — 项目规格
 
-版本：3.2.0 | 生成时间：2026-08-10
-修订说明：v3.2.0 增加低误报条件式拆分复核、task 级答案/质量门禁、题内渐进选图、单图择优与视觉去重；单个 task 不合格不再中断同视频其他题。v3.1.3 切分粒度改为「一次定位题=一个 task」（同题多图合并）。旧规格见 `SPEC_legacy_v2.md`。
+版本：3.3.0 | 生成时间：2026-08-12
+修订说明：v3.3.0 将阶段2改为 `reasoning / tool_call / final` 三类事件，允许连续 Thought 且只为真实外部动作生成 Tool；阶段3引入执行器级 Canonical Tool 目录、operation/purpose/inputs 参数契约、上下文语义归并、受控自动新建与伪工具降级审计。v3.2.0 增加低误报条件式拆分复核、task 级答案/质量门禁、题内渐进选图、单图择优与视觉去重；单个 task 不合格不再中断同视频其他题。旧规格见 `SPEC_legacy_v2.md`。
 
 ## 0. 给 Cursor 的元指令（先读这一段）
 
@@ -39,8 +39,8 @@
    - **`video_derived` / 同题多输入**：提案须先理解定位过程角色，一次列全各独立**实拍**定位输入代表帧（张数随输入镜头走，受配置上限约束）；`task_summary` 枚举的每个实拍输入须各有时间戳；不得用工具步骤或揭晓帧充数。
    - **答案与 task 门禁**：每题分别输出 `answer_status=resolved|ambiguous|unsolved` 与 `status=accepted|needs_review|rejected`。只有答案唯一明确、图片完整干净的 `accepted` task 进入 Stage 2；模棱两可或明确无解的题单独拒绝，选图不足进入人工复核，均不得影响同视频其他题。
    - 数量：`still_image` 默认输出 1 张最佳帧；`multi_target_images` 或 `video_derived` 按 `expected_image_count` 保留各独立输入，不再硬编码为 2 张。
-3. **阶段2（自由 TAO）**：**按 task** 以字幕切片 + `image_paths` 蒸馏 agent 视角 TAO；产物禁止「求助者/网友/评论区」等渠道元话语，待定位图称「图中/待定位图/图1·图2」。末步 `final_answer` + `params.location`。
-4. **阶段3（格式化）**：**按 task** 维护 tool 树、写入 `working_scope` 到 `user_query`、输出标准 JSONL（`image_paths`）。
+3. **阶段2（自由事件轨迹）**：**按 task** 以字幕切片 + `image_paths` 蒸馏 agent 视角轨迹。事件分为 `reasoning / tool_call / final`：直接看图、合并已有证据、比较、筛选、排除、排名、形成目标签名和计划转向只写 reasoning；只有真实访问外部搜索、数据库、地图/街景/卫星/天气服务或执行图像/GIS/计算程序并产生新证据时才写 tool_call + Observation。允许连续 reasoning，但每条必须完成实质认知更新；只为解释下一次调用的一句话并入该 tool_call 的 Thought。产物禁止「求助者/网友/评论区」等渠道元话语，末步严格为 `event_type=final`、`final_answer`、`params.location`、`observation=null`。
+4. **阶段3（执行器级归并与格式化）**：**按 task** 从 `canonical_tool_catalog.json` 加载小型执行器目录，结合自由 Tool 的 Thought、Params、Observation 和调用上下文进行语义归并。同一执行器的不同用途通过 `operation` 区分，不得因参数或目标对象不同拆成新工具；调用参数统一为 `operation + purpose + inputs`，其中 `inputs` 宽容保留原始字段。确无同类执行器时，模型可严格生成含 description/executor/usage/operations 的新 Tool 定义；高置信伪工具可降回 reasoning。最后写入 `working_scope`、标准 JSONL 和 `stage3_tool_mapping.json` 审计指标。
 ### 1.3 输入
 
 - 原始视频；可选 ASR（仅阶段1 时间锚）
@@ -66,11 +66,11 @@
 ```
 阶段1    视频 → TranscriptSegment 列表
 阶段1.5  字幕 + 稀疏帧 → AuditSplitResult（视频审核 + task 级门禁/关键帧）
-阶段2    每个 accepted task：字幕切片 + image_paths → FreeFormTrajectory
-阶段3    每 task：FreeFormTrajectory + tool_trees → Trajectory（image_paths）→ DatasetEntry JSONL
+阶段2    每个 accepted task：字幕切片 + image_paths → reasoning/tool_call/final FreeFormTrajectory
+阶段3    每 task：FreeFormTrajectory + canonical catalog/runtime trees → Trajectory + tool mapping audit → DatasetEntry JSONL
 
 编排：run_stage{1,2,3}.py / run_stage_audit.py / run_one_video.py / batch_run.py
-Tool 树：tool_trees.json
+基础 Tool 目录：canonical_tool_catalog.json；运行时增量：tool_trees.json
 ```
 
 ## 3. 目录结构
@@ -90,6 +90,7 @@ geo-agent-dataset/
 │   ├── stage3_normalize_format/
 │   └── orchestrator.py
 ├── tool_trees.json
+├── canonical_tool_catalog.json
 ├── run_stage1.py
 ├── run_stage_audit.py
 ├── run_stage2.py
@@ -108,8 +109,9 @@ geo-agent-dataset/
     │   └── tasks/{task_id}/
     │       ├── task_audit.json
     │       ├── candidates/{task_id}_t*.jpg
-    │       ├── stage2_freeform_tao.json      # 仅 accepted
-    │       └── stage3_trajectory.json        # 仅 accepted
+│       ├── stage2_freeform_tao.json      # 仅 accepted
+│       ├── stage3_trajectory.json        # 仅 accepted
+│       └── stage3_tool_mapping.json      # Tool 归并与伪工具指标
     └── output/
         ├── shards/{task_id}.jsonl
         └── geolocate_agent.jsonl
@@ -142,8 +144,11 @@ def run_stage3(freeform: FreeFormTrajectory, ..., image_paths: list[str] | None 
 
 ## 6. Tool 树规则
 
-- 每棵树一个 canonical + variants
-- 匹配：精确 →（可选）语义 matcher → 新建
+- 每棵树一个执行器级 canonical + variants + variant_operations；Tool 以真实 API/数据库/程序边界划分，不以自然语言动词划分
+- 同一执行器通过不同 `operation` 和 `inputs` 完成 query/filter/export/compare 等用途；每次调用必须额外写 `purpose`，解释本次调用补齐什么证据
+- 匹配：精确 variant → 读取 Thought/Params/Observation 的上下文语义归并 → 严格自动新建；不得因输入字段略有差异直接失败或新建
+- 新建定义必须包含小写下划线 name、description、executor、usage、至少一个带解释的 operation；运行时外层参数固定为 `operation/purpose/inputs`
+- 高置信确认没有外部执行器的伪 Tool 可降回 reasoning，并写入 `stage3_tool_mapping.json`；低置信时不得静默丢失
 - 并发写须文件锁 + 原子写
 
 ## 7. 测试
