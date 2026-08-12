@@ -96,6 +96,12 @@ def test_run_stage2_mock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     assert "notes 可简述删除了哪些无用部分" not in prompt
     assert "字幕（带时间戳）" not in prompt
     assert "不得自行补写材料中没有的坐标" in prompt
+    assert "计划查询、查询条件、待验证假设、候选值和常识推断都不是工具结果" in prompt
+    assert "不同题目、不同镜头、不同时间段、不同辅助线" in prompt
+    assert "某一天或少数样本外推出长期频率" in prompt
+    assert "内部静默复查每个 tool_call" in prompt
+    assert "若视频包含多道独立定位题" in prompt
+    assert "按讲解顺序列出全部最终地点" in prompt
     assert '"event_type":"final"' in prompt
     assert '"tool":"final_answer"' in prompt
     assert '"params":{"location":"最终地点"}' in prompt
