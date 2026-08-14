@@ -25,6 +25,17 @@ def _transcript() -> list[TranscriptSegment]:
     ]
 
 
+def _isolate_data_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """把 intermediate / cache / selected 全部指到临时目录。"""
+    monkeypatch.setenv("INTERMEDIATE_DIR", str(tmp_path / "intermediate"))
+    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("SELECTED_DIR", str(tmp_path / "selected"))
+    monkeypatch.setenv("RUNS_DIR", str(tmp_path / "runs"))
+    from pipeline.config import clear_settings_cache
+
+    clear_settings_cache()
+
+
 def _fake_extract_factory(captured: dict[str, Any] | None = None):
     def fake_extract(
         video_path: str, stamps: list[float], *, out_dir: str
@@ -92,11 +103,7 @@ def test_run_audit_split_reject(
 ) -> None:
     video = tmp_path / "reject.mp4"
     video.write_bytes(b"x")
-    monkeypatch.setenv("INTERMEDIATE_DIR", str(tmp_path / "intermediate"))
-    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
-    from pipeline.config import clear_settings_cache
-
-    clear_settings_cache()
+    _isolate_data_dirs(tmp_path, monkeypatch)
 
     monkeypatch.setattr(audit, "video_duration_sec", lambda _p: 12.0)
     monkeypatch.setattr(audit, "extract_keyframes", _fake_extract_factory())
@@ -125,11 +132,7 @@ def test_force_reject_when_no_unresolved_target(
     """has_unresolved_target=false 时即使 decision=accept 也强制 reject。"""
     video = tmp_path / "force.mp4"
     video.write_bytes(b"x")
-    monkeypatch.setenv("INTERMEDIATE_DIR", str(tmp_path / "intermediate"))
-    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
-    from pipeline.config import clear_settings_cache
-
-    clear_settings_cache()
+    _isolate_data_dirs(tmp_path, monkeypatch)
 
     monkeypatch.setattr(audit, "video_duration_sec", lambda _p: 12.0)
     monkeypatch.setattr(audit, "extract_keyframes", _fake_extract_factory())
@@ -164,12 +167,8 @@ def test_still_image_clamps_to_single_frame(
 ) -> None:
     video = tmp_path / "single.mp4"
     video.write_bytes(b"x")
-    monkeypatch.setenv("INTERMEDIATE_DIR", str(tmp_path / "intermediate"))
-    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
+    _isolate_data_dirs(tmp_path, monkeypatch)
     monkeypatch.setenv("AUDIT_MAX_KEYFRAMES_PER_TASK", "8")
-    from pipeline.config import clear_settings_cache
-
-    clear_settings_cache()
 
     monkeypatch.setattr(audit, "video_duration_sec", lambda _p: 20.0)
     captured: dict[str, Any] = {}
@@ -180,12 +179,15 @@ def test_still_image_clamps_to_single_frame(
     class _Task:
         time_start = 2.0
         time_end = 8.0
+        display_time_start = 2.0
+        display_time_end = 8.0
         target_kind = TargetKind.still_image
         keyframe_timestamps = [3.0, 6.0, 7.0]
         multi_target_images = False
         segment_start_idx = 0
         segment_end_idx = 0
         task_summary = "第一题"
+        expected_image_count = 1
 
     class _Draft:
         decision = AuditDecision.accept
@@ -202,6 +204,7 @@ def test_still_image_clamps_to_single_frame(
     assert len(task.keyframe_timestamps) == 1
     assert len(task.image_paths) == 1
     assert "single__t01_" in Path(task.image_paths[0]).name
+    assert "selected" in Path(task.image_paths[0]).as_posix()
 
 
 def test_multi_target_images_allows_multiple_frames(
@@ -209,12 +212,8 @@ def test_multi_target_images_allows_multiple_frames(
 ) -> None:
     video = tmp_path / "multiimg.mp4"
     video.write_bytes(b"x")
-    monkeypatch.setenv("INTERMEDIATE_DIR", str(tmp_path / "intermediate"))
-    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
+    _isolate_data_dirs(tmp_path, monkeypatch)
     monkeypatch.setenv("AUDIT_MAX_KEYFRAMES_PER_TASK", "4")
-    from pipeline.config import clear_settings_cache
-
-    clear_settings_cache()
 
     monkeypatch.setattr(audit, "video_duration_sec", lambda _p: 120.0)
     monkeypatch.setattr(audit, "extract_keyframes", _fake_extract_factory())
@@ -222,12 +221,15 @@ def test_multi_target_images_allows_multiple_frames(
     class _Task:
         time_start = 0.0
         time_end = 100.0
+        display_time_start = 0.0
+        display_time_end = 20.0
         target_kind = TargetKind.still_image
         keyframe_timestamps = [1.0, 80.0]
         multi_target_images = True
         segment_start_idx = 0
         segment_end_idx = 1
         task_summary = "同题两图"
+        expected_image_count = 2
 
     class _Draft:
         decision = AuditDecision.accept
@@ -242,6 +244,7 @@ def test_multi_target_images_allows_multiple_frames(
     assert len(result.tasks[0].image_paths) >= 2
     assert len(result.tasks[0].image_paths) <= 2
     assert result.tasks[0].multi_target_images is True
+    assert all(0.0 <= t <= 20.0 for t in result.tasks[0].keyframe_timestamps)
 
 
 def test_teaching_ui_frame_discarded(
@@ -250,11 +253,7 @@ def test_teaching_ui_frame_discarded(
     """teaching_ui 帧被剔除；仅保留 target_photo。"""
     video = tmp_path / "ui.mp4"
     video.write_bytes(b"x")
-    monkeypatch.setenv("INTERMEDIATE_DIR", str(tmp_path / "intermediate"))
-    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
-    from pipeline.config import clear_settings_cache
-
-    clear_settings_cache()
+    _isolate_data_dirs(tmp_path, monkeypatch)
 
     monkeypatch.setattr(audit, "video_duration_sec", lambda _p: 20.0)
     monkeypatch.setattr(audit, "extract_keyframes", _fake_extract_factory())
@@ -304,11 +303,7 @@ def test_multi_target_marks_review_if_only_one_valid_frame(
 ) -> None:
     video = tmp_path / "badmulti.mp4"
     video.write_bytes(b"x")
-    monkeypatch.setenv("INTERMEDIATE_DIR", str(tmp_path / "intermediate"))
-    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
-    from pipeline.config import clear_settings_cache
-
-    clear_settings_cache()
+    _isolate_data_dirs(tmp_path, monkeypatch)
 
     monkeypatch.setattr(audit, "video_duration_sec", lambda _p: 120.0)
     monkeypatch.setattr(audit, "extract_keyframes", _fake_extract_factory())
@@ -316,12 +311,15 @@ def test_multi_target_marks_review_if_only_one_valid_frame(
     class _Task:
         time_start = 0.0
         time_end = 100.0
+        display_time_start = 0.0
+        display_time_end = 5.0
         target_kind = TargetKind.still_image
         keyframe_timestamps = [1.0, 80.0]
         multi_target_images = True
         segment_start_idx = 0
         segment_end_idx = 1
         task_summary = "同题两图"
+        expected_image_count = 2
 
     class _Draft:
         decision = AuditDecision.accept
@@ -362,11 +360,7 @@ def test_video_derived_allows_multiple_frames(
 ) -> None:
     video = tmp_path / "vder.mp4"
     video.write_bytes(b"x")
-    monkeypatch.setenv("INTERMEDIATE_DIR", str(tmp_path / "intermediate"))
-    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
-    from pipeline.config import clear_settings_cache
-
-    clear_settings_cache()
+    _isolate_data_dirs(tmp_path, monkeypatch)
 
     monkeypatch.setattr(audit, "video_duration_sec", lambda _p: 30.0)
     monkeypatch.setattr(audit, "extract_keyframes", _fake_extract_factory())
@@ -374,12 +368,15 @@ def test_video_derived_allows_multiple_frames(
     class _Task:
         time_start = 5.0
         time_end = 10.0
+        display_time_start = 5.0
+        display_time_end = 10.0
         target_kind = TargetKind.video_derived
         keyframe_timestamps = [6.0, 8.0]
         multi_target_images = False
         segment_start_idx = 1
         segment_end_idx = 1
         task_summary = "场景"
+        expected_image_count = 2
 
     class _Draft:
         decision = AuditDecision.accept
@@ -398,11 +395,7 @@ def test_extract_failure_marks_only_task_for_review(
 ) -> None:
     video = tmp_path / "nofallback.mp4"
     video.write_bytes(b"x")
-    monkeypatch.setenv("INTERMEDIATE_DIR", str(tmp_path / "intermediate"))
-    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
-    from pipeline.config import clear_settings_cache
-
-    clear_settings_cache()
+    _isolate_data_dirs(tmp_path, monkeypatch)
 
     monkeypatch.setattr(audit, "video_duration_sec", lambda _p: 12.0)
 
@@ -447,11 +440,7 @@ def test_run_audit_split_multi_task(
 ) -> None:
     video = tmp_path / "multi.mp4"
     video.write_bytes(b"x")
-    monkeypatch.setenv("INTERMEDIATE_DIR", str(tmp_path / "intermediate"))
-    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
-    from pipeline.config import clear_settings_cache
-
-    clear_settings_cache()
+    _isolate_data_dirs(tmp_path, monkeypatch)
 
     monkeypatch.setattr(audit, "video_duration_sec", lambda _p: 30.0)
     monkeypatch.setattr(audit, "extract_keyframes", _fake_extract_factory())
@@ -469,12 +458,15 @@ def test_run_audit_split_multi_task(
     class _T2:
         time_start = 5.0
         time_end = 10.0
+        display_time_start = 5.0
+        display_time_end = 10.0
         target_kind = TargetKind.video_derived
         keyframe_timestamps = [6.0, 8.0]
         multi_target_images = False
         segment_start_idx = 1
         segment_end_idx = 1
         task_summary = "题2"
+        expected_image_count = 2
 
     class _Draft:
         decision = AuditDecision.accept
@@ -514,48 +506,148 @@ def test_audit_system_hint_lists_all_localization_inputs() -> None:
     hint = audit.AUDIT_SYSTEM_HINT
     assert "定位输入" in hint or "实拍" in hint
     assert "同一最终地点" in hint
-    assert "每一个" in hint or "列全" in hint
+    assert "出示粗窗" in hint or "display_time" in hint
+    assert "蒸馏窗" in hint
     assert "过程角色" in hint
     assert "工具" in hint
     assert "揭晓" in hint
-    assert "品类清单" in hint or "过程角色" in hint
     assert "整条答案链" in hint
-    assert "摘要与时间戳对齐" in hint or "摘要" in hint
-    assert "建筑外观" in hint
+    assert "精确关键帧秒数" in hint or "弱先验" in hint
     assert "卫星" not in hint
     assert "谷歌" not in hint
 
 
-def test_seed_timestamps_include_shot_mentions() -> None:
-    """通用「镜头/首先来看」旁白应产生探测种子。"""
-    segs = [
-        TranscriptSegment(
-            start=32.0,
-            end=66.0,
-            text="首先来看这个镜头，酒店就在主河道旁。",
-        ),
-        TranscriptSegment(
-            start=66.0,
-            end=100.0,
-            text="接下来镜头二，河道往西北延伸。",
-        ),
+def test_display_window_limits_dense_sampling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """蒸馏窗很长时，密采样只落在出示窗内。"""
+    video = tmp_path / "longwin.mp4"
+    video.write_bytes(b"x")
+    _isolate_data_dirs(tmp_path, monkeypatch)
+    monkeypatch.setenv("AUDIT_DISPLAY_SAMPLE_INTERVAL_SEC", "1.0")
+    monkeypatch.setattr(audit, "video_duration_sec", lambda _p: 300.0)
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(
+        audit, "extract_keyframes", _fake_extract_factory(captured)
+    )
+
+    task = audit._LLMGeoTaskDraft(
+        time_start=0.0,
+        time_end=280.0,
+        display_time_start=20.0,
+        display_time_end=35.0,
+        target_kind=TargetKind.still_image,
+        keyframe_timestamps=[200.0],
+        multi_target_images=False,
+        expected_image_count=1,
+        task_summary="单图",
+        answer_status=AnswerStatus.resolved,
+        final_location_text="目标地点",
+    )
+    draft = audit._LLMAuditDraft(
+        decision=AuditDecision.accept,
+        reason="单题",
+        has_unresolved_target=True,
+        tasks=[task],
+        split_confidence=0.95,
+    )
+    monkeypatch.setattr(audit, "call_structured", _route_call(draft))
+    result = audit.run_audit_split(str(video), _transcript())
+    task_calls = [
+        c
+        for c in captured.get("calls", [])
+        if "audit_candidates" in c["out_dir"].replace("\\", "/")
     ]
-    stamps = audit._seed_photo_mention_timestamps(segs)
-    assert stamps
-    assert any(30.0 <= t <= 70.0 for t in stamps)
+    all_stamps = [t for c in task_calls for t in c["stamps"]]
+    assert all_stamps
+    assert all(20.0 <= t <= 35.0 for t in all_stamps)
+    assert all(t < 100.0 for t in result.tasks[0].keyframe_timestamps)
+
+
+def test_wrong_model_stamp_still_finds_display_window_frame(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """模型精确戳错误时，仍能靠出示窗密采样选到窗内帧。"""
+    video = tmp_path / "wrongstamp.mp4"
+    video.write_bytes(b"x")
+    _isolate_data_dirs(tmp_path, monkeypatch)
+    monkeypatch.setattr(audit, "video_duration_sec", lambda _p: 60.0)
+    monkeypatch.setattr(audit, "extract_keyframes", _fake_extract_factory())
+    task = audit._LLMGeoTaskDraft(
+        time_start=0.0,
+        time_end=60.0,
+        display_time_start=10.0,
+        display_time_end=18.0,
+        target_kind=TargetKind.still_image,
+        keyframe_timestamps=[55.0],
+        multi_target_images=False,
+        expected_image_count=1,
+        task_summary="单图",
+        answer_status=AnswerStatus.resolved,
+        final_location_text="目标地点",
+    )
+    draft = audit._LLMAuditDraft(
+        decision=AuditDecision.accept,
+        reason="单题",
+        has_unresolved_target=True,
+        tasks=[task],
+        split_confidence=0.95,
+    )
+    monkeypatch.setattr(audit, "call_structured", _route_call(draft))
+    result = audit.run_audit_split(str(video), _transcript())
+    assert result.tasks[0].status == TaskStatus.accepted
+    assert len(result.tasks[0].keyframe_timestamps) == 1
+    assert 10.0 <= result.tasks[0].keyframe_timestamps[0] <= 18.0
+
+
+def test_vlm_verify_budget_is_capped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """廉价过滤后 VLM 验收次数不超过配置上限。"""
+    video = tmp_path / "vlmcap.mp4"
+    video.write_bytes(b"x")
+    _isolate_data_dirs(tmp_path, monkeypatch)
+    monkeypatch.setenv("AUDIT_MAX_VLM_FRAME_VERIFIES", "3")
+    monkeypatch.setenv("AUDIT_DISPLAY_SAMPLE_INTERVAL_SEC", "1.0")
+    monkeypatch.setattr(audit, "video_duration_sec", lambda _p: 60.0)
+    monkeypatch.setattr(audit, "extract_keyframes", _fake_extract_factory())
+    call_log: list[str] = []
+    task = audit._LLMGeoTaskDraft(
+        time_start=0.0,
+        time_end=60.0,
+        display_time_start=0.0,
+        display_time_end=40.0,
+        target_kind=TargetKind.still_image,
+        multi_target_images=False,
+        expected_image_count=1,
+        task_summary="单图",
+        answer_status=AnswerStatus.resolved,
+        final_location_text="目标地点",
+    )
+    draft = audit._LLMAuditDraft(
+        decision=AuditDecision.accept,
+        reason="单题",
+        has_unresolved_target=True,
+        tasks=[task],
+        split_confidence=0.95,
+    )
+    monkeypatch.setattr(
+        audit,
+        "call_structured",
+        _route_call(draft, call_log=call_log),
+    )
+    audit.run_audit_split(str(video), _transcript())
+    assert call_log.count("_LLMFrameVerdict") <= 3
 
 
 def test_video_derived_keeps_nearby_distinct_shots(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """video_derived 下间隔约 15–20s 的独立源镜头不应被近邻去重丢掉。"""
+    """video_derived 下视觉非重复的独立源镜头应保留多张。"""
     video = tmp_path / "neardup.mp4"
     video.write_bytes(b"x")
-    monkeypatch.setenv("INTERMEDIATE_DIR", str(tmp_path / "intermediate"))
-    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
-    from pipeline.config import clear_settings_cache
-
-    clear_settings_cache()
+    _isolate_data_dirs(tmp_path, monkeypatch)
+    monkeypatch.setenv("AUDIT_DISPLAY_SAMPLE_INTERVAL_SEC", "10.0")
 
     monkeypatch.setattr(audit, "video_duration_sec", lambda _p: 100.0)
     monkeypatch.setattr(audit, "extract_keyframes", _fake_extract_factory())
@@ -563,12 +655,15 @@ def test_video_derived_keeps_nearby_distinct_shots(
     class _Task:
         time_start = 0.0
         time_end = 100.0
+        display_time_start = 40.0
+        display_time_end = 80.0
         target_kind = TargetKind.video_derived
-        keyframe_timestamps = [40.0, 58.0, 75.0]
+        keyframe_timestamps: list[float] = []
         multi_target_images = True
         segment_start_idx = 0
         segment_end_idx = 1
         task_summary = "多源镜头"
+        expected_image_count = 3
 
     class _Draft:
         decision = AuditDecision.accept
@@ -581,9 +676,7 @@ def test_video_derived_keeps_nearby_distinct_shots(
     result = audit.run_audit_split(str(video), _transcript())
     stamps = result.tasks[0].keyframe_timestamps
     assert len(stamps) >= 3
-    assert any(abs(s - 40.0) < 1e-3 for s in stamps)
-    assert any(abs(s - 58.0) < 1e-3 for s in stamps)
-    assert any(abs(s - 75.0) < 1e-3 for s in stamps)
+    assert all(40.0 <= s <= 80.0 for s in stamps)
 
 
 def test_visual_duplicate_replaces_time_gap(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -608,11 +701,7 @@ def test_merge_same_final_location_into_one_task(
     """同最终地点的多草稿须合并为 1 个 task。"""
     video = tmp_path / "sameloc.mp4"
     video.write_bytes(b"x")
-    monkeypatch.setenv("INTERMEDIATE_DIR", str(tmp_path / "intermediate"))
-    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
-    from pipeline.config import clear_settings_cache
-
-    clear_settings_cache()
+    _isolate_data_dirs(tmp_path, monkeypatch)
 
     monkeypatch.setattr(audit, "video_duration_sec", lambda _p: 100.0)
     monkeypatch.setattr(audit, "extract_keyframes", _fake_extract_factory())
@@ -640,12 +729,15 @@ def test_merge_same_final_location_into_one_task(
     class _Merged:
         time_start = 0.0
         time_end = 90.0
+        display_time_start = 0.0
+        display_time_end = 90.0
         target_kind = TargetKind.video_derived
         keyframe_timestamps = [10.0, 40.0, 70.0]
         multi_target_images = True
         segment_start_idx = 0
         segment_end_idx = 1
         task_summary = "同酒店多源镜头"
+        expected_image_count = 3
 
     class _Draft:
         decision = AuditDecision.accept
@@ -671,11 +763,7 @@ def test_all_rejected_frames_mark_task_for_review(
     """候选全无效时标记该 task，不再让整条视频抛异常。"""
     video = tmp_path / "noretry.mp4"
     video.write_bytes(b"x")
-    monkeypatch.setenv("INTERMEDIATE_DIR", str(tmp_path / "intermediate"))
-    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
-    from pipeline.config import clear_settings_cache
-
-    clear_settings_cache()
+    _isolate_data_dirs(tmp_path, monkeypatch)
 
     monkeypatch.setattr(audit, "video_duration_sec", lambda _p: 20.0)
     monkeypatch.setattr(audit, "extract_keyframes", _fake_extract_factory())
@@ -809,12 +897,13 @@ def test_objective_duplicate_answer_triggers_conservative_review(
     assert result == [first]
 
 
-def test_nearby_model_keyframe_repairs_task_boundary() -> None:
+def test_nearby_display_window_repairs_task_boundary() -> None:
     task = audit._LLMGeoTaskDraft(
         time_start=900,
         time_end=990,
         target_kind=TargetKind.still_image,
-        keyframe_timestamps=[892],
+        display_time_start=892,
+        display_time_end=910,
         answer_status=AnswerStatus.resolved,
         final_location_text="孔雀湖",
     )
@@ -826,9 +915,10 @@ def test_nearby_model_keyframe_repairs_task_boundary() -> None:
     )
     assert start == 892
     assert end == 990
-    assert audit._filter_timestamps(
-        [800, 892, 995], start=start, end=end, max_n=5
-    ) == [892]
+    display = audit._resolve_display_window(
+        task, distill_start=start, distill_end=end
+    )
+    assert display == (892.0, 910.0)
 
 
 def test_ambiguous_task_is_saved_and_skips_frame_materialization(
@@ -836,11 +926,7 @@ def test_ambiguous_task_is_saved_and_skips_frame_materialization(
 ) -> None:
     video = tmp_path / "ambiguous.mp4"
     video.write_bytes(b"x")
-    monkeypatch.setenv("INTERMEDIATE_DIR", str(tmp_path / "intermediate"))
-    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
-    from pipeline.config import clear_settings_cache
-
-    clear_settings_cache()
+    _isolate_data_dirs(tmp_path, monkeypatch)
     monkeypatch.setattr(audit, "video_duration_sec", lambda _p: 20.0)
     extract_calls: list[str] = []
 
@@ -890,16 +976,14 @@ def test_single_still_selects_cleaner_later_candidate(
 ) -> None:
     video = tmp_path / "quality.mp4"
     video.write_bytes(b"x")
-    monkeypatch.setenv("INTERMEDIATE_DIR", str(tmp_path / "intermediate"))
-    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
-    from pipeline.config import clear_settings_cache
-
-    clear_settings_cache()
+    _isolate_data_dirs(tmp_path, monkeypatch)
     monkeypatch.setattr(audit, "video_duration_sec", lambda _p: 20.0)
     monkeypatch.setattr(audit, "extract_keyframes", _fake_extract_factory())
     task = audit._LLMGeoTaskDraft(
         time_start=0,
         time_end=10,
+        display_time_start=1.0,
+        display_time_end=5.0,
         target_kind=TargetKind.still_image,
         keyframe_timestamps=[1, 5],
         answer_status=AnswerStatus.resolved,
@@ -911,12 +995,10 @@ def test_single_still_selects_cleaner_later_candidate(
         tasks=[task],
         split_confidence=0.95,
     )
-    frame_calls = {"count": 0}
 
-    def route(_prompt: str, schema: Any, **_k: Any) -> Any:
+    def route(prompt: str, schema: Any, **_k: Any) -> Any:
         if schema is audit._LLMFrameVerdict:
-            frame_calls["count"] += 1
-            if frame_calls["count"] == 1:
+            if "候选时间：1.0s" in prompt:
                 return audit._LLMFrameVerdict(
                     kind=audit.FrameKind.target_photo,
                     quality_score=0.4,
@@ -924,7 +1006,7 @@ def test_single_still_selects_cleaner_later_candidate(
                     clean_source=False,
                     reason="带讲解红线",
                 )
-            if frame_calls["count"] == 2:
+            if "候选时间：5.0s" in prompt:
                 return audit._LLMFrameVerdict(
                     kind=audit.FrameKind.target_photo,
                     quality_score=0.95,
@@ -954,12 +1036,8 @@ def test_partial_task_checkpoints_resume_without_reauditing(
 ) -> None:
     video = tmp_path / "resume.mp4"
     video.write_bytes(b"x")
+    _isolate_data_dirs(tmp_path, monkeypatch)
     intermediate = tmp_path / "intermediate"
-    monkeypatch.setenv("INTERMEDIATE_DIR", str(intermediate))
-    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
-    from pipeline.config import clear_settings_cache
-
-    clear_settings_cache()
     monkeypatch.setattr(audit, "video_duration_sec", lambda _p: 20.0)
     monkeypatch.setattr(audit, "extract_keyframes", _fake_extract_factory())
     first = audit._LLMGeoTaskDraft(
@@ -1039,18 +1117,16 @@ def test_frame_verification_error_is_checkpointed(
     video = tmp_path / "frame-timeout.mp4"
     video.write_bytes(b"x")
     intermediate = tmp_path / "intermediate"
-    monkeypatch.setenv("INTERMEDIATE_DIR", str(intermediate))
-    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
-    monkeypatch.setenv("AUDIT_MAX_CANDIDATE_PROBES", "1")
-    monkeypatch.setenv("AUDIT_FALLBACK_PROBE_COUNT", "0")
-    from pipeline.config import clear_settings_cache
-
-    clear_settings_cache()
+    _isolate_data_dirs(tmp_path, monkeypatch)
+    monkeypatch.setenv("AUDIT_MAX_VLM_FRAME_VERIFIES", "1")
+    monkeypatch.setenv("AUDIT_DISPLAY_SAMPLE_INTERVAL_SEC", "5.0")
     monkeypatch.setattr(audit, "video_duration_sec", lambda _p: 10.0)
     monkeypatch.setattr(audit, "extract_keyframes", _fake_extract_factory())
     task = audit._LLMGeoTaskDraft(
         time_start=0,
         time_end=10,
+        display_time_start=0,
+        display_time_end=5,
         target_kind=TargetKind.still_image,
         keyframe_timestamps=[1],
         answer_status=AnswerStatus.resolved,
@@ -1080,8 +1156,10 @@ def test_frame_verification_error_is_checkpointed(
         / "candidate_assessments.partial.json"
     )
     saved = json.loads(checkpoint.read_text(encoding="utf-8"))
-    assert saved[0]["kind"] == "error"
-    assert saved[0]["reason"] == "验收调用失败：TimeoutError"
+    assert any(item["kind"] == "error" for item in saved)
+    assert any(
+        item.get("reason") == "验收调用失败：TimeoutError" for item in saved
+    )
 
 
 def test_frame_verification_uses_local_narrative_role(
@@ -1090,13 +1168,8 @@ def test_frame_verification_uses_local_narrative_role(
     """全屏实景若是答案后的核验图，也不能误选成原始待定位输入。"""
     video = tmp_path / "narrative-role.mp4"
     video.write_bytes(b"x")
-    monkeypatch.setenv("INTERMEDIATE_DIR", str(tmp_path / "intermediate"))
-    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
-    monkeypatch.setenv("AUDIT_MAX_CANDIDATE_PROBES", "2")
-    monkeypatch.setenv("AUDIT_FALLBACK_PROBE_COUNT", "0")
-    from pipeline.config import clear_settings_cache
-
-    clear_settings_cache()
+    _isolate_data_dirs(tmp_path, monkeypatch)
+    monkeypatch.setenv("AUDIT_MAX_VLM_FRAME_VERIFIES", "8")
     monkeypatch.setattr(audit, "video_duration_sec", lambda _p: 10.0)
     monkeypatch.setattr(audit, "extract_keyframes", _fake_extract_factory())
     transcript = [
@@ -1107,6 +1180,8 @@ def test_frame_verification_uses_local_narrative_role(
     task = audit._LLMGeoTaskDraft(
         time_start=0,
         time_end=10,
+        display_time_start=0,
+        display_time_end=10,
         target_kind=TargetKind.still_image,
         keyframe_timestamps=[1, 9],
         task_summary="定位题目原图，后段为答案核验",
@@ -1124,18 +1199,18 @@ def test_frame_verification_uses_local_narrative_role(
     def route(prompt: str, schema: Any, **_k: Any) -> Any:
         if schema is audit._LLMFrameVerdict:
             seen_prompts.append(prompt)
-            if "候选时间：9.0s" in prompt:
+            if "候选时间：1.0s" in prompt:
                 return audit._LLMFrameVerdict(
-                    kind=audit.FrameKind.teaching_ui,
-                    quality_score=0.9,
+                    kind=audit.FrameKind.target_photo,
+                    quality_score=0.95,
                     clean_source=True,
-                    reason="答案后的高空核验图",
+                    reason="原始题图",
                 )
             return audit._LLMFrameVerdict(
-                kind=audit.FrameKind.target_photo,
+                kind=audit.FrameKind.teaching_ui,
                 quality_score=0.9,
-                clean_source=True,
-                reason="原始题图",
+                clean_source=False,
+                reason="答案后的高空核验图或无关帧",
             )
         return draft
 

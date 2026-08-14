@@ -58,8 +58,10 @@ class Settings(BaseSettings):
     # 阶段1.5 审核切分
     AUDIT_SPARSE_FRAME_COUNT: int = 8
     AUDIT_MAX_KEYFRAMES_PER_TASK: int = 8
-    AUDIT_MAX_CANDIDATE_PROBES: int = 12
-    AUDIT_FALLBACK_PROBE_COUNT: int = 8
+    AUDIT_DISPLAY_SAMPLE_INTERVAL_SEC: float = 1.0
+    AUDIT_DISPLAY_WINDOW_MAX_SEC: float = 90.0
+    AUDIT_MAX_SAMPLED_FRAMES: int = 120
+    AUDIT_MAX_VLM_FRAME_VERIFIES: int = 24
     AUDIT_TASK_BOUNDARY_TOLERANCE_SEC: float = 20.0
     AUDIT_MIN_FRAME_QUALITY: float = 0.65
     AUDIT_VISUAL_HASH_DISTANCE: int = 6
@@ -67,6 +69,8 @@ class Settings(BaseSettings):
     TOOL_CATALOG_PATH: str = "canonical_tool_catalog.json"
     TOOL_TREES_PATH: str = "tool_trees.json"
     INTERMEDIATE_DIR: str = "data/intermediate"
+    SELECTED_DIR: str = "data/selected"
+    RUNS_DIR: str = "data/runs"
     OUTPUT_DIR: str = "data/output"
     TRANSCRIPTS_DIR: str = "data/transcripts"
     CACHE_DIR: str = ".cache"

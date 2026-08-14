@@ -1,7 +1,7 @@
 # 图片地理定位 Agent 训练数据集生成流水线 — 项目规格
 
-版本：3.3.0 | 生成时间：2026-08-12
-修订说明：v3.3.0 将阶段2改为 `reasoning / tool_call / final` 三类事件，允许连续 Thought 且只为真实外部动作生成 Tool；阶段3引入执行器级 Canonical Tool 目录、operation/purpose/inputs 参数契约、上下文语义归并、受控自动新建与伪工具降级审计。v3.2.0 增加低误报条件式拆分复核、task 级答案/质量门禁、题内渐进选图、单图择优与视觉去重；单个 task 不合格不再中断同视频其他题。旧规格见 `SPEC_legacy_v2.md`。
+版本：3.3.2 | 生成时间：2026-08-13
+修订说明：v3.3.2 将数据落盘三分：`data/selected/` 仅最终选图，`data/intermediate/` 仅阶段 JSON/门禁元数据，密采样探测帧进 `.cache/audit_candidates/`；跑批摘要进 `data/runs/`。v3.3.1 将阶段1.5 选图改为蒸馏窗与出示窗分离：模型只给出示粗窗与独立输入张数，候选在出示窗内密采样并经廉价过滤后再 VLM 择优，不再以精确关键帧秒数为主提案。v3.3.0 将阶段2改为 `reasoning / tool_call / final` 三类事件；阶段3引入执行器级 Canonical Tool 目录。旧规格见 `SPEC_legacy_v2.md`。
 
 ## 0. 给 Cursor 的元指令（先读这一段）
 
@@ -33,10 +33,11 @@
    - **拒识主问句**：去掉讲解/旁白/答案后，是否仍存在需 agent 定位的图或场景？无 → `decision=reject`。
    - **切分粒度**：一个 task = 一次独立定位题 = 一条最终 `final_answer` 链。同题多图（共同支撑同一地点、或后图精化前图）合并为 **一个** task 且 `multi_target_images=true`；**同一最终地点必须合并为一个 task**；仅不同目标/不同最终地点才拆多 task。
    - **条件式复核**：首次切分由模型负责。规则只检查高精度结构矛盾（模型主动低置信、明确答案重复、resolved 却无地点、时间窗与候选严重冲突等）；无异常不重复调用模型。触发后由模型保守地双向复核，可合并过拆，也可补拆漏题；不得为了体现复核而改动正确切分。
-   - **task 时间窗**：`time_start`/`time_end`（及可选 segment 索引）覆盖**整条答案链旁白**（问题设定 → 推理比对叙述 → 最终地点结论），不得裁成仅关键帧中段；时间窗管蒸馏材料完整性。
-   - **关键帧 = 待定位实拍输入**（去掉讲解后 agent 仍要据之定位的现场/静帧）。候选只在归一后的 task 时间窗内产生；与边界相差很小的模型候选可先扩充时间窗，禁止把大量越界候选强行挤到边界同一帧。首次候选不合格时在该题范围内渐进补探一次，不得跨题寻找。
+   - **蒸馏窗**：`time_start`/`time_end`（及可选 segment 索引）覆盖**整条答案链旁白**（问题设定 → 推理比对叙述 → 最终地点结论），不得裁成仅关键帧中段；蒸馏窗只管 Stage 2 字幕切片完整性，**不得**作为密采样选图区间。
+   - **出示窗（选图）**：审核模型另给每题展示待定位实拍的粗区间（秒级即可）与 `expected_image_count`；**不再以精确关键帧秒数为主提案**。候选只在出示窗内产生，且必须裁进蒸馏窗、不得跨相邻题。缺失出示窗时用蒸馏窗前段封顶作后备粗窗。
+   - **关键帧 = 待定位实拍输入**（去掉讲解后 agent 仍要据之定位的现场/静帧）。出示窗内密采样 → 廉价视觉过滤（近重复/近黑/明显地图或大面积 UI 降权）→ VLM 逐帧验收与择优。找不到干净 (A) 时 `needs_review`，禁止把密采样扩大到整条蒸馏窗狂打 VLM。
    - **逐帧质量验收与择优**：VLM 对候选分别输出角色、质量、答案泄露、讲解覆盖和干净原图标记。普通 `still_image` 可比较多张候选，但最终只保留质量最高的一张；工具/核验/揭晓帧不得入 `image_paths`，含最终答案泄露的帧不得入库。时间距离不得用于判断重复，使用视觉哈希去除同图变体。
-   - **`video_derived` / 同题多输入**：提案须先理解定位过程角色，一次列全各独立**实拍**定位输入代表帧（张数随输入镜头走，受配置上限约束）；`task_summary` 枚举的每个实拍输入须各有时间戳；不得用工具步骤或揭晓帧充数。
+   - **`video_derived` / 同题多输入**：在出示窗内密采样后，按独立实拍镜头的视觉非重复与质量择优保留（张数随 `expected_image_count` 走，受配置上限约束）；不得用工具步骤或揭晓帧充数。
    - **答案与 task 门禁**：每题分别输出 `answer_status=resolved|ambiguous|unsolved` 与 `status=accepted|needs_review|rejected`。只有答案唯一明确、图片完整干净的 `accepted` task 进入 Stage 2；模棱两可或明确无解的题单独拒绝，选图不足进入人工复核，均不得影响同视频其他题。
    - 数量：`still_image` 默认输出 1 张最佳帧；`multi_target_images` 或 `video_derived` 按 `expected_image_count` 保留各独立输入，不再硬编码为 2 张。
 3. **阶段2（自由事件轨迹）**：优先接收 Stage 1.5 的单题字幕切片 + `image_paths`；若上游拆题不可用而收到整视频，则恢复字幕级保险，识别全部独立定位题，并令末步 `location` 以字符串数组按讲解顺序列出全部最终地点。事件分为 `reasoning / tool_call / final`：直接看图、合并已有证据、比较、筛选、排除、排名、形成目标签名和计划转向只写 reasoning；只有真实访问外部搜索、数据库、地图/街景/卫星/天气服务或执行图像/GIS/计算程序并产生新证据时才写 tool_call + Observation。允许连续 reasoning，但每条必须完成实质认知更新；只为解释下一次调用的一句话并入该 tool_call 的 Thought。产物禁止「求助者/网友/评论区」等渠道元话语，末步严格为 `event_type=final`、`final_answer`、`params.location`、`observation=null`。
@@ -99,22 +100,28 @@ geo-agent-dataset/
 ├── batch_run.py
 ├── tests/
 └── data/
-    ├── raw_videos/
-    ├── transcripts/
-    ├── intermediate/{video_id}/
+    ├── raw_videos/                 # 原始视频（只读输入）
+    ├── transcripts/                # 外部/锚点字幕
+    ├── selected/{video_id}/{task_id}/   # 最终选中的待定位图（给人看/进 Stage2）
+    ├── runs/                       # 跑批/重跑摘要与日志（非训练产物）
+    ├── intermediate/{video_id}/    # 阶段元数据（JSON），不含密采样探测图
     │   ├── manifest_v2.json
     │   ├── stage1_transcript.json
     │   ├── stage_audit_split_draft.json
     │   ├── stage_audit_split.json
     │   └── tasks/{task_id}/
     │       ├── task_audit.json
-    │       ├── candidates/{task_id}_t*.jpg
-│       ├── stage2_freeform_tao.json      # 仅 accepted
-│       ├── stage3_trajectory.json        # 仅 accepted
-│       └── stage3_tool_mapping.json      # Tool 归并与伪工具指标
+    │       ├── candidate_assessments.partial.json  # 验收断点（可删）
+    │       ├── stage2_freeform_tao.json            # 仅 accepted
+    │       ├── stage3_trajectory.json
+    │       └── stage3_tool_mapping.json
     └── output/
         ├── shards/{task_id}.jsonl
         └── geolocate_agent.jsonl
+.cache/
+    ├── audit_sparse/               # 审核用稀疏帧
+    ├── audit_candidates/           # 出示窗密采样探测帧（可随时清空）
+    └── keyframes/                  # 其他抽帧缓存
 ```
 
 ## 4. 数据 Schema

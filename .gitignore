@@ -26,6 +26,8 @@ dist/
 data/raw_videos/*
 data/transcripts/*
 data/intermediate/*
+data/selected/*
+data/runs/*
 data/output/*
 intermediate/
 tmp1/
@@ -36,6 +38,8 @@ pytest-cache-files-*/
 !data/raw_videos/.gitkeep
 !data/transcripts/.gitkeep
 !data/intermediate/.gitkeep
+!data/selected/.gitkeep
+!data/runs/.gitkeep
 !data/output/.gitkeep
 
 # 媒体文件

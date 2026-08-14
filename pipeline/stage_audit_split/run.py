@@ -36,14 +36,13 @@ AUDIT_SYSTEM_HINT = (
     "旁白「打开地图就能看到某某地」≠ 定位题。\n"
     "- has_unresolved_target=true → decision=accept："
     "存在一个或多个独立的待定位输入。\n"
-    "选关键帧前先理解整段定位过程，区分过程角色：\n"
+    "先理解整段定位过程，区分过程角色：\n"
     "- (A) 待定位实拍输入：人眼/相机拍到的、被定位的现场场景或静帧；\n"
     "- (B) 推理工具与核验步骤：用地图或影像底图比对、街景浏览确认等工具画面；\n"
     "- (C) 答案揭晓：钉点指出「就是这里」、揭晓界面等。\n"
     "切分粒度（关键）：一个 task = 一次独立定位题 = 一条最终答案链。\n"
     "- 同题多图（多张待定位原图共同支撑同一最终地点，或后图只是精化前图）"
-    "必须合并为 **一个** task，设 multi_target_images=true，"
-    "并给出每张待定位原图出现的时间戳。\n"
+    "必须合并为 **一个** task，设 multi_target_images=true。\n"
     "- **同一最终地点 / 同一条答案链必须合并为一个 task**"
     "（即使线索形态不同，如环境特征与建筑外观）。\n"
     "- 仅当不同目标、不同最终地点、彼此独立出题时才拆成多个 task。\n"
@@ -51,32 +50,19 @@ AUDIT_SYSTEM_HINT = (
     "target_kind：\n"
     "- still_image：明确静图/待定位原图；\n"
     "- video_derived：对源视频/连续实拍场景定位（仍入库）。\n"
-    "keyframe_timestamps **只选过程角色 (A)**："
-    "去掉讲解后 agent 仍要据之定位的实拍主画面（定位输入本身）。\n"
-    "当 multi_target_images=true 或 video_derived 时："
-    "须一次列出**每一个**独立 (A) 实拍输入的代表时刻（同题列全）；"
-    "漏报任一输入镜头会导致样本不完整；张数随独立输入走。\n"
-    "**摘要与时间戳对齐**：task_summary 若枚举多个独立实拍输入"
-    "（镜头/静帧/目标建筑外观对照等），keyframe_timestamps 必须各有代表时刻；"
-    "摘要写了 N 个输入却只给少于 N 个戳 = 不完整。\n"
-    "比对/核验旁白段里若穿插「目标建筑外观、早期实拍静帧」等被定位画面，仍属 (A) 应选；"
-    "同段地图底图、街景浏览、钉点揭晓仍属 (B)(C)，不得选。\n"
-    "**禁止选 (B)(C)**：工具步骤与答案揭晓不是待定位图，"
-    "即使画面「很地理」也不得写入 keyframe_timestamps。\n"
-    "判断靠过程角色，不靠外观品类清单。"
-    "若 task_summary 写外观/镜头等实拍，时间戳必须落在对应实拍段，"
-    "不得用工具段或揭晓段顶替。\n"
-    "旁白刚提到下一输入时若画面仍是工具/讲解辅助界面，该时刻无效。\n"
-    "- still_image 且非同题多图：默认 1 个时间戳；\n"
-    "- multi_target_images=true：每张待定位实拍原图各 1 个时间戳；\n"
-    "- video_derived：每个独立源实拍输入镜头各 1 个时间戳。\n"
-    "time_start/time_end 与可选 segment 索引 = **整条答案链旁白窗口**："
-    "从问题设定到最终地点结论（含地图比对叙述与揭晓句），"
-    "不得裁成「仅关键帧所在中段」。"
-    "时间窗管蒸馏材料完整性；keyframe_timestamps 仍只选 (A)。\n"
-    "每个 task 给出 time_start/time_end、keyframe_timestamps（至少 1 个；"
-    "同题多图至少 2 个）、multi_target_images、expected_image_count、"
-    "可选 segment 索引、task_summary。\n"
+    "两个时间窗（必须区分）：\n"
+    "- time_start/time_end 与可选 segment 索引 = **蒸馏窗**："
+    "整条答案链旁白（问题设定 → 比对叙述 → 最终地点结论），"
+    "不得裁成仅原图中段；供下游字幕切片，不是选图密采样区间。\n"
+    "- display_time_start/display_time_end = **出示粗窗**："
+    "主画面实际展示待定位实拍 (A) 的大约区间（秒级粗估即可）；"
+    "须落在蒸馏窗内；不要把地图比对、街景核验、钉点揭晓段放进出示窗。\n"
+    "expected_image_count：独立 (A) 实拍输入张数；"
+    "still_image 非同题多图默认 1；multi_target_images/video_derived 按独立镜头数填写。\n"
+    "**不要**把精确关键帧秒数当作主职责；keyframe_timestamps 可选，仅作弱先验。"
+    "下游会在出示窗内密采样并验收选图。\n"
+    "每个 task 给出 time_start/time_end、display_time_start/display_time_end、"
+    "multi_target_images、expected_image_count、可选 segment 索引、task_summary。\n"
     "答案质量门禁：每个 task 必须给 answer_status 与 final_location_text：\n"
     "- resolved：旁白明确给出唯一最终地点；final_location_text 原样概括该地点；\n"
     "- ambiguous：存在冲突答案、只有不确定猜测或只能缩小到模糊范围；\n"
@@ -128,6 +114,8 @@ class _LLMGeoTaskDraft(BaseModel):
     time_start: float
     time_end: float
     target_kind: TargetKind
+    display_time_start: float | None = None
+    display_time_end: float | None = None
     keyframe_timestamps: list[float] = Field(default_factory=list)
     multi_target_images: bool = False
     segment_start_idx: int | None = None
@@ -202,14 +190,18 @@ def _objective_split_anomalies(
         if duration > 0 and (t0 < -1e-6 or t1 > duration + 1e-6):
             anomalies.append(f"task {i} 的时间窗超出视频物理范围")
 
-        far_stamps = [
-            float(stamp)
-            for stamp in task.keyframe_timestamps
-            if float(stamp) < min(t0, t1) - boundary_tolerance
-            or float(stamp) > max(t0, t1) + boundary_tolerance
-        ]
-        if far_stamps:
-            anomalies.append(f"task {i} 的候选时间与题目时间窗明显矛盾")
+        d0 = getattr(task, "display_time_start", None)
+        d1 = getattr(task, "display_time_end", None)
+        if d0 is not None and d1 is not None:
+            ds = float(d0)
+            de = float(d1)
+            if de < ds:
+                anomalies.append(f"task {i} 的出示窗终点早于起点")
+            elif (
+                de < min(t0, t1) - boundary_tolerance
+                or ds > max(t0, t1) + boundary_tolerance
+            ):
+                anomalies.append(f"task {i} 的出示窗与蒸馏窗明显矛盾")
 
         answer_status = getattr(task, "answer_status", AnswerStatus.resolved)
         if answer_status == AnswerStatus.resolved:
@@ -238,39 +230,6 @@ def _objective_split_anomalies(
     return anomalies
 
 
-def _seed_photo_mention_timestamps(
-    transcript: list[TranscriptSegment],
-) -> list[float]:
-    """从字幕中照片/镜头提及处取候选时刻（含邻域偏移，非样本特判）。"""
-    keys = (
-        "照片",
-        "这张图",
-        "第二张",
-        "原图",
-        "两张图",
-        "放大照片",
-        "求助图",
-        "镜头",
-        "首先来看",
-    )
-    mids: list[float] = []
-    for seg in transcript:
-        text = seg.text or ""
-        if any(k in text for k in keys):
-            mid = (float(seg.start) + float(seg.end)) * 0.5
-            if not mids or abs(mids[-1] - mid) > 1.0:
-                mids.append(mid)
-    stamps: list[float] = []
-    for mid in mids:
-        for delta in (-3.0, 0.0, 3.0, 8.0):
-            t = mid + delta
-            if t < 0:
-                continue
-            if not stamps or abs(stamps[-1] - t) > 0.5:
-                stamps.append(t)
-    return stamps
-
-
 def _maybe_review_task_split(
     draft_tasks: list[_LLMGeoTaskDraft],
     *,
@@ -297,13 +256,25 @@ def _maybe_review_task_split(
         {
             "time_start": t.time_start,
             "time_end": t.time_end,
-            "target_kind": t.target_kind.value,
-            "keyframe_timestamps": t.keyframe_timestamps,
-            "multi_target_images": t.multi_target_images,
-            "segment_start_idx": t.segment_start_idx,
-            "segment_end_idx": t.segment_end_idx,
-            "task_summary": t.task_summary,
-            "answer_status": getattr(t, "answer_status", AnswerStatus.resolved).value,
+            "target_kind": (
+                t.target_kind.value
+                if isinstance(t.target_kind, Enum)
+                else t.target_kind
+            ),
+            "display_time_start": getattr(t, "display_time_start", None),
+            "display_time_end": getattr(t, "display_time_end", None),
+            "keyframe_timestamps": list(getattr(t, "keyframe_timestamps", []) or []),
+            "multi_target_images": bool(getattr(t, "multi_target_images", False)),
+            "segment_start_idx": getattr(t, "segment_start_idx", None),
+            "segment_end_idx": getattr(t, "segment_end_idx", None),
+            "task_summary": str(getattr(t, "task_summary", "") or ""),
+            "answer_status": (
+                getattr(t, "answer_status", AnswerStatus.resolved).value
+                if isinstance(
+                    getattr(t, "answer_status", AnswerStatus.resolved), Enum
+                )
+                else str(getattr(t, "answer_status", AnswerStatus.resolved))
+            ),
             "final_location_text": str(getattr(t, "final_location_text", "") or ""),
             "expected_image_count": int(getattr(t, "expected_image_count", 1) or 1),
         }
@@ -317,14 +288,14 @@ def _maybe_review_task_split(
         "一个 task = 一次独立定位题 = 一条最终答案。\n"
         "若多张待定位原图共同支撑同一最终地点（或后图精化前图），"
         "必须合并为 **一个** task，设 multi_target_images=true，"
-        "并给出每张待定位原图出现的 keyframe_timestamps。\n"
+        "并给出 display 出示粗窗与 expected_image_count。\n"
         "**同一最终地点 / 同一条答案链必须合并**"
         "（即使线索形态不同，如河道环境与建筑外观）。\n"
         "仅当不同目标、不同最终地点时才保留多个 task。"
         "如果一个 task 内实际含多条独立最终答案链，必须补拆；"
         "如果多个 task 属于同一最终答案链，必须合并。\n"
         "每个结果 task 继续填写 answer_status、final_location_text、"
-        "expected_image_count 与全部原始输入时间戳。\n"
+        "expected_image_count、display_time_start/display_time_end。\n"
         f"视频 ID: {video_id}\n"
         f"当前 tasks JSON:\n{json.dumps(payload, ensure_ascii=False)}\n"
         "字幕：\n"
@@ -408,28 +379,6 @@ def _filter_timestamps(
     return cleaned[: max(1, max_n)]
 
 
-def _progressive_probe_timestamps(
-    start: float,
-    end: float,
-    *,
-    count: int,
-) -> list[float]:
-    """题目范围内由开头向全段渐进探测，不跨到相邻题。"""
-    lo = max(0.0, float(start))
-    hi = max(lo, float(end))
-    n = max(1, int(count))
-    if hi <= lo + 1e-6:
-        return [lo]
-    early = [lo + delta for delta in (1.0, 3.0, 6.0, 10.0, 15.0)]
-    even = [lo + (hi - lo) * (i + 1) / (n + 1) for i in range(n)]
-    return _filter_timestamps(
-        early + even,
-        start=lo,
-        end=hi,
-        max_n=n,
-    )
-
-
 def _normalize_task_window(
     raw: _LLMGeoTaskDraft,
     *,
@@ -437,7 +386,7 @@ def _normalize_task_window(
     transcript: list[TranscriptSegment],
     boundary_tolerance: float,
 ) -> tuple[float, float]:
-    """以字幕索引和近邻候选修复轻微边界偏差，再限制在视频物理范围。"""
+    """以字幕索引和近邻出示窗修复轻微边界偏差，再限制在视频物理范围。"""
     t0 = float(raw.time_start)
     t1 = float(raw.time_end)
     if t1 < t0:
@@ -454,16 +403,86 @@ def _normalize_task_window(
         t1 = max(t1, float(transcript[int(seg1)].end))
 
     tolerance = max(0.0, float(boundary_tolerance))
-    for stamp in getattr(raw, "keyframe_timestamps", []) or []:
-        value = float(stamp)
-        if t0 - tolerance <= value <= t1 + tolerance:
-            t0 = min(t0, value)
-            t1 = max(t1, value)
+    for value in (
+        getattr(raw, "display_time_start", None),
+        getattr(raw, "display_time_end", None),
+    ):
+        if value is None:
+            continue
+        stamp = float(value)
+        if t0 - tolerance <= stamp <= t1 + tolerance:
+            t0 = min(t0, stamp)
+            t1 = max(t1, stamp)
 
     max_time = max(0.0, float(duration) - 0.001) if duration > 0 else max(t1, 0.0)
     t0 = min(max(0.0, t0), max_time)
     t1 = min(max(t0, t1), max_time)
     return t0, t1
+
+
+def _resolve_display_window(
+    raw: _LLMGeoTaskDraft,
+    *,
+    distill_start: float,
+    distill_end: float,
+) -> tuple[float, float]:
+    """解析出示粗窗：优先模型给出，否则蒸馏窗前段封顶。"""
+    settings = get_settings()
+    max_fallback = max(1.0, float(settings.AUDIT_DISPLAY_WINDOW_MAX_SEC))
+    lo = max(0.0, float(distill_start))
+    hi = max(lo, float(distill_end))
+    d0 = getattr(raw, "display_time_start", None)
+    d1 = getattr(raw, "display_time_end", None)
+    if d0 is not None and d1 is not None:
+        start = float(d0)
+        end = float(d1)
+        if end < start:
+            start, end = end, start
+        start = min(max(start, lo), hi)
+        end = min(max(end, start), hi)
+        if end > start + 1e-3:
+            return start, end
+        logger.warning(
+            "invalid display window [%.2f, %.2f]; fallback to distill prefix",
+            float(d0),
+            float(d1),
+        )
+    end = min(hi, lo + max_fallback)
+    if end <= lo + 1e-6:
+        end = hi
+    logger.info(
+        "display window fallback distill_prefix [%.2f, %.2f] (cap=%.1fs)",
+        lo,
+        end,
+        max_fallback,
+    )
+    return lo, end
+
+
+def _dense_sample_timestamps(
+    start: float,
+    end: float,
+    *,
+    interval: float,
+    max_n: int,
+) -> list[float]:
+    """出示窗内按间隔密采样，受硬上限约束。"""
+    lo = max(0.0, float(start))
+    hi = max(lo, float(end))
+    if hi <= lo + 1e-9:
+        return [lo]
+    step = max(0.05, float(interval))
+    stamps: list[float] = []
+    t = lo
+    while t <= hi + 1e-9:
+        stamps.append(round(t, 3))
+        t += step
+    if not stamps or stamps[-1] < hi - 1e-3:
+        stamps.append(round(hi, 3))
+    # 超上限时均匀抽稀
+    from pipeline.stage_audit_split.frame_prefilter import subsample_timestamps
+
+    return subsample_timestamps(stamps, max(1, int(max_n)))
 
 
 def _max_keyframes_for_task(
@@ -500,6 +519,43 @@ def _prefix_keyframes(paths: list[str], task_id: str) -> list[str]:
             src.replace(dest)
         prefixed.append(str(dest.resolve()))
     return prefixed
+
+
+def _candidate_frame_dir(video_id: str, task_id: str) -> Path:
+    """密采样探测帧目录（缓存，可随时清空）。"""
+    settings = get_settings()
+    path = Path(settings.CACHE_DIR) / "audit_candidates" / video_id / task_id
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _promote_selected_images(
+    selected: list[KeyframeAssessment],
+    *,
+    video_id: str,
+    task_id: str,
+) -> list[str]:
+    """把入选帧复制到 ``SELECTED_DIR``，并回写 assessment.image_path。"""
+    settings = get_settings()
+    dest_dir = Path(settings.SELECTED_DIR) / video_id / task_id
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    paths: list[str] = []
+    for item in selected:
+        src = Path(item.image_path)
+        name = (
+            src.name
+            if src.name.startswith(f"{task_id}_")
+            else f"{task_id}_{src.name}"
+        )
+        dest = dest_dir / name
+        if src.is_file() and dest.resolve() != src.resolve():
+            dest.write_bytes(src.read_bytes())
+        elif not dest.is_file() and src.is_file():
+            dest.write_bytes(src.read_bytes())
+        final = str(dest.resolve()) if dest.is_file() else str(src.resolve())
+        item.image_path = final
+        paths.append(final)
+    return paths
 
 
 def _unlink_quiet(path: str) -> None:
@@ -603,15 +659,6 @@ def _is_visual_duplicate(
     return duplicate, current
 
 
-def _even_probe_timestamps(start: float, end: float, count: int) -> list[float]:
-    lo = max(0.0, float(start))
-    hi = max(lo, float(end))
-    n = max(1, int(count))
-    if hi <= lo + 1e-6:
-        return [lo]
-    return [lo + (hi - lo) * (i + 1) / (n + 1) for i in range(n)]
-
-
 def _materialize_task_images(
     *,
     video_path: str,
@@ -623,6 +670,7 @@ def _materialize_task_images(
     max_kf: int,
     transcript: list[TranscriptSegment],
     task_dir: Path,
+    resume_tasks: bool = True,
 ) -> tuple[
     list[float],
     list[str],
@@ -630,34 +678,44 @@ def _materialize_task_images(
     list[KeyframeAssessment],
     str,
 ]:
-    """在 task 范围内逐帧验收、质量排序并用视觉内容去重。"""
+    """在出示窗内密采样、廉价过滤、逐帧验收并用视觉内容去重。"""
+    from pipeline.stage_audit_split.frame_prefilter import (
+        is_near_duplicate,
+        prefilter_frame,
+        subsample_timestamps,
+    )
+
     settings = get_settings()
-    candidate_budget = max(1, int(settings.AUDIT_MAX_CANDIDATE_PROBES))
-    fallback_budget = max(0, int(settings.AUDIT_FALLBACK_PROBE_COUNT))
     quality_floor = min(1.0, max(0.0, float(settings.AUDIT_MIN_FRAME_QUALITY)))
     hash_distance = max(0, int(settings.AUDIT_VISUAL_HASH_DISTANCE))
-    initial = _filter_timestamps(
-        list(getattr(raw, "keyframe_timestamps", []) or [])
-        + _seed_photo_mention_timestamps(transcript)
-        + _progressive_probe_timestamps(t0, t1, count=5),
-        start=t0,
-        end=t1,
-        max_n=candidate_budget,
+    interval = max(0.05, float(settings.AUDIT_DISPLAY_SAMPLE_INTERVAL_SEC))
+    max_sampled = max(1, int(settings.AUDIT_MAX_SAMPLED_FRAMES))
+    max_vlm = max(1, int(settings.AUDIT_MAX_VLM_FRAME_VERIFIES))
+
+    display_start, display_end = _resolve_display_window(
+        raw, distill_start=t0, distill_end=t1
     )
-    fallback = (
-        _filter_timestamps(
-            _even_probe_timestamps(t0, t1, fallback_budget),
-            start=t0,
-            end=t1,
-            max_n=max(1, fallback_budget),
-        )
-        if fallback_budget > 0
-        else []
+    sample_stamps = _dense_sample_timestamps(
+        display_start,
+        display_end,
+        interval=interval,
+        max_n=max_sampled,
+    )
+    # 可选弱先验：模型戳若落在出示窗内，优先排到验收前列
+    weak_priors = {
+        round(float(s), 3)
+        for s in (getattr(raw, "keyframe_timestamps", []) or [])
+        if display_start - 1e-6 <= float(s) <= display_end + 1e-6
+    }
+    sample_stamps.sort(
+        key=lambda s: (0 if round(s, 3) in weak_priors else 1, s),
     )
 
     assessment_checkpoint = task_dir / "candidate_assessments.partial.json"
     assessments: list[KeyframeAssessment] = []
-    if assessment_checkpoint.is_file():
+    if not resume_tasks and assessment_checkpoint.is_file():
+        _unlink_quiet(str(assessment_checkpoint))
+    elif resume_tasks and assessment_checkpoint.is_file():
         try:
             saved = json.loads(assessment_checkpoint.read_text(encoding="utf-8"))
             assessments = [KeyframeAssessment.model_validate(item) for item in saved]
@@ -674,93 +732,119 @@ def _materialize_task_images(
             )
             assessments = []
     tried: set[str] = {f"{item.timestamp:.3f}" for item in assessments}
-    frame_dir = task_dir / "candidates"
+    frame_dir = _candidate_frame_dir(video_id, task_id)
+    seen_hashes: list[int] = []
+    pending_for_vlm: list[tuple[float, str, bool]] = []
 
-    def assess(stamps: list[float]) -> None:
-        for stamp in stamps:
-            key = f"{stamp:.3f}"
-            if key in tried:
-                continue
-            tried.add(key)
-            try:
-                paths = extract_keyframes(video_path, [stamp], out_dir=str(frame_dir))
-                paths = _prefix_keyframes(paths, task_id)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "task %s stamp %.3f extract failed: %s",
-                    task_id,
-                    stamp,
-                    exc,
-                )
-                continue
-            if not paths:
-                continue
-            path = paths[0]
-            try:
-                verdict = verify_keyframe(
-                    path,
-                    narrative_context=_frame_narrative_context(
-                        transcript,
-                        stamp=stamp,
-                        task_summary=str(getattr(raw, "task_summary", "") or ""),
-                    ),
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "task %s frame verify failed %.3f: %s",
-                    task_id,
-                    stamp,
-                    exc,
-                )
-                assessments.append(
-                    KeyframeAssessment(
-                        timestamp=float(stamp),
-                        image_path=str(Path(path).resolve()),
-                        kind="error",
-                        reason=f"验收调用失败：{type(exc).__name__}",
-                    )
-                )
-                _write_json(
-                    assessment_checkpoint,
-                    [item.model_dump(mode="json") for item in assessments],
-                )
-                continue
-            kind = verdict.kind
-            # 测试/旧适配器可能只返回 kind；此时保持向后兼容的中性质量。
-            quality = float(getattr(verdict, "quality_score", 0.8))
-            leakage = bool(getattr(verdict, "answer_leakage", False))
-            overlay = bool(getattr(verdict, "tutorial_overlay", False))
-            clean = bool(
-                getattr(verdict, "clean_source", kind == FrameKind.target_photo)
+    for stamp in sample_stamps:
+        key = f"{stamp:.3f}"
+        if key in tried:
+            continue
+        tried.add(key)
+        try:
+            paths = extract_keyframes(video_path, [stamp], out_dir=str(frame_dir))
+            paths = _prefix_keyframes(paths, task_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "task %s stamp %.3f extract failed: %s",
+                task_id,
+                stamp,
+                exc,
             )
+            continue
+        if not paths:
+            continue
+        path = paths[0]
+        dup, image_hash = is_near_duplicate(
+            path, seen_hashes, max_distance=hash_distance
+        )
+        if dup:
+            _unlink_quiet(path)
+            continue
+        if image_hash is not None:
+            seen_hashes.append(image_hash)
+        verdict_pre = prefilter_frame(path)
+        if not verdict_pre.keep:
             assessments.append(
                 KeyframeAssessment(
                     timestamp=float(stamp),
                     image_path=str(Path(path).resolve()),
-                    kind=kind.value,
-                    quality_score=quality,
-                    answer_leakage=leakage,
-                    tutorial_overlay=overlay,
-                    clean_source=clean,
-                    reason=str(getattr(verdict, "reason", "") or ""),
+                    kind="other",
+                    quality_score=0.0,
+                    reason=f"prefilter:{verdict_pre.skip_reason}",
+                )
+            )
+            continue
+        pending_for_vlm.append(
+            (float(stamp), str(Path(path).resolve()), verdict_pre.ui_or_map_penalty)
+        )
+
+    # 优先非 UI/地图惩罚帧；超出 VLM 预算再均匀抽稀
+    pending_for_vlm.sort(key=lambda item: (item[2], item[0]))
+    if len(pending_for_vlm) > max_vlm:
+        keep_stamps = set(
+            subsample_timestamps([p[0] for p in pending_for_vlm], max_vlm)
+        )
+        pending_for_vlm = [p for p in pending_for_vlm if p[0] in keep_stamps][:max_vlm]
+
+    for stamp, path, ui_penalty in pending_for_vlm:
+        try:
+            verdict = verify_keyframe(
+                path,
+                narrative_context=_frame_narrative_context(
+                    transcript,
+                    stamp=stamp,
+                    task_summary=str(getattr(raw, "task_summary", "") or ""),
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "task %s frame verify failed %.3f: %s",
+                task_id,
+                stamp,
+                exc,
+            )
+            assessments.append(
+                KeyframeAssessment(
+                    timestamp=float(stamp),
+                    image_path=path,
+                    kind="error",
+                    reason=f"验收调用失败：{type(exc).__name__}",
                 )
             )
             _write_json(
                 assessment_checkpoint,
                 [item.model_dump(mode="json") for item in assessments],
             )
-
-    assess(initial)
-    has_clean_candidate = any(
-        item.kind == FrameKind.target_photo.value
-        and not item.answer_leakage
-        and not item.tutorial_overlay
-        and item.clean_source
-        and item.quality_score >= quality_floor
-        for item in assessments
-    )
-    if not has_clean_candidate and fallback:
-        assess(fallback)
+            continue
+        kind = verdict.kind
+        quality = float(getattr(verdict, "quality_score", 0.8))
+        if ui_penalty:
+            quality = max(0.0, quality - 0.15)
+        leakage = bool(getattr(verdict, "answer_leakage", False))
+        overlay = bool(getattr(verdict, "tutorial_overlay", False))
+        clean = bool(
+            getattr(verdict, "clean_source", kind == FrameKind.target_photo)
+        )
+        reason = str(getattr(verdict, "reason", "") or "")
+        if ui_penalty:
+            reason = (reason + " | prefilter:ui_or_map_penalty").strip(" |")
+        assessments.append(
+            KeyframeAssessment(
+                timestamp=float(stamp),
+                image_path=path,
+                kind=kind.value,
+                quality_score=quality,
+                answer_leakage=leakage,
+                tutorial_overlay=overlay,
+                clean_source=clean,
+                reason=reason,
+            )
+        )
+        _write_json(
+            assessment_checkpoint,
+            [item.model_dump(mode="json") for item in assessments],
+        )
 
     eligible = [
         item
@@ -802,7 +886,9 @@ def _materialize_task_images(
 
     selected.sort(key=lambda item: item.timestamp)
     selected_stamps = [item.timestamp for item in selected]
-    selected_paths = [item.image_path for item in selected]
+    selected_paths = _promote_selected_images(
+        selected, video_id=video_id, task_id=task_id
+    )
     multi = max_kf > 1
     _write_json(
         assessment_checkpoint,
@@ -810,7 +896,7 @@ def _materialize_task_images(
     )
 
     if not selected:
-        return [], [], multi, assessments, "未找到任何无答案泄露的待定位原图"
+        return [], [], multi, assessments, "出示窗内未找到干净待定位原图"
     if len(selected) < max_kf:
         return (
             selected_stamps,
@@ -873,6 +959,8 @@ def _raw_task_payload(raw: object) -> dict[str, object]:
         "time_start": float(getattr(raw, "time_start", 0.0)),
         "time_end": float(getattr(raw, "time_end", 0.0)),
         "target_kind": target_kind,
+        "display_time_start": getattr(raw, "display_time_start", None),
+        "display_time_end": getattr(raw, "display_time_end", None),
         "keyframe_timestamps": list(getattr(raw, "keyframe_timestamps", []) or []),
         "multi_target_images": bool(getattr(raw, "multi_target_images", False)),
         "segment_start_idx": getattr(raw, "segment_start_idx", None),
@@ -1033,6 +1121,8 @@ def run_audit_split(
                         task.status.value,
                     )
                     continue
+            elif not resume_tasks and task_checkpoint.is_file():
+                _unlink_quiet(str(task_checkpoint))
             t0, t1 = _normalize_task_window(
                 raw,
                 duration=duration,
@@ -1050,7 +1140,7 @@ def run_audit_split(
                 raw_multi,
                 max_kf_cfg,
                 expected_image_count=expected_count,
-                proposed_count=len(getattr(raw, "keyframe_timestamps", []) or [])
+                proposed_count=expected_count
                 if (raw_multi or raw.target_kind == TargetKind.video_derived)
                 else 0,
             )
@@ -1089,6 +1179,7 @@ def run_audit_split(
                         max_kf=max_kf,
                         transcript=transcript,
                         task_dir=task_dir,
+                        resume_tasks=resume_tasks,
                     )
                     if quality_reason:
                         status = TaskStatus.needs_review
