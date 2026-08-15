@@ -8,6 +8,8 @@ from pipeline.schemas.audit import (
     AuditSplitResult,
     GeoTaskSpec,
     KeyframeAssessment,
+    ProcessInterval,
+    ProcessRole,
     TargetKind,
     TaskStatus,
 )
@@ -52,6 +54,8 @@ __all__ = [
     "MatchDecision",
     "ObservationField",
     "ParamSpec",
+    "ProcessInterval",
+    "ProcessRole",
     "RawGivenClue",
     "Stage1Result",
     "TargetKind",

@@ -37,6 +37,30 @@ class AnswerStatus(str, Enum):
     unsolved = "unsolved"
 
 
+class ProcessRole(str, Enum):
+    """过程时间线区间角色（视频过程事实，非 agent 口吻）。"""
+
+    show_source = "show_source"
+    tool = "tool"
+    reveal = "reveal"
+    other = "other"
+
+
+class ProcessInterval(BaseModel):
+    """蒸馏窗内一段过程区间。"""
+
+    start: float
+    end: float
+    role: ProcessRole
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _validate_range(self) -> ProcessInterval:
+        if self.end < self.start:
+            raise ValueError("process interval end 不得小于 start")
+        return self
+
+
 class KeyframeAssessment(BaseModel):
     """候选帧的视觉验收记录，便于人工审计选图。"""
 
@@ -47,6 +71,8 @@ class KeyframeAssessment(BaseModel):
     answer_leakage: bool = False
     tutorial_overlay: bool = False
     clean_source: bool = False
+    evidence_role: str = "unknown"
+    chain_support_score: float = Field(default=0.0, ge=0.0, le=1.0)
     selected: bool = False
     reason: str = ""
 
@@ -64,6 +90,8 @@ class GeoTaskSpec(BaseModel):
     segment_start_idx: int | None = None
     segment_end_idx: int | None = None
     task_summary: str = ""
+    visual_evidence_brief: str = ""
+    process_intervals: list[ProcessInterval] = Field(default_factory=list)
     status: TaskStatus = TaskStatus.accepted
     status_reason: str = ""
     answer_status: AnswerStatus = AnswerStatus.resolved

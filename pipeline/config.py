@@ -64,7 +64,9 @@ class Settings(BaseSettings):
     AUDIT_MAX_VLM_FRAME_VERIFIES: int = 24
     AUDIT_TASK_BOUNDARY_TOLERANCE_SEC: float = 20.0
     AUDIT_MIN_FRAME_QUALITY: float = 0.65
+    AUDIT_MIN_CHAIN_SUPPORT: float = 0.5
     AUDIT_VISUAL_HASH_DISTANCE: int = 6
+    AUDIT_TRAJECTORY_IMAGE_CHECK: bool = True
 
     TOOL_CATALOG_PATH: str = "canonical_tool_catalog.json"
     TOOL_TREES_PATH: str = "tool_trees.json"

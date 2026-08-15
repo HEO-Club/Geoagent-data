@@ -29,6 +29,7 @@ def test_run_one_video_e2e(
     monkeypatch.setenv("TRANSCRIPTS_DIR", str(tmp_path / "transcripts"))
     monkeypatch.setenv("TOOL_TREES_PATH", str(tmp_path / "tool_trees.json"))
     monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("AUDIT_TRAJECTORY_IMAGE_CHECK", "false")
     from pipeline.config import clear_settings_cache
 
     clear_settings_cache()
@@ -204,3 +205,133 @@ def test_run_one_video_reject_skips_downstream(
     assert called["stage2"] == 0
     manifest = orchestrator.load_manifest("skip")
     assert manifest.stages["stage_audit_split"] == "rejected"
+
+
+def test_run_one_video_skips_stage3_on_trajectory_image_conflict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """轨迹–选图明显冲突时跳过 Stage3，不改写 Stage2 产物。"""
+    video = tmp_path / "conflict.mp4"
+    video.write_bytes(b"vid")
+    monkeypatch.setenv("INTERMEDIATE_DIR", str(tmp_path / "intermediate"))
+    monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "output"))
+    monkeypatch.setenv("TRANSCRIPTS_DIR", str(tmp_path / "transcripts"))
+    monkeypatch.setenv("TOOL_TREES_PATH", str(tmp_path / "tool_trees.json"))
+    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("AUDIT_TRAJECTORY_IMAGE_CHECK", "true")
+    from pipeline.config import clear_settings_cache
+
+    clear_settings_cache()
+
+    frame = tmp_path / "frame.jpg"
+    frame.write_bytes(b"jpg")
+
+    def fake_stage1(video_path: str, **kwargs: Any) -> list[TranscriptSegment]:
+        segs = [TranscriptSegment(start=0, end=1, text="红瓦屋顶")]
+        inter = tmp_path / "intermediate" / "conflict"
+        inter.mkdir(parents=True, exist_ok=True)
+        from pipeline.schemas.transcript import Stage1Result
+
+        (inter / "stage1_transcript.json").write_text(
+            Stage1Result(
+                video_id="conflict", video_path=video_path, segments=segs
+            ).model_dump_json(),
+            encoding="utf-8",
+        )
+        return segs
+
+    def fake_audit(
+        video_path: str,
+        transcript: list[TranscriptSegment],
+        **kwargs: Any,
+    ) -> AuditSplitResult:
+        result = AuditSplitResult(
+            video_id="conflict",
+            decision=AuditDecision.accept,
+            reason="单任务",
+            tasks=[
+                GeoTaskSpec(
+                    task_id="conflict__t01",
+                    time_start=0.0,
+                    time_end=1.0,
+                    target_kind=TargetKind.still_image,
+                    keyframe_timestamps=[0.5],
+                    image_paths=[str(frame)],
+                    visual_evidence_brief="红瓦屋顶与宽阔水面",
+                    segment_start_idx=0,
+                    segment_end_idx=0,
+                ),
+            ],
+        )
+        out = Path(kwargs["out_path"])
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(result.model_dump_json(indent=2), encoding="utf-8")
+        return result
+
+    def fake_stage2(
+        video_path: str,
+        transcript: list[TranscriptSegment],
+        **kwargs: Any,
+    ) -> FreeFormTrajectory:
+        traj = FreeFormTrajectory(
+            source_video="conflict",
+            steps=[
+                FreeFormStep(
+                    event_type="reasoning",
+                    thought="图中是红瓦屋顶临水场景",
+                ),
+                FreeFormStep(
+                    event_type="final",
+                    thought="结论",
+                    tool="final_answer",
+                    params={"location": "某地"},
+                    observation=None,
+                ),
+            ],
+        )
+        path = Path(kwargs["out_path"])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(traj.model_dump_json(), encoding="utf-8")
+        return traj
+
+    stage3_called = {"n": 0}
+
+    def fake_stage3(*_a: Any, **_k: Any) -> Any:
+        stage3_called["n"] += 1
+        raise AssertionError("冲突后不应进入 stage3")
+
+    from pipeline.stage_audit_split.trajectory_image_check import (
+        TrajectoryImageConsistencyResult,
+    )
+
+    def fake_check(**_k: Any) -> TrajectoryImageConsistencyResult:
+        return TrajectoryImageConsistencyResult(
+            conflict=True,
+            confidence=0.95,
+            reason="选中图主体与 brief 不是同一场景",
+        )
+
+    monkeypatch.setattr(orchestrator, "run_stage1", fake_stage1)
+    monkeypatch.setattr(orchestrator, "run_audit_split", fake_audit)
+    monkeypatch.setattr(orchestrator, "run_stage2", fake_stage2)
+    monkeypatch.setattr(orchestrator, "run_stage3", fake_stage3)
+    monkeypatch.setattr(
+        orchestrator, "check_trajectory_image_consistency", fake_check
+    )
+
+    entries = orchestrator.run_one_video(str(video), skip_completed=False)
+    assert entries == []
+    assert stage3_called["n"] == 0
+    task_dir = tmp_path / "intermediate" / "conflict" / "tasks" / "conflict__t01"
+    freeform_path = task_dir / "stage2_freeform_tao.json"
+    assert freeform_path.is_file()
+    original = freeform_path.read_text(encoding="utf-8")
+    assert "红瓦屋顶临水场景" in original
+    consistency = task_dir / "image_trajectory_consistency.json"
+    assert consistency.is_file()
+    assert "不是同一场景" in consistency.read_text(encoding="utf-8")
+    manifest = orchestrator.load_manifest("conflict")
+    assert manifest.stages["task:conflict__t01:stage2"] == "done"
+    assert manifest.stages["task:conflict__t01:stage3"] == "needs_review"
+    # 轨迹未被改写
+    assert freeform_path.read_text(encoding="utf-8") == original

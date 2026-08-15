@@ -132,6 +132,132 @@ def prefilter_frame(image_path: str) -> PrefilterVerdict:
     )
 
 
+def _to_gray_array(image_path: str, size: tuple[int, int] | None = None) -> list[list[float]] | None:
+    """读取灰度矩阵；size 给定则缩放。"""
+    try:
+        from PIL import Image
+
+        with Image.open(image_path) as image:
+            gray = image.convert("L")
+            if size is not None:
+                gray = gray.resize(size)
+            w, h = gray.size
+            pixels = list(gray.getdata())
+    except Exception:  # noqa: BLE001
+        return None
+    return [[float(pixels[y * w + x]) for x in range(w)] for y in range(h)]
+
+
+def _ncc(a: list[list[float]], b: list[list[float]]) -> float:
+    """归一化互相关；尺寸不一致或方差过小返回 0。"""
+    if not a or not b or len(a) != len(b) or len(a[0]) != len(b[0]):
+        return 0.0
+    flat_a = [v for row in a for v in row]
+    flat_b = [v for row in b for v in row]
+    n = len(flat_a)
+    if n == 0:
+        return 0.0
+    mean_a = sum(flat_a) / n
+    mean_b = sum(flat_b) / n
+    num = 0.0
+    den_a = 0.0
+    den_b = 0.0
+    for va, vb in zip(flat_a, flat_b, strict=True):
+        da = va - mean_a
+        db = vb - mean_b
+        num += da * db
+        den_a += da * da
+        den_b += db * db
+    if den_a < 1e-6 or den_b < 1e-6:
+        return 0.0
+    return num / ((den_a * den_b) ** 0.5)
+
+
+def _crop_panel(
+    grid: list[list[float]],
+    *,
+    y0: float,
+    y1: float,
+    x0: float,
+    x1: float,
+) -> list[list[float]]:
+    """按相对比例裁切面板。"""
+    h = len(grid)
+    w = len(grid[0]) if grid else 0
+    r0 = max(0, min(h - 1, int(h * y0)))
+    r1 = max(r0 + 1, min(h, int(h * y1)))
+    c0 = max(0, min(w - 1, int(w * x0)))
+    c1 = max(c0 + 1, min(w, int(w * x1)))
+    return [row[c0:c1] for row in grid[r0:r1]]
+
+
+def _resize_grid(grid: list[list[float]], size: tuple[int, int]) -> list[list[float]]:
+    """最近邻缩放到目标尺寸。"""
+    tw, th = size
+    h = len(grid)
+    w = len(grid[0]) if grid else 0
+    if h == 0 or w == 0:
+        return []
+    out: list[list[float]] = []
+    for y in range(th):
+        sy = min(h - 1, int(y * h / th))
+        row: list[float] = []
+        for x in range(tw):
+            sx = min(w - 1, int(x * w / tw))
+            row.append(grid[sy][sx])
+        out.append(row)
+    return out
+
+
+def containment_precheck_score(
+    path_a: str,
+    path_b: str,
+    *,
+    min_score: float = 0.82,
+) -> tuple[str, float]:
+    """廉价检测 B 是否为 A 的面板/放大裁切，或反之。
+
+    Returns:
+        (kind, score)：kind 为 ``none`` / ``a_contains_b`` / ``b_contains_a``。
+        仅当 score >= min_score 时才应强制合并；否则交给 VLM。
+    """
+    # 保留较多细节，避免先缩到同尺寸再切半导致信号过弱
+    grid_a = _to_gray_array(path_a, (160, 96))
+    grid_b = _to_gray_array(path_b, (160, 96))
+    if grid_a is None or grid_b is None:
+        return "none", 0.0
+
+    probe_size = (48, 48)
+    probe_b = _resize_grid(grid_b, probe_size)
+    probe_a = _resize_grid(grid_a, probe_size)
+    panels = (
+        (0.0, 1.0, 0.0, 0.5),  # left
+        (0.0, 1.0, 0.5, 1.0),  # right
+        (0.0, 0.5, 0.0, 1.0),  # top
+        (0.5, 1.0, 0.0, 1.0),  # bottom
+        (0.12, 0.88, 0.12, 0.88),  # center
+        (0.0, 1.0, 0.0, 1.0),  # full
+    )
+
+    def best_contains(
+        container: list[list[float]], probe: list[list[float]]
+    ) -> float:
+        best = 0.0
+        for y0, y1, x0, x1 in panels:
+            crop = _crop_panel(container, y0=y0, y1=y1, x0=x0, x1=x1)
+            crop = _resize_grid(crop, probe_size)
+            best = max(best, _ncc(crop, probe))
+        return best
+
+    score_ab = best_contains(grid_a, probe_b)
+    score_ba = best_contains(grid_b, probe_a)
+    if score_ab >= score_ba and score_ab >= float(min_score):
+        return "a_contains_b", float(score_ab)
+    if score_ba > score_ab and score_ba >= float(min_score):
+        return "b_contains_a", float(score_ba)
+    return "none", float(max(score_ab, score_ba))
+
+
 def subsample_timestamps(stamps: list[float], max_n: int) -> list[float]:
     """均匀抽稀到最多 max_n 个时间戳，保持端点覆盖。"""
     if max_n <= 0 or not stamps:

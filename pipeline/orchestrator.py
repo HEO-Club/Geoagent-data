@@ -19,6 +19,9 @@ from pipeline.stage_audit_split.run import (
     run_audit_split,
     slice_transcript_for_task,
 )
+from pipeline.stage_audit_split.trajectory_image_check import (
+    check_trajectory_image_consistency,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +187,29 @@ def run_one_video(
         freeform = load_freeform(freeform_path)
         if freeform.source_video != vid:
             freeform.source_video = vid
+
+        consistency_path = task_dir / "image_trajectory_consistency.json"
+        if settings.AUDIT_TRAJECTORY_IMAGE_CHECK:
+            consistency = check_trajectory_image_consistency(
+                image_paths=task_images,
+                visual_evidence_brief=str(
+                    getattr(task, "visual_evidence_brief", "") or ""
+                ),
+                trajectory=freeform,
+            )
+            consistency_path.write_text(
+                consistency.model_dump_json(indent=2),
+                encoding="utf-8",
+            )
+            if consistency.conflict:
+                manifest.stages[stage3_key] = "needs_review"
+                save_manifest(manifest)
+                logger.info(
+                    "skip stage3 for %s: trajectory-image conflict (%s)",
+                    task.task_id,
+                    consistency.reason,
+                )
+                continue
 
         if not (
             skip_completed

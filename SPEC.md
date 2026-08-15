@@ -1,7 +1,7 @@
 # 图片地理定位 Agent 训练数据集生成流水线 — 项目规格
 
-版本：3.3.2 | 生成时间：2026-08-13
-修订说明：v3.3.2 将数据落盘三分：`data/selected/` 仅最终选图，`data/intermediate/` 仅阶段 JSON/门禁元数据，密采样探测帧进 `.cache/audit_candidates/`；跑批摘要进 `data/runs/`。v3.3.1 将阶段1.5 选图改为蒸馏窗与出示窗分离：模型只给出示粗窗与独立输入张数，候选在出示窗内密采样并经廉价过滤后再 VLM 择优，不再以精确关键帧秒数为主提案。v3.3.0 将阶段2改为 `reasoning / tool_call / final` 三类事件；阶段3引入执行器级 Canonical Tool 目录。旧规格见 `SPEC_legacy_v2.md`。
+版本：3.3.7 | 生成时间：2026-08-15
+修订说明：v3.3.7 条件式复核的「明确答案重复」改为：多 resolved task 时用 LLM 判定最终地点是否同地/同答案链（字符串全等仅作零成本正例短路），命中后再走双向复核；不得靠措辞归一化猜同地。v3.3.6 源输入归并改为「包含/放大硬合并 + 是否同一张照片」两两判定（union-find）；brief 只核验画面事实、不作张数配额；拼图中已出现的一格全屏再出示必须同组。v3.3.5 选图密采样改为过程时间线：蒸馏窗字幕抽取多段 `process_intervals`（`show_source`/`tool`/`reveal`/`other`），只在 `show_source` 并集内密采样；逐帧注入区间角色软先验；时间线失败回退单出示粗窗；多段不相邻出示却只选出 1 张且 brief 非空 → `needs_review`；Stage 2 后置门禁可拦「轨迹明确依赖第二份输入却只选 1 张」。v3.3.4 选图改为定位链证据对齐：题级 `visual_evidence_brief` + 逐帧 `evidence_role`/`chain_support_score`；组间按证据支撑择优、组内仍按干净度；Stage 2 后可选轨迹–选图一致性门禁（只拦入库、不换图）。v3.3.3 取消审核模型预定选图张数；选图改为每题「最小源输入集」（出示连续段折叠 + 源输入关系判定），`expected_image_count` 仅记录实选张数。v3.3.2 将数据落盘三分：`data/selected/` 仅最终选图，`data/intermediate/` 仅阶段 JSON/门禁元数据，密采样探测帧进 `.cache/audit_candidates/`；跑批摘要进 `data/runs/`。v3.3.1 将阶段1.5 选图改为蒸馏窗与出示窗分离。v3.3.0 将阶段2改为 `reasoning / tool_call / final` 三类事件；阶段3引入执行器级 Canonical Tool 目录。旧规格见 `SPEC_legacy_v2.md`。
 
 ## 0. 给 Cursor 的元指令（先读这一段）
 
@@ -32,15 +32,15 @@
 2. **阶段1.5（审核切分）**：结合字幕 + 稀疏抽帧做语义审核（禁止词表特判）：
    - **拒识主问句**：去掉讲解/旁白/答案后，是否仍存在需 agent 定位的图或场景？无 → `decision=reject`。
    - **切分粒度**：一个 task = 一次独立定位题 = 一条最终 `final_answer` 链。同题多图（共同支撑同一地点、或后图精化前图）合并为 **一个** task 且 `multi_target_images=true`；**同一最终地点必须合并为一个 task**；仅不同目标/不同最终地点才拆多 task。
-   - **条件式复核**：首次切分由模型负责。规则只检查高精度结构矛盾（模型主动低置信、明确答案重复、resolved 却无地点、时间窗与候选严重冲突等）；无异常不重复调用模型。触发后由模型保守地双向复核，可合并过拆，也可补拆漏题；不得为了体现复核而改动正确切分。
+   - **条件式复核**：首次切分由模型负责。规则只检查高精度结构矛盾（模型主动低置信、resolved 却无地点、时间窗与候选严重冲突等）以及**答案同地嫌疑**：≥2 个 `resolved` task 时，最终地点字符串全等可直接视为重复；若措辞不同，另用一次廉价 LLM（可带字幕上下文）判定是否同一最终地点或同一答案链（同题多图/后图精化），命中则记异常。无异常不重复调用双向复核模型。触发后由模型保守地双向复核，可合并过拆，也可补拆漏题；不得为了体现复核而改动正确切分；不得用脆弱地名归一化/词表代替同地判定。
    - **蒸馏窗**：`time_start`/`time_end`（及可选 segment 索引）覆盖**整条答案链旁白**（问题设定 → 推理比对叙述 → 最终地点结论），不得裁成仅关键帧中段；蒸馏窗只管 Stage 2 字幕切片完整性，**不得**作为密采样选图区间。
-   - **出示窗（选图）**：审核模型另给每题展示待定位实拍的粗区间（秒级即可）与 `expected_image_count`；**不再以精确关键帧秒数为主提案**。候选只在出示窗内产生，且必须裁进蒸馏窗、不得跨相邻题。缺失出示窗时用蒸馏窗前段封顶作后备粗窗。
-   - **关键帧 = 待定位实拍输入**（去掉讲解后 agent 仍要据之定位的现场/静帧）。出示窗内密采样 → 廉价视觉过滤（近重复/近黑/明显地图或大面积 UI 降权）→ VLM 逐帧验收与择优。找不到干净 (A) 时 `needs_review`，禁止把密采样扩大到整条蒸馏窗狂打 VLM。
-   - **逐帧质量验收与择优**：VLM 对候选分别输出角色、质量、答案泄露、讲解覆盖和干净原图标记。普通 `still_image` 可比较多张候选，但最终只保留质量最高的一张；工具/核验/揭晓帧不得入 `image_paths`，含最终答案泄露的帧不得入库。时间距离不得用于判断重复，使用视觉哈希去除同图变体。
-   - **`video_derived` / 同题多输入**：在出示窗内密采样后，按独立实拍镜头的视觉非重复与质量择优保留（张数随 `expected_image_count` 走，受配置上限约束）；不得用工具步骤或揭晓帧充数。
-   - **答案与 task 门禁**：每题分别输出 `answer_status=resolved|ambiguous|unsolved` 与 `status=accepted|needs_review|rejected`。只有答案唯一明确、图片完整干净的 `accepted` task 进入 Stage 2；模棱两可或明确无解的题单独拒绝，选图不足进入人工复核，均不得影响同视频其他题。
-   - 数量：`still_image` 默认输出 1 张最佳帧；`multi_target_images` 或 `video_derived` 按 `expected_image_count` 保留各独立输入，不再硬编码为 2 张。
-3. **阶段2（自由事件轨迹）**：优先接收 Stage 1.5 的单题字幕切片 + `image_paths`；若上游拆题不可用而收到整视频，则恢复字幕级保险，识别全部独立定位题，并令末步 `location` 以字符串数组按讲解顺序列出全部最终地点。事件分为 `reasoning / tool_call / final`：直接看图、合并已有证据、比较、筛选、排除、排名、形成目标签名和计划转向只写 reasoning；只有真实访问外部搜索、数据库、地图/街景/卫星/天气服务或执行图像/GIS/计算程序并产生新证据时才写 tool_call + Observation。允许连续 reasoning，但每条必须完成实质认知更新；只为解释下一次调用的一句话并入该 tool_call 的 Thought。产物禁止「求助者/网友/评论区」等渠道元话语，末步严格为 `event_type=final`、`final_answer`、`params.location`、`observation=null`。
+   - **出示窗（选图）**：审核模型仍可给单段出示粗窗（弱先验）。选图前另从蒸馏窗字幕抽取题级 **过程时间线** `process_intervals`（角色：`show_source` / `tool` / `reveal` / `other`；可用稀疏审计帧，不为时间线再密采样）。**密采样区间 = 所有 `show_source` 的并集**，裁进蒸馏窗、不得跨相邻题；`display_time_start/end` 记为该并集包络（时间线失败或无 `show_source` 时回退现行单出示粗窗 / 蒸馏窗前段封顶）。**不再报预定张数，也不再以精确关键帧秒数为主提案**。禁止把密采样扩大到整条蒸馏窗或 `tool`/`reveal` 段狂打 VLM。
+   - **关键帧 = 定位链实际依赖的待定位实拍**（去掉讲解后 agent 仍要据之定位的现场/静帧）。选图目标是每题 **最小源输入集**（不是出示窗内任意干净实拍，也不是凑字幕估数/视觉簇个数）。流程：蒸馏窗字幕抽取题级 **`visual_evidence_brief`**（仅「看原图/现场时用到的视觉事实」，不含工具核验/搜索命中/揭晓）→ 抽取 `process_intervals` → 仅在 `show_source` 并集密采样 → 廉价视觉过滤（近黑/明显地图或大面积 UI 降权）→ VLM 逐帧验收（注入该时刻区间角色软先验）→ **出示连续段折叠**（`unused_broll` 与工具/揭晓一样打断连续段；每段只留质量最高代表）→ **源输入关系判定**（先做包含/放大硬合并：拼图一格的全屏再出示、裁切放大必须同组且优先留更完整帧；再两两判定是否同一张照片：`same_photo` / `same_scene` / `different_photo` / `not_input`，union-find 聚合；brief 只核验画面事实、**不得**当作张数配额；不得因「两段出示窗」硬拆成两张；不确定是否同一张照片时仍合并）→ 组间按证据支撑排序、组内按干净度择优 → 配置上限截断。找不到干净 (A)、有 brief 但支撑过低、或时间线给出 ≥2 段不相邻 `show_source` 却只选出 1 张且 brief 非空时 `needs_review`；禁止用空镜/`unused_broll`/工具帧充数。
+   - **逐帧验收与择优**：VLM 对候选分别输出 `kind`、质量、答案泄露、讲解覆盖、干净原图标记，以及 **`evidence_role`**（`problem_input` / `unused_broll` / `process_tool` / `reveal` / …）与 **`chain_support_score`**（画面支撑 brief 视觉事实的程度）。区间角色为软先验：画面仍是最终裁判；`tool`/`reveal` 降低「全屏建筑 = 原图」倾向。择优顺序：**证据角色/支撑分 → 干净原图 → 无讲解覆盖 → 质量分**（思维链选源，干净度选帧）。工具/核验/揭晓帧不得入 `image_paths`，含最终答案泄露的帧不得入库。不得用时间距离判断「是否新输入」；不确定是否同一张照片时不追加。画面主体场景结构明显不同（不同建筑立面/店面/路幅，非同一取景远近）必须判为不同原图。brief 为空时回退现行质量择优路径。
+   - **`video_derived` / 同题多输入**：默认 1 个现场代表帧；同一飞行/同一段路的换机位不加张。多张只来自被判定为不同的源输入（不同原图或另一段独立现场），受配置上限约束；不得用工具步骤或揭晓帧充数。
+   - **答案与 task 门禁**：每题分别输出 `answer_status=resolved|ambiguous|unsolved` 与 `status=accepted|needs_review|rejected`。只有答案唯一明确、图片完整干净的 `accepted` task 进入 Stage 2；模棱两可或明确无解的题单独拒绝，选图失败进入人工复核，均不得影响同视频其他题。切题过粗（一题塞多个最终地点）走结构复核，**不在选图里用答案个数定张数**。
+   - 数量：普通静图默认 1 张最佳帧；多张只来自源输入关系判定为不同；`expected_image_count` / `multi_target_images` 为选完后的实选结果（`len(image_paths)` / `>1`），不作预定配额。
+3. **阶段2（自由事件轨迹）**：优先接收 Stage 1.5 的单题字幕切片 + `image_paths`；若上游拆题不可用而收到整视频，则恢复字幕级保险，识别全部独立定位题，并令末步 `location` 以字符串数组按讲解顺序列出全部最终地点。事件分为 `reasoning / tool_call / final`：直接看图、合并已有证据、比较、筛选、排除、排名、形成目标签名和计划转向只写 reasoning；只有真实访问外部搜索、数据库、地图/街景/卫星/天气服务或执行图像/GIS/计算程序并产生新证据时才写 tool_call + Observation。允许连续 reasoning，但每条必须完成实质认知更新；只为解释下一次调用的一句话并入该 tool_call 的 Thought。产物禁止「求助者/网友/评论区」等渠道元话语，末步严格为 `event_type=final`、`final_answer`、`params.location`、`observation=null`。生成成功后可选 **轨迹–选图–brief 一致性门禁**（高精度冲突才拦）：含「开篇 reasoning 明确依赖第二份独立输入但 `image_paths` 只有 1 张」；冲突则跳过 Stage 3 入库，**不换图、不重蒸、不改轨迹**。过程时间线不得写入阶段2 prompt。
 4. **阶段3（执行器级归并与格式化）**：**按 task** 从 `canonical_tool_catalog.json` 加载小型执行器目录，结合自由 Tool 的 Thought、Params、Observation 和调用上下文进行语义归并。同一执行器的不同用途通过 `operation` 区分，不得因参数或目标对象不同拆成新工具；调用参数统一为 `operation + purpose + inputs`，其中 `inputs` 宽容保留原始字段。确无同类执行器时，模型可严格生成含 description/executor/usage/operations 的新 Tool 定义；高置信伪工具可降回 reasoning。最后写入 `working_scope`、标准 JSONL 和 `stage3_tool_mapping.json` 审计指标。
 ### 1.3 输入
 

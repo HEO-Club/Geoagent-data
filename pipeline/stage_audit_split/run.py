@@ -19,6 +19,8 @@ from pipeline.schemas.audit import (
     AuditSplitResult,
     GeoTaskSpec,
     KeyframeAssessment,
+    ProcessInterval,
+    ProcessRole,
     TargetKind,
     TaskStatus,
 )
@@ -42,7 +44,8 @@ AUDIT_SYSTEM_HINT = (
     "- (C) 答案揭晓：钉点指出「就是这里」、揭晓界面等。\n"
     "切分粒度（关键）：一个 task = 一次独立定位题 = 一条最终答案链。\n"
     "- 同题多图（多张待定位原图共同支撑同一最终地点，或后图只是精化前图）"
-    "必须合并为 **一个** task，设 multi_target_images=true。\n"
+    "必须合并为 **一个** task；下游会按画面判定源输入，"
+    "**不要**用旁白里的「第一张/再看/两张照片」去预定选图张数。\n"
     "- **同一最终地点 / 同一条答案链必须合并为一个 task**"
     "（即使线索形态不同，如环境特征与建筑外观）。\n"
     "- 仅当不同目标、不同最终地点、彼此独立出题时才拆成多个 task。\n"
@@ -57,12 +60,11 @@ AUDIT_SYSTEM_HINT = (
     "- display_time_start/display_time_end = **出示粗窗**："
     "主画面实际展示待定位实拍 (A) 的大约区间（秒级粗估即可）；"
     "须落在蒸馏窗内；不要把地图比对、街景核验、钉点揭晓段放进出示窗。\n"
-    "expected_image_count：独立 (A) 实拍输入张数；"
-    "still_image 非同题多图默认 1；multi_target_images/video_derived 按独立镜头数填写。\n"
-    "**不要**把精确关键帧秒数当作主职责；keyframe_timestamps 可选，仅作弱先验。"
-    "下游会在出示窗内密采样并验收选图。\n"
+    "**不要**预定 expected_image_count 或精确关键帧秒数；"
+    "keyframe_timestamps 可选，仅作弱先验。"
+    "下游会在出示窗内密采样，并构造最小源输入集。\n"
     "每个 task 给出 time_start/time_end、display_time_start/display_time_end、"
-    "multi_target_images、expected_image_count、可选 segment 索引、task_summary。\n"
+    "可选 segment 索引、task_summary。\n"
     "答案质量门禁：每个 task 必须给 answer_status 与 final_location_text：\n"
     "- resolved：旁白明确给出唯一最终地点；final_location_text 原样概括该地点；\n"
     "- ambiguous：存在冲突答案、只有不确定猜测或只能缩小到模糊范围；\n"
@@ -77,16 +79,16 @@ AUDIT_SYSTEM_HINT = (
 FRAME_VERIFY_HINT = (
     "判断这张视频截帧是否可作为「定位输入」写入训练关键帧。"
     "逐帧输出 kind、quality_score、answer_leakage、tutorial_overlay、"
-    "clean_source 与简短 reason。用过程角色判断，不要按控件/App 品类清单执法。\n"
+    "clean_source、evidence_role、chain_support_score 与简短 reason。"
+    "用过程角色判断，不要按控件/App 品类清单执法。\n"
     "先问：这是被定位的实拍，还是解题时调用的工具/核验画面？\n"
     "- target_photo：主画面是待定位的实拍场景"
     "（地面/现场镜头、静帧照片或目标建筑外观实拍占主画面）。"
     "即使叠有讲解字幕、箭头、方位字，主体仍可判 target_photo；但如果这些内容"
-    "是讲解过程后来添加的推理标注，则 tutorial_overlay=true、clean_source=false。"
-    "全屏建筑外观实拍即使夹在核验旁白时间线，仍判 target_photo。\n"
+    "是讲解过程后来添加的推理标注，则 tutorial_overlay=true、clean_source=false。\n"
     "- teaching_ui：主内容是定位过程中的工具或核验画面"
-    "（用地图/影像底图比对、街景浏览、答案钉点揭晓等），"
-    "即使画面「很地理」也不是待定位输入；"
+    "（用地图/影像底图比对、街景浏览、搜索结果页、答案钉点揭晓等），"
+    "即使画面「很地理」或主体是全屏建筑外观，也不是待定位输入；"
     "亦含纯讲解辅助可视化或过程推演板。\n"
     "不得仅因源实拍上有讲解标注就判 teaching_ui；"
     "也不得把工具步骤画面当成 target_photo。\n"
@@ -97,6 +99,69 @@ FRAME_VERIFY_HINT = (
     "大面积字幕、后加红线/箭头、裁切遮挡或只是拼贴中的小区域应降低。"
     "若画面直接出现最终答案地名、答案钉点或足以泄露结论的标注，"
     "answer_leakage=true；原题自带且不泄露答案的文字线索不算泄露。"
+    "不要仅因邻近旁白写出了最终地点就把画面标为 answer_leakage；"
+    "answer_leakage 仍要求画面本身可见答案。\n"
+    "evidence_role（与 kind 配合，禁止 App 词表）：\n"
+    "- problem_input：本条定位链正在观察/比较的待定位实拍；\n"
+    "- unused_broll：看起来像实拍，但视觉证据简报与邻近叙事都未把它当定位输入"
+    "（片头空镜、过场风景、未引用镜头）；\n"
+    "- process_tool：工具/核验步骤画面；\n"
+    "- reveal：答案揭晓；\n"
+    "- other / unknown：其余或无法判断。\n"
+    "chain_support_score：画面能支撑证据简报中视觉事实的程度（0~1）。"
+    "无简报时对 target_photo 可给中性分（约 0.5），对 unused_broll/工具/揭晓给低分。"
+)
+
+PROCESS_TIMELINE_HINT = (
+    "根据本定位题蒸馏窗旁白，按时间顺序列出过程区间 process_intervals。\n"
+    "角色仅四种：\n"
+    "- show_source：主画面正在出示待定位原图/现场（可有多段；同一原图稍后再次出示"
+    "仍可再标一段 show_source，下游会做同源合并）；\n"
+    "- tool：搜索/地图/街景/卫星/核验等外部动作或工具画面；\n"
+    "- reveal：钉点揭晓、明确指出最终地点的界面；\n"
+    "- other：开场、过场、空镜、闲聊等。\n"
+    "区间须落在给出的蒸馏窗内；粗估秒级即可；尽量互不重叠。"
+    "后段核验同地点仍是 tool/reveal，不是新的 show_source。"
+    "不确定时宁可标 other，不要把整段蒸馏窗标成一段 show_source。"
+    "不要预定选图张数；禁止使用 groundtruth。"
+)
+
+EVIDENCE_BRIEF_HINT = (
+    "从本定位题的蒸馏窗旁白中，抽取解题者**从待定位图/现场读出并用于缩小范围**"
+    "的视觉事实，写成简短 visual_evidence_brief（一两段即可）。\n"
+    "只保留画面上可观察的线索：建筑形态、植被、朝向/光影、招牌文字形态、"
+    "水面走向、地形轮廓等。\n"
+    "明确排除：地图/街景/卫星核验结果、搜索命中、钉点揭晓、开场空镜描述、"
+    "与看图无关的社交闲聊。\n"
+    "不要预定选图张数；不确定是否第二张独立原图时不要写「必须两张」。\n"
+    "旁白不足以概括视觉证据时 brief 可为空字符串，不要发明事实。"
+)
+
+SOURCE_IDENTITY_HINT = (
+    "比较两张候选截帧，判断它们是否为同一张待定位照片。\n"
+    "只问「是不是同一张照片」，不要问「brief 需要几张图」。\n"
+    "关系仅四类：\n"
+    "- same_photo：同一静图的再展示、改字幕、虚化边、放大/裁切、"
+    "或拼图中已经出现的同一格后来全屏再出示；\n"
+    "- same_scene：仅当 target_kind=video_derived 时，同一连续现场的换机位；\n"
+    "- different_photo：另一张静图，即使同一人、同一天、同一条定位题、"
+    "用来核验同地点；画面主体场景结构明显不同"
+    "（不同建筑立面/店面/路幅，不是同一取景的远近）必须选此项；\n"
+    "- not_input：其中任一实际是工具/核验/揭晓（a_not_input / b_not_input / "
+    "both_not_input）。\n"
+    "禁止：用「图一/图二」去凑两组；用「都是路中站人」合并；"
+    "把拼图算成第三张源；用时间间隔作依据。\n"
+    "视觉证据简报只用于核验画面有没有那些视觉事实，不得用来决定要几个 group。\n"
+    "不确定是 same_photo 还是 different_photo 时选 same_photo（宁可少一张）。"
+)
+
+CONTAINMENT_HINT = (
+    "判断两张截帧的包含/放大关系（不看时间戳）。\n"
+    "- a_contains_b：A 是左右/上下拼图或更完整帧，B 是 A 中某一格的放大/裁切"
+    "或虚化衬底上的同一原图；\n"
+    "- b_contains_a：反之；\n"
+    "- none：互不包含。\n"
+    "仅在高置信时输出非 none；构图仅相似但不是同一照片区域则 none。"
 )
 
 
@@ -106,6 +171,17 @@ class FrameKind(str, Enum):
     target_photo = "target_photo"
     teaching_ui = "teaching_ui"
     other = "other"
+
+
+class EvidenceRole(str, Enum):
+    """候选帧在定位链中的证据角色。"""
+
+    problem_input = "problem_input"
+    unused_broll = "unused_broll"
+    process_tool = "process_tool"
+    reveal = "reveal"
+    other = "other"
+    unknown = "unknown"
 
 
 class _LLMGeoTaskDraft(BaseModel):
@@ -145,6 +221,80 @@ class _LLMFrameVerdict(BaseModel):
     answer_leakage: bool = False
     tutorial_overlay: bool = False
     clean_source: bool = False
+    evidence_role: EvidenceRole = EvidenceRole.unknown
+    chain_support_score: float = Field(default=0.5, ge=0.0, le=1.0)
+    reason: str = ""
+
+
+class _LLMEvidenceBrief(BaseModel):
+    """题级视觉证据简报（纯文本，不看图）。"""
+
+    visual_evidence_brief: str = ""
+
+
+class _LLMProcessInterval(BaseModel):
+    """过程时间线单段（LLM 草稿）。"""
+
+    start: float
+    end: float
+    role: ProcessRole
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+
+
+class _LLMProcessTimeline(BaseModel):
+    """题级过程时间线抽取结果。"""
+
+    intervals: list[_LLMProcessInterval] = Field(default_factory=list)
+
+
+class _SourceGroupItem(BaseModel):
+    """源输入归并中的单帧归属（旧契约，测试兼容）。"""
+
+    index: int = Field(ge=0)
+    source_group: int = Field(
+        description="-1=not_input；非负整数表示源输入组 id"
+    )
+    reason: str = ""
+
+
+class _LLMSourceIdentityResult(BaseModel):
+    """出示段代表帧的源输入归并结果（旧契约，测试兼容）。"""
+
+    items: list[_SourceGroupItem] = Field(default_factory=list)
+
+
+class ContainmentKind(str, Enum):
+    """两帧包含/放大关系。"""
+
+    none = "none"
+    a_contains_b = "a_contains_b"
+    b_contains_a = "b_contains_a"
+
+
+class _LLMContainmentVerdict(BaseModel):
+    """两帧包含关系判定。"""
+
+    containment: ContainmentKind = ContainmentKind.none
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    reason: str = ""
+
+
+class PhotoRelation(str, Enum):
+    """两帧是否同一张照片。"""
+
+    same_photo = "same_photo"
+    same_scene = "same_scene"
+    different_photo = "different_photo"
+    a_not_input = "a_not_input"
+    b_not_input = "b_not_input"
+    both_not_input = "both_not_input"
+
+
+class _LLMPhotoRelationVerdict(BaseModel):
+    """两帧照片关系判定。"""
+
+    relation: PhotoRelation = PhotoRelation.same_photo
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     reason: str = ""
 
 
@@ -152,6 +302,22 @@ class _LLMTaskMergeResult(BaseModel):
     """条件触发的双向切分复核（可合并，也可补拆）。"""
 
     tasks: list[_LLMGeoTaskDraft] = Field(default_factory=list)
+    reason: str = ""
+
+
+class _SamePlacePair(BaseModel):
+    """两个 resolved task 的最终地点是否同地/同链。"""
+
+    task_i: int = Field(ge=1, description="1-based task 序号")
+    task_j: int = Field(ge=1, description="1-based task 序号")
+    same_place_or_chain: bool = False
+    reason: str = ""
+
+
+class _LLMSamePlaceGate(BaseModel):
+    """多 task 措辞不同时的廉价同地门禁（只触发复核，不直接改切分）。"""
+
+    pairs: list[_SamePlacePair] = Field(default_factory=list)
     reason: str = ""
 
 
@@ -168,6 +334,101 @@ def _enumerates_parallel_inputs(value: str) -> bool:
         flags=re.IGNORECASE,
     )
     return len(set(markers)) >= 2
+
+
+def _resolved_location_entries(
+    draft_tasks: list[_LLMGeoTaskDraft],
+) -> list[tuple[int, str, str]]:
+    """返回 (1-based index, raw location, normalized key) 列表。"""
+    entries: list[tuple[int, str, str]] = []
+    for i, task in enumerate(draft_tasks, start=1):
+        answer_status = getattr(task, "answer_status", AnswerStatus.resolved)
+        if answer_status != AnswerStatus.resolved:
+            continue
+        raw = str(getattr(task, "final_location_text", "") or "").strip()
+        if not raw:
+            continue
+        entries.append((i, raw, _normalize_location_key(raw)))
+    return entries
+
+
+def _has_exact_duplicate_location_keys(entries: list[tuple[int, str, str]]) -> bool:
+    keys = [key for _, _, key in entries if key]
+    return len(keys) != len(set(keys))
+
+
+def _llm_same_place_anomalies(
+    draft_tasks: list[_LLMGeoTaskDraft],
+    *,
+    transcript: list[TranscriptSegment],
+    overview_images: list[str] | None,
+) -> list[str]:
+    """措辞不同的多 resolved 地点：用 LLM 判定是否同地/同链，命中则触发复核。"""
+    entries = _resolved_location_entries(draft_tasks)
+    if len(entries) < 2:
+        return []
+    if _has_exact_duplicate_location_keys(entries):
+        # 字符串全等已由客观异常覆盖，无需再花一次同地门禁。
+        return []
+
+    payload = []
+    for i, task in enumerate(draft_tasks, start=1):
+        payload.append(
+            {
+                "task_index": i,
+                "time_start": float(task.time_start),
+                "time_end": float(task.time_end),
+                "task_summary": str(getattr(task, "task_summary", "") or ""),
+                "answer_status": (
+                    getattr(task, "answer_status", AnswerStatus.resolved).value
+                    if isinstance(
+                        getattr(task, "answer_status", AnswerStatus.resolved), Enum
+                    )
+                    else str(getattr(task, "answer_status", AnswerStatus.resolved))
+                ),
+                "final_location_text": str(
+                    getattr(task, "final_location_text", "") or ""
+                ),
+            }
+        )
+    prompt = (
+        "以下是首次审核得到的多个 resolved task。"
+        "它们的最终地点字符串并不完全相同。"
+        "请两两判断：是否其实是同一最终地点，或同一条答案链"
+        "（同题多图共同支撑一地 / 后图精化前图）。\n"
+        "- same_place_or_chain=true：应合并为同一个 task，属过拆嫌疑；\n"
+        "- same_place_or_chain=false：确实是不同目标、不同最终地点。\n"
+        "只做同地/同链判定，不要输出新的切分结果。"
+        "不确定时宁可判 true（交给后续保守双向复核）。\n"
+        f"tasks JSON:\n{json.dumps(payload, ensure_ascii=False)}\n"
+        "字幕（供判断是否同一条讲解链）：\n"
+        f"{_format_transcript(transcript)}\n"
+        "请输出所有需要比较的 task 对（至少覆盖全部 resolved 两两组合）与简短 reason。"
+    )
+    try:
+        gate = call_structured(
+            prompt,
+            _LLMSamePlaceGate,
+            images=overview_images or None,
+            lane="llm",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("same-place gate failed: %s", exc)
+        return []
+
+    hits: list[str] = []
+    for pair in gate.pairs or []:
+        if not bool(pair.same_place_or_chain):
+            continue
+        i = int(pair.task_i)
+        j = int(pair.task_j)
+        detail = str(pair.reason or gate.reason or "").strip()
+        suffix = f"（{detail}）" if detail else ""
+        hits.append(
+            f"task {i} 与 task {j} 经模型判定为同一最终地点或同一答案链，"
+            f"疑似同题过拆{suffix}"
+        )
+    return hits
 
 
 def _objective_split_anomalies(
@@ -213,7 +474,6 @@ def _objective_split_anomalies(
                 resolved_locations.setdefault(key, []).append(i)
             if (
                 bool(getattr(task, "multi_target_images", False))
-                and int(getattr(task, "expected_image_count", 1) or 1) >= 2
                 and _enumerates_parallel_inputs(final_location)
             ):
                 anomalies.append(
@@ -241,12 +501,21 @@ def _maybe_review_task_split(
     model_requests_review: bool,
     boundary_tolerance: float,
 ) -> list[_LLMGeoTaskDraft]:
-    """只在客观异常或模型低置信时复核，避免重复改坏正确切分。"""
+    """只在客观异常、同地嫌疑或模型低置信时复核，避免重复改坏正确切分。"""
     anomalies = _objective_split_anomalies(
         draft_tasks,
         duration=duration,
         boundary_tolerance=boundary_tolerance,
     )
+    # 措辞不同但可能同地/同链：先廉价 LLM 门禁，命中再进入双向复核。
+    if not any("完全相同的明确最终地点" in a for a in anomalies):
+        anomalies.extend(
+            _llm_same_place_anomalies(
+                draft_tasks,
+                transcript=transcript,
+                overview_images=overview_images,
+            )
+        )
     should_review = (
         bool(model_requests_review) or float(split_confidence) < 0.65 or bool(anomalies)
     )
@@ -276,7 +545,6 @@ def _maybe_review_task_split(
                 else str(getattr(t, "answer_status", AnswerStatus.resolved))
             ),
             "final_location_text": str(getattr(t, "final_location_text", "") or ""),
-            "expected_image_count": int(getattr(t, "expected_image_count", 1) or 1),
         }
         for t in draft_tasks
     ]
@@ -287,15 +555,15 @@ def _maybe_review_task_split(
         "请保守复核：如果现有切分正确，必须原样保留，不要为了体现复核而修改。\n"
         "一个 task = 一次独立定位题 = 一条最终答案。\n"
         "若多张待定位原图共同支撑同一最终地点（或后图精化前图），"
-        "必须合并为 **一个** task，设 multi_target_images=true，"
-        "并给出 display 出示粗窗与 expected_image_count。\n"
+        "必须合并为 **一个** task，并给出 display 出示粗窗；"
+        "**不要**预定选图张数。\n"
         "**同一最终地点 / 同一条答案链必须合并**"
         "（即使线索形态不同，如河道环境与建筑外观）。\n"
         "仅当不同目标、不同最终地点时才保留多个 task。"
         "如果一个 task 内实际含多条独立最终答案链，必须补拆；"
         "如果多个 task 属于同一最终答案链，必须合并。\n"
         "每个结果 task 继续填写 answer_status、final_location_text、"
-        "expected_image_count、display_time_start/display_time_end。\n"
+        "display_time_start/display_time_end。\n"
         f"视频 ID: {video_id}\n"
         f"当前 tasks JSON:\n{json.dumps(payload, ensure_ascii=False)}\n"
         "字幕：\n"
@@ -459,6 +727,118 @@ def _resolve_display_window(
     return lo, end
 
 
+def _clip_process_intervals(
+    intervals: list[ProcessInterval],
+    *,
+    distill_start: float,
+    distill_end: float,
+) -> list[ProcessInterval]:
+    """裁剪到蒸馏窗内并丢弃无效/过短区间。"""
+    lo = max(0.0, float(distill_start))
+    hi = max(lo, float(distill_end))
+    cleaned: list[ProcessInterval] = []
+    for item in intervals:
+        start = min(max(float(item.start), lo), hi)
+        end = min(max(float(item.end), lo), hi)
+        if end < start:
+            start, end = end, start
+        if end <= start + 1e-3:
+            continue
+        cleaned.append(
+            ProcessInterval(
+                start=start,
+                end=end,
+                role=item.role,
+                confidence=float(item.confidence),
+            )
+        )
+    cleaned.sort(key=lambda x: (x.start, x.end))
+    return cleaned
+
+
+def _show_source_windows(
+    intervals: list[ProcessInterval],
+) -> list[tuple[float, float]]:
+    """合并相邻/重叠的 show_source 段，返回采样窗列表。"""
+    shows = [
+        (float(item.start), float(item.end))
+        for item in intervals
+        if item.role == ProcessRole.show_source
+    ]
+    if not shows:
+        return []
+    shows.sort(key=lambda pair: pair[0])
+    merged: list[list[float]] = [[shows[0][0], shows[0][1]]]
+    for start, end in shows[1:]:
+        if start <= merged[-1][1] + 1e-3:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return [(float(a), float(b)) for a, b in merged]
+
+
+def _count_nonadjacent_show_source(intervals: list[ProcessInterval]) -> int:
+    """不相邻 show_source 段数（相邻/重叠先合并）。"""
+    return len(_show_source_windows(intervals))
+
+
+def _process_role_at(
+    intervals: list[ProcessInterval],
+    stamp: float,
+) -> ProcessRole | None:
+    """返回覆盖 stamp 的区间角色；无覆盖则 None。"""
+    t = float(stamp)
+    for item in intervals:
+        if item.start - 1e-6 <= t <= item.end + 1e-6:
+            return item.role
+    return None
+
+
+def _resolve_sample_windows(
+    raw: _LLMGeoTaskDraft,
+    *,
+    distill_start: float,
+    distill_end: float,
+    intervals: list[ProcessInterval],
+) -> tuple[list[tuple[float, float]], list[ProcessInterval]]:
+    """决定密采样窗：优先 show_source 并集，否则回退单出示粗窗。"""
+    clipped = _clip_process_intervals(
+        intervals, distill_start=distill_start, distill_end=distill_end
+    )
+    show_windows = _show_source_windows(clipped)
+    if show_windows:
+        return show_windows, clipped
+    fallback = _resolve_display_window(
+        raw, distill_start=distill_start, distill_end=distill_end
+    )
+    return [fallback], clipped
+
+
+def _dense_sample_windows(
+    windows: list[tuple[float, float]],
+    *,
+    interval: float,
+    max_n: int,
+) -> list[float]:
+    """对多个出示段密采样后合并去重，再受总上限约束。"""
+    from pipeline.stage_audit_split.frame_prefilter import subsample_timestamps
+
+    stamps: list[float] = []
+    seen: set[str] = set()
+    per_cap = max(1, int(max_n))
+    for start, end in windows:
+        for stamp in _dense_sample_timestamps(
+            start, end, interval=interval, max_n=per_cap
+        ):
+            key = f"{stamp:.3f}"
+            if key in seen:
+                continue
+            seen.add(key)
+            stamps.append(float(stamp))
+    stamps.sort()
+    return subsample_timestamps(stamps, max(1, int(max_n)))
+
+
 def _dense_sample_timestamps(
     start: float,
     end: float,
@@ -485,21 +865,274 @@ def _dense_sample_timestamps(
     return subsample_timestamps(stamps, max(1, int(max_n)))
 
 
-def _max_keyframes_for_task(
+def _assessment_rank_key(item: KeyframeAssessment) -> tuple[bool, bool, float]:
+    """段内/组内择优：干净原图 > 无讲解覆盖 > 质量分。"""
+    return (item.clean_source, not item.tutorial_overlay, item.quality_score)
+
+
+def _group_rank_key(
+    item: KeyframeAssessment,
+    *,
+    use_evidence: bool,
+) -> tuple[float, bool, bool, float]:
+    """组间排序：有证据简报时支撑分优先，再走干净度。"""
+    support = float(item.chain_support_score) if use_evidence else 0.0
+    clean, no_overlay, quality = _assessment_rank_key(item)
+    return (support, clean, no_overlay, quality)
+
+
+def _is_problem_input_frame(
+    item: KeyframeAssessment,
+    *,
+    require_evidence_role: bool,
+) -> bool:
+    """是否可作为出示连续段的合格帧。"""
+    if item.kind != FrameKind.target_photo.value or item.answer_leakage:
+        return False
+    if not require_evidence_role:
+        return True
+    role = (item.evidence_role or EvidenceRole.unknown.value).strip()
+    return role == EvidenceRole.problem_input.value
+
+
+def _fold_presentation_episodes(
+    assessments: list[KeyframeAssessment],
+    *,
+    require_evidence_role: bool = False,
+) -> list[KeyframeAssessment]:
+    """把连续合格出示帧折成段，每段只留质量最高代表。
+
+    中间出现已验收的非目标帧（工具/揭晓/黑场/错误/unused_broll）则打断出示段。
+    """
+    ordered = sorted(assessments, key=lambda item: item.timestamp)
+    episodes: list[list[KeyframeAssessment]] = []
+    current: list[KeyframeAssessment] = []
+    for item in ordered:
+        eligible = _is_problem_input_frame(
+            item, require_evidence_role=require_evidence_role
+        )
+        if eligible:
+            current.append(item)
+            continue
+        if current:
+            episodes.append(current)
+            current = []
+    if current:
+        episodes.append(current)
+    return [max(ep, key=_assessment_rank_key) for ep in episodes if ep]
+
+
+class _UnionFind:
+    """简单并查集，供源输入归并聚合。"""
+
+    def __init__(self, n: int) -> None:
+        self.parent = list(range(n))
+
+    def find(self, x: int) -> int:
+        while self.parent[x] != x:
+            self.parent[x] = self.parent[self.parent[x]]
+            x = self.parent[x]
+        return x
+
+    def union(self, a: int, b: int) -> None:
+        ra = self.find(a)
+        rb = self.find(b)
+        if ra != rb:
+            self.parent[rb] = ra
+
+
+def _completeness_rank_key(
+    item: KeyframeAssessment,
+    *,
+    preferred: set[int],
+    index: int,
+) -> tuple[int, bool, bool, float]:
+    """组内择优：包含关系中的更完整帧优先，再走干净度。"""
+    boost = 1 if index in preferred else 0
+    clean, no_overlay, quality = _assessment_rank_key(item)
+    return (boost, clean, no_overlay, quality)
+
+
+def _pair_containment(
+    path_a: str,
+    path_b: str,
+    *,
+    min_confidence: float = 0.8,
+) -> ContainmentKind:
+    """先廉价预检，再 VLM；高置信才返回非 none。"""
+    from pipeline.stage_audit_split.frame_prefilter import containment_precheck_score
+
+    kind, score = containment_precheck_score(path_a, path_b)
+    if kind != "none" and score >= 0.82:
+        try:
+            return ContainmentKind(kind)
+        except ValueError:
+            pass
+    prompt = (
+        f"{CONTAINMENT_HINT}\n\n"
+        "已附上两张图：第一张为 A，第二张为 B。"
+        "请输出 containment、confidence、reason。"
+    )
+    try:
+        result = call_structured(
+            prompt,
+            _LLMContainmentVerdict,
+            images=[path_a, path_b],
+            lane="vlm",
+            max_attempts=1,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("containment call failed: %s", exc)
+        return ContainmentKind.none
+    if float(getattr(result, "confidence", 0.0)) < float(min_confidence):
+        return ContainmentKind.none
+    raw = getattr(result, "containment", ContainmentKind.none)
+    if isinstance(raw, ContainmentKind):
+        return raw
+    try:
+        return ContainmentKind(str(raw))
+    except ValueError:
+        return ContainmentKind.none
+
+
+def _pair_photo_relation(
+    path_a: str,
+    path_b: str,
+    *,
     target_kind: TargetKind,
-    multi_target_images: bool,
-    configured_max: int,
-    expected_image_count: int | None = None,
-    proposed_count: int = 0,
-) -> int:
-    """输出张数由独立输入数决定；普通静图始终只输出最佳一帧。"""
-    hard_cap = max(1, int(configured_max))
-    expected = max(1, int(expected_image_count or 1), int(proposed_count or 0))
-    if target_kind == TargetKind.video_derived:
-        return min(hard_cap, expected)
-    if multi_target_images:
-        return min(hard_cap, max(2, expected))
-    return 1
+    visual_evidence_brief: str = "",
+) -> PhotoRelation:
+    """两两判定是否同一张照片。"""
+    kind_label = (
+        target_kind.value if isinstance(target_kind, Enum) else str(target_kind)
+    )
+    brief = visual_evidence_brief.strip()
+    brief_block = (
+        f"视觉证据简报（只核验画面事实，不决定张数）：\n{brief}\n"
+        if brief
+        else "视觉证据简报：（空）\n"
+    )
+    prompt = (
+        f"{SOURCE_IDENTITY_HINT}\n\n"
+        f"target_kind={kind_label}\n"
+        f"{brief_block}"
+        "已附上两张图：第一张为 A，第二张为 B。"
+        "请输出 relation、confidence、reason。"
+    )
+    try:
+        result = call_structured(
+            prompt,
+            _LLMPhotoRelationVerdict,
+            images=[path_a, path_b],
+            lane="vlm",
+            max_attempts=1,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("photo relation call failed: %s; default same_photo", exc)
+        return PhotoRelation.same_photo
+    raw = getattr(result, "relation", PhotoRelation.same_photo)
+    if isinstance(raw, PhotoRelation):
+        return raw
+    try:
+        return PhotoRelation(str(raw))
+    except ValueError:
+        return PhotoRelation.same_photo
+
+
+def _resolve_source_identity(
+    representatives: list[KeyframeAssessment],
+    *,
+    target_kind: TargetKind,
+    visual_evidence_brief: str = "",
+) -> list[KeyframeAssessment]:
+    """对出示段代表做源输入归并：包含硬合并 + 是否同一张照片。
+
+    不确定时合并，默认宁可少一张；包含关系命中时优先留更完整帧。
+    """
+    if len(representatives) <= 1:
+        return list(representatives)
+
+    n = len(representatives)
+    uf = _UnionFind(n)
+    preferred: set[int] = set()
+    discarded: set[int] = set()
+    hard_merged: set[tuple[int, int]] = set()
+
+    # 1) 包含/放大硬合并
+    for i in range(n):
+        for j in range(i + 1, n):
+            kind = _pair_containment(
+                representatives[i].image_path,
+                representatives[j].image_path,
+            )
+            if kind == ContainmentKind.a_contains_b:
+                uf.union(i, j)
+                preferred.add(i)
+                hard_merged.add((i, j))
+            elif kind == ContainmentKind.b_contains_a:
+                uf.union(i, j)
+                preferred.add(j)
+                hard_merged.add((i, j))
+
+    # 2) 语义两两关系（已硬合并的不再重开）
+    for i in range(n):
+        if i in discarded:
+            continue
+        for j in range(i + 1, n):
+            if j in discarded:
+                continue
+            if (i, j) in hard_merged or uf.find(i) == uf.find(j):
+                continue
+            relation = _pair_photo_relation(
+                representatives[i].image_path,
+                representatives[j].image_path,
+                target_kind=target_kind,
+                visual_evidence_brief=visual_evidence_brief,
+            )
+            if relation == PhotoRelation.same_photo:
+                uf.union(i, j)
+            elif relation == PhotoRelation.same_scene:
+                if target_kind == TargetKind.video_derived:
+                    uf.union(i, j)
+                # still_image 上的 same_scene 不当合并信号
+            elif relation == PhotoRelation.different_photo:
+                continue
+            elif relation == PhotoRelation.a_not_input:
+                discarded.add(i)
+            elif relation == PhotoRelation.b_not_input:
+                discarded.add(j)
+            elif relation == PhotoRelation.both_not_input:
+                discarded.add(i)
+                discarded.add(j)
+
+    buckets: dict[int, list[tuple[int, KeyframeAssessment]]] = {}
+    for idx, frame in enumerate(representatives):
+        if idx in discarded:
+            continue
+        root = uf.find(idx)
+        buckets.setdefault(root, []).append((idx, frame))
+
+    if not buckets:
+        return [max(representatives, key=_assessment_rank_key)]
+
+    selected: list[KeyframeAssessment] = []
+    for members in buckets.values():
+        best_idx, best = max(
+            members,
+            key=lambda pair: _completeness_rank_key(
+                pair[1], preferred=preferred, index=pair[0]
+            ),
+        )
+        _ = best_idx
+        selected.append(best)
+
+    brief = visual_evidence_brief.strip()
+    use_evidence = bool(brief)
+    selected.sort(
+        key=lambda item: _group_rank_key(item, use_evidence=use_evidence),
+        reverse=True,
+    )
+    return selected
 
 
 def _prefix_keyframes(paths: list[str], task_id: str) -> list[str]:
@@ -570,22 +1203,72 @@ def verify_keyframe_kind(image_path: str) -> FrameKind:
     return verify_keyframe(image_path).kind
 
 
+def _default_evidence_role(kind: FrameKind) -> EvidenceRole:
+    """无模型字段时的证据角色回退。"""
+    if kind == FrameKind.target_photo:
+        return EvidenceRole.problem_input
+    if kind == FrameKind.teaching_ui:
+        return EvidenceRole.process_tool
+    return EvidenceRole.other
+
+
 def verify_keyframe(
     image_path: str,
     *,
     narrative_context: str = "",
+    visual_evidence_brief: str = "",
+    process_role: ProcessRole | str | None = None,
 ) -> _LLMFrameVerdict:
-    """返回带质量与泄露标记的逐帧验收结果。"""
+    """返回带质量、泄露与证据角色标记的逐帧验收结果。"""
     prompt = FRAME_VERIFY_HINT
+    brief = visual_evidence_brief.strip()
+    if brief:
+        prompt += (
+            "\n\n本题视觉证据简报（只用于判断本帧是否为定位链依赖的输入，"
+            "以及 chain_support_score；不得据此把旁白地名当成 answer_leakage）：\n"
+            f"{brief}\n"
+        )
+    else:
+        prompt += (
+            "\n\n本题无视觉证据简报：对明确 target_photo 可给 evidence_role=problem_input、"
+            "chain_support_score≈0.5；看起来像未参与推理的空镜/过场则 unused_broll。\n"
+        )
+    role_value = (
+        process_role.value
+        if isinstance(process_role, ProcessRole)
+        else (str(process_role).strip() if process_role else "")
+    )
+    if role_value == ProcessRole.tool.value or role_value == ProcessRole.reveal.value:
+        prompt += (
+            f"\n\n过程时间线软先验：此刻区间角色为 {role_value}。"
+            "搜索页、侧栏、结果缩略图、街景浏览、地图/遥感核验、钉点揭晓，"
+            "即使主体是全屏建筑外观，也应判 teaching_ui，"
+            f"evidence_role={'reveal' if role_value == ProcessRole.reveal.value else 'process_tool'}。"
+            "画面仍是最终裁判；仅当画面明确是题目原图本身且无工具 UI 时才可判 target_photo。\n"
+        )
+    elif role_value == ProcessRole.show_source.value:
+        prompt += (
+            "\n\n过程时间线软先验：此刻区间角色为 show_source。"
+            "主画面若是待定位实拍/原图，可判 target_photo 且 evidence_role=problem_input；"
+            "若画面其实是工具界面或揭晓，仍按画面判 teaching_ui。\n"
+        )
+    elif role_value == ProcessRole.other.value:
+        prompt += (
+            "\n\n过程时间线软先验：此刻区间角色为 other。"
+            "更可能是空镜/过场；若画面像实拍但未作定位输入，优先 unused_broll。\n"
+        )
     if narrative_context.strip():
         prompt += (
             "\n\n以下是该帧在讲解时间线附近的叙事上下文，只用于判断画面角色：\n"
             f"{narrative_context.strip()}\n"
             "若上下文表明此时正在展示搜索结果、地图/遥感/街景核验、答案揭晓、"
             "找到后的航拍/全景或候选比对，则即使画面本身是全屏实景，也不是原始"
-            "待定位输入，应判 teaching_ui。若上下文明确是展示题目原图、另一张原图"
-            "或放大原图，则可判 target_photo。不要仅因上下文写出了最终地点就把"
-            "画面标为 answer_leakage；answer_leakage 仍要求画面本身可见答案。"
+            "待定位输入，应判 teaching_ui，evidence_role=process_tool 或 reveal。"
+            "若上下文明确是展示题目原图、另一张原图或放大原图，则可判 target_photo"
+            "且 evidence_role=problem_input。"
+            "若画面像实拍但上下文与简报都未把它当定位输入，判 unused_broll。"
+            "不要仅因上下文写出了最终地点就把画面标为 answer_leakage；"
+            "answer_leakage 仍要求画面本身可见答案。"
         )
     return call_structured(
         prompt,
@@ -593,6 +1276,108 @@ def verify_keyframe(
         images=[image_path],
         lane="vlm",
         max_attempts=1,
+    )
+
+
+def extract_visual_evidence_brief(
+    transcript: list[TranscriptSegment],
+    *,
+    time_start: float,
+    time_end: float,
+    task_summary: str = "",
+) -> str:
+    """从蒸馏窗字幕抽取题级视觉证据简报（纯文本，不看图、不读 GT）。"""
+    window = [
+        seg
+        for seg in transcript
+        if seg.end >= float(time_start) - 1e-6 and seg.start <= float(time_end) + 1e-6
+    ]
+    if not window:
+        return ""
+    lines = "\n".join(
+        f"[{seg.start:.1f}-{seg.end:.1f}] {seg.text.strip()}" for seg in window
+    )
+    prompt = (
+        f"{EVIDENCE_BRIEF_HINT}\n\n"
+        f"任务摘要：{task_summary.strip() or '（无）'}\n"
+        f"蒸馏窗旁白：\n{lines}\n"
+        "请输出 visual_evidence_brief。"
+    )
+    try:
+        result = call_structured(
+            prompt,
+            _LLMEvidenceBrief,
+            lane="llm",
+            max_attempts=1,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("visual evidence brief failed: %s", exc)
+        return ""
+    return str(getattr(result, "visual_evidence_brief", "") or "").strip()
+
+
+def extract_process_timeline(
+    transcript: list[TranscriptSegment],
+    *,
+    time_start: float,
+    time_end: float,
+    task_summary: str = "",
+    overview_images: list[str] | None = None,
+) -> list[ProcessInterval]:
+    """从蒸馏窗字幕抽取过程时间线（内部材料，不进阶段2 prompt）。"""
+    window = [
+        seg
+        for seg in transcript
+        if seg.end >= float(time_start) - 1e-6 and seg.start <= float(time_end) + 1e-6
+    ]
+    if not window:
+        return []
+    lines = "\n".join(
+        f"[{seg.start:.1f}-{seg.end:.1f}] {seg.text.strip()}" for seg in window
+    )
+    prompt = (
+        f"{PROCESS_TIMELINE_HINT}\n\n"
+        f"任务摘要：{task_summary.strip() or '（无）'}\n"
+        f"蒸馏窗：{float(time_start):.1f}s – {float(time_end):.1f}s\n"
+        f"蒸馏窗旁白：\n{lines}\n"
+        "请输出 intervals。"
+    )
+    images = [p for p in (overview_images or []) if str(p).strip() and Path(p).is_file()]
+    try:
+        result = call_structured(
+            prompt,
+            _LLMProcessTimeline,
+            images=images or None,
+            lane="vlm" if images else "llm",
+            max_attempts=1,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("process timeline failed: %s", exc)
+        return []
+    raw_items = getattr(result, "intervals", []) or []
+    out: list[ProcessInterval] = []
+    for item in raw_items:
+        try:
+            role = item.role
+            if not isinstance(role, ProcessRole):
+                role = ProcessRole(str(role))
+            start = float(item.start)
+            end = float(item.end)
+            if end < start:
+                start, end = end, start
+            out.append(
+                ProcessInterval(
+                    start=start,
+                    end=end,
+                    role=role,
+                    confidence=float(getattr(item, "confidence", 0.5) or 0.5),
+                )
+            )
+        except (TypeError, ValueError) as exc:
+            logger.debug("skip invalid process interval: %s", exc)
+            continue
+    return _clip_process_intervals(
+        out, distill_start=time_start, distill_end=time_end
     )
 
 
@@ -626,39 +1411,6 @@ def _frame_narrative_context(
     )
 
 
-def _image_dhash(image_path: str) -> int | None:
-    """计算轻量视觉哈希；读取失败时不做去重，避免误删。"""
-    try:
-        from PIL import Image
-
-        with Image.open(image_path) as image:
-            pixels = list(image.convert("L").resize((9, 8)).getdata())
-    except Exception:  # noqa: BLE001
-        return None
-    value = 0
-    for row in range(8):
-        offset = row * 9
-        for col in range(8):
-            value = (value << 1) | int(pixels[offset + col] > pixels[offset + col + 1])
-    return value
-
-
-def _is_visual_duplicate(
-    image_path: str,
-    selected_hashes: list[int],
-    *,
-    max_distance: int,
-) -> tuple[bool, int | None]:
-    current = _image_dhash(image_path)
-    if current is None:
-        return False, None
-    duplicate = any(
-        (current ^ old).bit_count() <= max(0, int(max_distance))
-        for old in selected_hashes
-    )
-    return duplicate, current
-
-
 def _materialize_task_images(
     *,
     video_path: str,
@@ -667,7 +1419,7 @@ def _materialize_task_images(
     raw: _LLMGeoTaskDraft,
     t0: float,
     t1: float,
-    max_kf: int,
+    hard_cap: int,
     transcript: list[TranscriptSegment],
     task_dir: Path,
     resume_tasks: bool = True,
@@ -677,35 +1429,61 @@ def _materialize_task_images(
     bool,
     list[KeyframeAssessment],
     str,
+    str,
+    list[ProcessInterval],
 ]:
-    """在出示窗内密采样、廉价过滤、逐帧验收并用视觉内容去重。"""
+    """在 show_source 并集内密采样、验收，再折叠出示段并归并为最小源输入集。
+
+    Returns:
+        stamps, paths, multi_target, assessments, quality_reason,
+        visual_evidence_brief, process_intervals
+    """
     from pipeline.stage_audit_split.frame_prefilter import (
-        is_near_duplicate,
         prefilter_frame,
         subsample_timestamps,
     )
 
     settings = get_settings()
     quality_floor = min(1.0, max(0.0, float(settings.AUDIT_MIN_FRAME_QUALITY)))
-    hash_distance = max(0, int(settings.AUDIT_VISUAL_HASH_DISTANCE))
+    support_floor = min(1.0, max(0.0, float(settings.AUDIT_MIN_CHAIN_SUPPORT)))
     interval = max(0.05, float(settings.AUDIT_DISPLAY_SAMPLE_INTERVAL_SEC))
     max_sampled = max(1, int(settings.AUDIT_MAX_SAMPLED_FRAMES))
     max_vlm = max(1, int(settings.AUDIT_MAX_VLM_FRAME_VERIFIES))
+    cap = max(1, int(hard_cap))
 
-    display_start, display_end = _resolve_display_window(
-        raw, distill_start=t0, distill_end=t1
+    brief = extract_visual_evidence_brief(
+        transcript,
+        time_start=t0,
+        time_end=t1,
+        task_summary=str(getattr(raw, "task_summary", "") or ""),
     )
-    sample_stamps = _dense_sample_timestamps(
-        display_start,
-        display_end,
+    use_evidence = bool(brief.strip())
+
+    process_intervals = extract_process_timeline(
+        transcript,
+        time_start=t0,
+        time_end=t1,
+        task_summary=str(getattr(raw, "task_summary", "") or ""),
+    )
+    sample_windows, process_intervals = _resolve_sample_windows(
+        raw,
+        distill_start=t0,
+        distill_end=t1,
+        intervals=process_intervals,
+    )
+    sample_stamps = _dense_sample_windows(
+        sample_windows,
         interval=interval,
         max_n=max_sampled,
     )
-    # 可选弱先验：模型戳若落在出示窗内，优先排到验收前列
+    # 可选弱先验：模型戳仅当落在某段采样窗内才提前
     weak_priors = {
         round(float(s), 3)
         for s in (getattr(raw, "keyframe_timestamps", []) or [])
-        if display_start - 1e-6 <= float(s) <= display_end + 1e-6
+        if any(
+            float(w0) - 1e-6 <= float(s) <= float(w1) + 1e-6
+            for w0, w1 in sample_windows
+        )
     }
     sample_stamps.sort(
         key=lambda s: (0 if round(s, 3) in weak_priors else 1, s),
@@ -733,7 +1511,6 @@ def _materialize_task_images(
             assessments = []
     tried: set[str] = {f"{item.timestamp:.3f}" for item in assessments}
     frame_dir = _candidate_frame_dir(video_id, task_id)
-    seen_hashes: list[int] = []
     pending_for_vlm: list[tuple[float, str, bool]] = []
 
     for stamp in sample_stamps:
@@ -755,14 +1532,7 @@ def _materialize_task_images(
         if not paths:
             continue
         path = paths[0]
-        dup, image_hash = is_near_duplicate(
-            path, seen_hashes, max_distance=hash_distance
-        )
-        if dup:
-            _unlink_quiet(path)
-            continue
-        if image_hash is not None:
-            seen_hashes.append(image_hash)
+        # 近重复不再抽帧时贪心删除；留给出示段折叠与源输入归并择优
         verdict_pre = prefilter_frame(path)
         if not verdict_pre.keep:
             assessments.append(
@@ -771,6 +1541,8 @@ def _materialize_task_images(
                     image_path=str(Path(path).resolve()),
                     kind="other",
                     quality_score=0.0,
+                    evidence_role=EvidenceRole.other.value,
+                    chain_support_score=0.0,
                     reason=f"prefilter:{verdict_pre.skip_reason}",
                 )
             )
@@ -796,6 +1568,8 @@ def _materialize_task_images(
                     stamp=stamp,
                     task_summary=str(getattr(raw, "task_summary", "") or ""),
                 ),
+                visual_evidence_brief=brief,
+                process_role=_process_role_at(process_intervals, stamp),
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
@@ -809,6 +1583,8 @@ def _materialize_task_images(
                     timestamp=float(stamp),
                     image_path=path,
                     kind="error",
+                    evidence_role=EvidenceRole.unknown.value,
+                    chain_support_score=0.0,
                     reason=f"验收调用失败：{type(exc).__name__}",
                 )
             )
@@ -826,6 +1602,25 @@ def _materialize_task_images(
         clean = bool(
             getattr(verdict, "clean_source", kind == FrameKind.target_photo)
         )
+        role_raw = getattr(verdict, "evidence_role", None)
+        if isinstance(role_raw, EvidenceRole):
+            evidence_role = role_raw
+        elif role_raw:
+            try:
+                evidence_role = EvidenceRole(str(role_raw))
+            except ValueError:
+                evidence_role = _default_evidence_role(kind)
+        else:
+            evidence_role = _default_evidence_role(kind)
+        support = float(getattr(verdict, "chain_support_score", 0.5))
+        if evidence_role == EvidenceRole.unused_broll:
+            support = min(support, 0.2)
+        elif evidence_role in {
+            EvidenceRole.process_tool,
+            EvidenceRole.reveal,
+            EvidenceRole.other,
+        }:
+            support = min(support, 0.15)
         reason = str(getattr(verdict, "reason", "") or "")
         if ui_penalty:
             reason = (reason + " | prefilter:ui_or_map_penalty").strip(" |")
@@ -838,6 +1633,8 @@ def _materialize_task_images(
                 answer_leakage=leakage,
                 tutorial_overlay=overlay,
                 clean_source=clean,
+                evidence_role=evidence_role.value,
+                chain_support_score=support,
                 reason=reason,
             )
         )
@@ -846,65 +1643,110 @@ def _materialize_task_images(
             [item.model_dump(mode="json") for item in assessments],
         )
 
-    eligible = [
-        item
-        for item in assessments
-        if item.kind == FrameKind.target_photo.value and not item.answer_leakage
-    ]
     for item in assessments:
         item.selected = False
-    eligible.sort(
-        key=lambda item: (
-            item.clean_source,
-            not item.tutorial_overlay,
-            item.quality_score,
-        ),
+
+    # 多段 show_source 时按窗分别折叠，避免未采样的中间 tool 段无法打断连续段
+    if len(sample_windows) > 1:
+        episode_reps: list[KeyframeAssessment] = []
+        for w0, w1 in sample_windows:
+            subset = [
+                item
+                for item in assessments
+                if float(w0) - 1e-6 <= float(item.timestamp) <= float(w1) + 1e-6
+            ]
+            episode_reps.extend(
+                _fold_presentation_episodes(
+                    subset,
+                    require_evidence_role=use_evidence,
+                )
+            )
+    else:
+        episode_reps = _fold_presentation_episodes(
+            assessments,
+            require_evidence_role=use_evidence,
+        )
+    if not episode_reps:
+        _write_json(
+            assessment_checkpoint,
+            [item.model_dump(mode="json") for item in assessments],
+        )
+        return (
+            [],
+            [],
+            False,
+            assessments,
+            "出示窗内未找到干净待定位原图",
+            brief,
+            process_intervals,
+        )
+
+    # 组间：有 brief 时按证据支撑优先；组内折叠已按干净度取代表
+    episode_reps.sort(
+        key=lambda item: _group_rank_key(item, use_evidence=use_evidence),
         reverse=True,
     )
-
-    selected: list[KeyframeAssessment] = []
-    selected_hashes: list[int] = []
-    for item in eligible:
-        duplicate, image_hash = _is_visual_duplicate(
-            item.image_path,
-            selected_hashes,
-            max_distance=hash_distance,
-        )
-        if duplicate:
-            logger.info(
-                "skip visually duplicate frame %.3f task=%s",
-                item.timestamp,
-                task_id,
-            )
-            continue
-        item.selected = True
-        selected.append(item)
-        if image_hash is not None:
-            selected_hashes.append(image_hash)
-        if len(selected) >= max_kf:
-            break
-
+    merged = _resolve_source_identity(
+        episode_reps,
+        target_kind=raw.target_kind,
+        visual_evidence_brief=brief,
+    )
+    selected = merged[:cap]
     selected.sort(key=lambda item: item.timestamp)
+    for item in selected:
+        item.selected = True
+
     selected_stamps = [item.timestamp for item in selected]
     selected_paths = _promote_selected_images(
         selected, video_id=video_id, task_id=task_id
     )
-    multi = max_kf > 1
+    multi = len(selected) > 1
     _write_json(
         assessment_checkpoint,
         [item.model_dump(mode="json") for item in assessments],
     )
 
     if not selected:
-        return [], [], multi, assessments, "出示窗内未找到干净待定位原图"
-    if len(selected) < max_kf:
+        return (
+            [],
+            [],
+            False,
+            assessments,
+            "出示窗内未找到干净待定位原图",
+            brief,
+            process_intervals,
+        )
+
+    # 多段不相邻出示却只留下 1 张：漏图信号（不采 tool 段凑张）
+    if (
+        use_evidence
+        and len(selected) == 1
+        and _count_nonadjacent_show_source(process_intervals) >= 2
+    ):
         return (
             selected_stamps,
             selected_paths,
             multi,
             assessments,
-            f"预计 {max_kf} 个独立输入，仅选到 {len(selected)} 个",
+            "过程时间线含多段不相邻出示窗，但最小源输入集仅选出 1 张",
+            brief,
+            process_intervals,
         )
+
+    if use_evidence:
+        weak_support = [
+            item for item in selected if item.chain_support_score < support_floor
+        ]
+        if weak_support:
+            return (
+                selected_stamps,
+                selected_paths,
+                multi,
+                assessments,
+                "选中帧与定位链视觉证据不对齐",
+                brief,
+                process_intervals,
+            )
     low_quality = [
         item
         for item in selected
@@ -913,15 +1755,27 @@ def _materialize_task_images(
         or not item.clean_source
     ]
     if low_quality:
+        reason = "选中帧仍含讲解覆盖、界面残留或质量低于阈值"
+        if not use_evidence:
+            reason = f"{reason}（无视觉证据简报，已回退质量择优）"
         return (
             selected_stamps,
             selected_paths,
             multi,
             assessments,
-            "选中帧仍含讲解覆盖、界面残留或质量低于阈值",
+            reason,
+            brief,
+            process_intervals,
         )
-    return selected_stamps, selected_paths, multi, assessments, ""
-
+    return (
+        selected_stamps,
+        selected_paths,
+        multi,
+        assessments,
+        "",
+        brief,
+        process_intervals,
+    )
 
 def slice_transcript_for_task(
     transcript: list[TranscriptSegment],
@@ -1129,27 +1983,19 @@ def run_audit_split(
                 transcript=transcript,
                 boundary_tolerance=boundary_tolerance,
             )
-            raw_multi = bool(getattr(raw, "multi_target_images", False))
             answer_status = getattr(raw, "answer_status", AnswerStatus.resolved)
             if not isinstance(answer_status, AnswerStatus):
                 answer_status = AnswerStatus(str(answer_status))
             final_location = str(getattr(raw, "final_location_text", "") or "").strip()
-            expected_count = max(1, int(getattr(raw, "expected_image_count", 1) or 1))
-            max_kf = _max_keyframes_for_task(
-                raw.target_kind,
-                raw_multi,
-                max_kf_cfg,
-                expected_image_count=expected_count,
-                proposed_count=expected_count
-                if (raw_multi or raw.target_kind == TargetKind.video_derived)
-                else 0,
-            )
+            hard_cap = max_kf_cfg
             status = TaskStatus.accepted
             status_reason = ""
             stamps: list[float] = []
             paths: list[str] = []
             assessments: list[KeyframeAssessment] = []
-            multi = max_kf > 1
+            multi = False
+            visual_brief = ""
+            process_intervals: list[ProcessInterval] = []
 
             if answer_status != AnswerStatus.resolved:
                 status = TaskStatus.rejected
@@ -1169,6 +2015,8 @@ def run_audit_split(
                         multi,
                         assessments,
                         quality_reason,
+                        visual_brief,
+                        process_intervals,
                     ) = _materialize_task_images(
                         video_path=video_path,
                         video_id=video_id,
@@ -1176,7 +2024,7 @@ def run_audit_split(
                         raw=raw,
                         t0=t0,
                         t1=t1,
-                        max_kf=max_kf,
+                        hard_cap=hard_cap,
                         transcript=transcript,
                         task_dir=task_dir,
                         resume_tasks=resume_tasks,
@@ -1189,6 +2037,8 @@ def run_audit_split(
                     status = TaskStatus.needs_review
                     status_reason = f"关键帧处理失败：{exc}"
 
+            # multi_target / expected_image_count 记录实选结果，不作预定配额
+            multi = len(paths) > 1
             task = GeoTaskSpec(
                 task_id=task_id,
                 time_start=t0,
@@ -1200,11 +2050,13 @@ def run_audit_split(
                 segment_start_idx=getattr(raw, "segment_start_idx", None),
                 segment_end_idx=getattr(raw, "segment_end_idx", None),
                 task_summary=str(getattr(raw, "task_summary", "") or "").strip(),
+                visual_evidence_brief=visual_brief,
+                process_intervals=process_intervals,
                 status=status,
                 status_reason=status_reason,
                 answer_status=answer_status,
                 final_location_text=final_location,
-                expected_image_count=max_kf,
+                expected_image_count=max(1, len(paths)) if paths else 1,
                 frame_assessments=assessments,
             )
             tasks.append(task)
