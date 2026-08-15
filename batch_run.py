@@ -38,7 +38,7 @@ def _run_job(job: dict[str, Any]) -> list[str]:
         ),
         image_path=job.get("image_path") or "",
         image_paths=image_paths,
-        stage3_matcher=lambda _n, _f: None,
+        stage3_matcher=None,
     )
     return [e.id for e in entries]
 

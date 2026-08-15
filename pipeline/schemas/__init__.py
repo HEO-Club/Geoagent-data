@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 from pipeline.schemas.audit import (
+    AnswerStatus,
     AuditDecision,
     AuditSplitResult,
     GeoTaskSpec,
+    KeyframeAssessment,
+    ProcessInterval,
+    ProcessRole,
     TargetKind,
+    TaskStatus,
 )
 from pipeline.schemas.clues import (
     BoundKind,
@@ -22,6 +27,7 @@ from pipeline.schemas.tools import (
     MatchDecision,
     ObservationField,
     ParamSpec,
+    ToolOperation,
     ToolDefinition,
     ToolForest,
     ToolTree,
@@ -31,6 +37,7 @@ from pipeline.schemas.transcript import Stage1Result, TranscriptSegment
 
 __all__ = [
     "Action",
+    "AnswerStatus",
     "AuditDecision",
     "AuditSplitResult",
     "BoundKind",
@@ -42,15 +49,20 @@ __all__ = [
     "FreeFormStep",
     "FreeFormTrajectory",
     "GeoTaskSpec",
+    "KeyframeAssessment",
     "ManifestV2",
     "MatchDecision",
     "ObservationField",
     "ParamSpec",
+    "ProcessInterval",
+    "ProcessRole",
     "RawGivenClue",
     "Stage1Result",
     "TargetKind",
+    "TaskStatus",
     "ToolDefinition",
     "ToolForest",
+    "ToolOperation",
     "ToolTree",
     "Trajectory",
     "TrajectoryStep",

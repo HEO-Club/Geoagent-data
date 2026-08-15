@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     LLM_ANTHROPIC_BASE_URLS: str = "https://api.anthropic.com"
     LLM_ANTHROPIC_MODEL: str = "claude-sonnet-5"
     LLM_ANTHROPIC_API_KEY: str = ""
-    LLM_ANTHROPIC_STREAM: bool = False
+    LLM_ANTHROPIC_STREAM: bool = True
     LLM_MAX_OUTPUT_TOKENS: int = 8192
     ALLOW_INSECURE_LLM_ENDPOINTS: bool = False
     GEMINI_MODEL: str = "gemini-2.0-flash"
@@ -58,9 +58,21 @@ class Settings(BaseSettings):
     # 阶段1.5 审核切分
     AUDIT_SPARSE_FRAME_COUNT: int = 8
     AUDIT_MAX_KEYFRAMES_PER_TASK: int = 8
+    AUDIT_DISPLAY_SAMPLE_INTERVAL_SEC: float = 1.0
+    AUDIT_DISPLAY_WINDOW_MAX_SEC: float = 90.0
+    AUDIT_MAX_SAMPLED_FRAMES: int = 120
+    AUDIT_MAX_VLM_FRAME_VERIFIES: int = 24
+    AUDIT_TASK_BOUNDARY_TOLERANCE_SEC: float = 20.0
+    AUDIT_MIN_FRAME_QUALITY: float = 0.65
+    AUDIT_MIN_CHAIN_SUPPORT: float = 0.5
+    AUDIT_VISUAL_HASH_DISTANCE: int = 6
+    AUDIT_TRAJECTORY_IMAGE_CHECK: bool = True
 
+    TOOL_CATALOG_PATH: str = "canonical_tool_catalog.json"
     TOOL_TREES_PATH: str = "tool_trees.json"
     INTERMEDIATE_DIR: str = "data/intermediate"
+    SELECTED_DIR: str = "data/selected"
+    RUNS_DIR: str = "data/runs"
     OUTPUT_DIR: str = "data/output"
     TRANSCRIPTS_DIR: str = "data/transcripts"
     CACHE_DIR: str = ".cache"

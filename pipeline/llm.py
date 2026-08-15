@@ -6,12 +6,13 @@ import base64
 import json
 import logging
 import re
+import threading
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal, TypeVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from pipeline.config import Settings, get_settings
 
@@ -78,6 +79,10 @@ class _EndpointConfig:
 
 def _is_transient_llm_error(exc: BaseException) -> bool:
     """判断是否为可重试的瞬时 LLM/网络错误。"""
+    # 结构化调用偶尔会收到空 Tool input 或 relay 截断后的不完整对象。
+    # 这类响应没有通过业务 Schema，不能接收，但重试同一次调用通常可恢复。
+    if isinstance(exc, ValidationError):
+        return True
     name = type(exc).__name__.lower()
     if any(tok in name for tok in ("timeout", "connection", "ratelimit", "apierror")):
         return True
@@ -149,9 +154,7 @@ def _resolve_endpoint(
             model_name = settings.GEMINI_MODEL.strip()
         else:
             field = {"asr": "ASR_MODEL", "vlm": "VLM_MODEL", "llm": "LLM_MODEL"}[lane]
-            raise ValueError(
-                f"模型名未配置：请设置 {field}"
-            )
+            raise ValueError(f"模型名未配置：请设置 {field}")
 
     is_kimi = provider in {"kimi", "moonshot"}
     if is_kimi:
@@ -201,15 +204,16 @@ def _resolve_endpoint(
         normalized_base = _normalize_anthropic_base_url(base_url)
         if not normalized_base:
             raise ValueError("LLM_ANTHROPIC_BASE_URLS 未配置")
-        if _is_insecure_url(normalized_base) and not settings.ALLOW_INSECURE_LLM_ENDPOINTS:
+        if (
+            _is_insecure_url(normalized_base)
+            and not settings.ALLOW_INSECURE_LLM_ENDPOINTS
+        ):
             raise ValueError("Anthropic 明文 HTTP 端点默认禁用")
         return _EndpointConfig(
             provider=provider,
             base_url=normalized_base,
             model=model_name,
-            api_key=(
-                settings.LLM_ANTHROPIC_API_KEY or settings.ANTHROPIC_API_KEY
-            ),
+            api_key=(settings.LLM_ANTHROPIC_API_KEY or settings.ANTHROPIC_API_KEY),
             timeout_sec=float(settings.LLM_TIMEOUT_SEC),
             max_output_tokens=int(settings.LLM_MAX_OUTPUT_TOKENS),
             reasoning_effort=None,
@@ -381,12 +385,67 @@ def _unwrap_anthropic_tool_input(value: Any) -> Any:
     return _decode_embedded_json(current)
 
 
+def _validate_anthropic_tool_payload(
+    payload: Any,
+    response_model: type[T],
+) -> T:
+    """校验 Tool 输入，并兼容中转站的有限根字段二次包装。"""
+    payload = _decode_embedded_json(payload)
+    try:
+        return response_model.model_validate(payload)
+    except ValidationError as direct_error:
+        if not isinstance(payload, dict):
+            raise
+
+        model_fields = response_model.model_fields
+        for field_name, nested in payload.items():
+            # 某些 relay 会把完整对象错误包装为
+            # {"steps": {"steps": [...], "notes": null}}。只尝试同名
+            # 根字段包装，且候选对象仍必须完整通过原 Pydantic Schema。
+            if (
+                field_name not in model_fields
+                or not isinstance(nested, dict)
+                or field_name not in nested
+            ):
+                continue
+            try:
+                return response_model.model_validate(nested)
+            except ValidationError:
+                continue
+
+        # 部分 Anthropic relay 会把完整 Tool input 再包装进通用的
+        # ``params`` / ``arguments`` / ``input`` 字段，甚至将内层对象再次
+        # JSON 序列化。只解这些协议层常见包装，并要求解包后的对象仍完整
+        # 通过原 response_model；绝不放宽业务 Schema 或终端答案约束。
+        for wrapper_name in ("params", "arguments", "input"):
+            if wrapper_name not in payload:
+                continue
+            candidate = _decode_embedded_json(payload[wrapper_name])
+            try:
+                return response_model.model_validate(candidate)
+            except ValidationError:
+                continue
+
+        # 部分 Anthropic relay 会按工具语义自行增加单字段信封，例如
+        # {"verdict": {"kind": "teaching_ui", "reason": "..."}}。
+        # 仅在根对象恰好只有一个字段时尝试解包，且内层仍须完整通过原
+        # response_model；因此不会接受缺字段或放宽任何业务约束。
+        if len(payload) == 1:
+            candidate = _decode_embedded_json(next(iter(payload.values())))
+            try:
+                return response_model.model_validate(candidate)
+            except ValidationError:
+                pass
+        raise direct_error
+
+
 def _create_anthropic_structured(
     client: Any,
     *,
     endpoint: _EndpointConfig,
     response_model: type[T],
     content: str | list[dict[str, Any]],
+    stream_override: bool | None = None,
 ) -> T:
     """直接调用 Anthropic Messages，并自行解析 relay ToolUseBlock。"""
     tool_name = response_model.__name__
@@ -403,18 +462,52 @@ def _create_anthropic_structured(
         ],
         tool_choice={"type": "tool", "name": tool_name},
     )
-    if get_settings().LLM_ANTHROPIC_STREAM:
+    use_stream = (
+        get_settings().LLM_ANTHROPIC_STREAM
+        if stream_override is None
+        else bool(stream_override)
+    )
+    if use_stream and callable(getattr(client.messages, "stream", None)):
         # SSE 会在长生成期间持续产生事件，避免 Cloudflare 对无响应体的
         # 非流式请求触发 524；最终仍使用完整 Message 做同一套结构校验。
-        with client.messages.stream(**kwargs) as stream:
-            response = stream.get_final_message()
+        # httpx 的 read timeout 会被 SSE 心跳持续刷新，因此另设整次请求的
+        # wall-clock 上限，防止 relay 只保活却永远不提交最终 tool_use。
+        responses: list[Any] = []
+        errors: list[BaseException] = []
+
+        def collect_final_message() -> None:
+            try:
+                # 把建立 SSE、读取最终消息和正常关闭全部纳入 wall-clock。
+                # 超时线程为 daemon，调用方不再被 SDK 的 enter/close 卡住。
+                with client.messages.stream(**kwargs) as stream:
+                    responses.append(stream.get_final_message())
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        worker = threading.Thread(
+            target=collect_final_message,
+            name="anthropic-stream-transaction",
+            daemon=True,
+        )
+        worker.start()
+        worker.join(timeout=max(0.1, float(endpoint.timeout_sec)))
+        if worker.is_alive():
+            raise TimeoutError(
+                "Anthropic SSE overall timeout "
+                f"after {float(endpoint.timeout_sec):.1f}s"
+            )
+        if errors:
+            raise errors[0]
+        if not responses:
+            raise RuntimeError("Anthropic SSE 未返回最终消息")
+        response = responses[0]
     else:
         response = client.messages.create(**kwargs)
     for block in response.content:
         if getattr(block, "type", None) != "tool_use":
             continue
         payload = _unwrap_anthropic_tool_input(getattr(block, "input", None))
-        return response_model.model_validate(payload)
+        return _validate_anthropic_tool_payload(payload, response_model)
     raise ValueError("Anthropic 响应中缺少 tool_use 结构化结果")
 
 
@@ -435,6 +528,7 @@ def _create_structured(
     endpoint: _EndpointConfig,
     response_model: type[T],
     content: str | list[dict[str, Any]],
+    anthropic_stream: bool | None = None,
 ) -> T:
     if endpoint.provider == "anthropic":
         return _create_anthropic_structured(
@@ -442,6 +536,7 @@ def _create_structured(
             endpoint=endpoint,
             response_model=response_model,
             content=content,
+            stream_override=anthropic_stream,
         )
 
     kwargs: dict[str, Any] = {
@@ -659,6 +754,8 @@ def call_structured(
     model: str | None = None,
     *,
     lane: Lane = "llm",
+    max_attempts: int | None = None,
+    anthropic_stream: bool | None = None,
 ) -> T:
     """调用 LLM 并强制返回 response_model。"""
     settings = get_settings()
@@ -674,7 +771,11 @@ def call_structured(
             multimodal=endpoint.multimodal,
         )
         client = _build_instructor_client(endpoint)
-        attempts = 1 if len(endpoints) > 1 else _LLM_TRANSIENT_ATTEMPTS
+        attempts = (
+            1
+            if len(endpoints) > 1
+            else max(1, int(max_attempts or _LLM_TRANSIENT_ATTEMPTS))
+        )
         for attempt in range(1, attempts + 1):
             try:
                 result = _create_structured(
@@ -682,6 +783,7 @@ def call_structured(
                     endpoint=endpoint,
                     response_model=response_model,
                     content=content,
+                    anthropic_stream=anthropic_stream,
                 )
                 if len(endpoints) > 1:
                     logger.info(
@@ -704,14 +806,14 @@ def call_structured(
                     break
                 if (
                     not _is_transient_llm_error(exc)
-                    or attempt >= _LLM_TRANSIENT_ATTEMPTS
+                    or attempt >= attempts
                 ):
                     raise
                 delay = _retry_delay(exc, attempt)
                 logger.warning(
                     "call_structured transient failure attempt %s/%s: %s; sleep %.1fs",
                     attempt,
-                    _LLM_TRANSIENT_ATTEMPTS,
+                    attempts,
                     summary,
                     delay,
                 )
@@ -733,6 +835,7 @@ def call_text(
     lane: Lane = "llm",
 ) -> str:
     """纯文本调用。禁止传入 groundtruth。"""
+
     class _TextResponse(BaseModel):
         text: str
 

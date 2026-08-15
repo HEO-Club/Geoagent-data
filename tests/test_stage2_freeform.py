@@ -30,23 +30,32 @@ def test_run_stage2_mock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
         lambda _t: ClueExtractionResult(working_scope=None),
     )
 
+    class _Reasoning:
+        event_type = "reasoning"
+        thought = "图中直接可见竹林与湿热植被，初始范围偏向华南或西南。"
+        tool = None
+        params = {}
+        observation = None
+
     class _Step:
+        event_type = "tool_call"
         thought = (
-            "图中可见竹林与湿热植被；当前假设偏华南/西南，"
-            "但缺气候区与物种分布交叉验证，因此检索该植被组合的典型分布区。"
+            "仅凭植被仍无法区分华南与西南，缺少外部分布资料，"
+            "因此检索该植被组合的典型分布区。"
         )
-        tool = "inspect_plants"
-        params = {"region": "center"}
-        observation = {"species_hint": "bamboo"}
+        tool = "web_search"
+        params = {"query": "竹林 湿热植被 典型分布"}
+        observation = {"regions": ["华南", "西南"]}
 
     class _FinalStep:
+        event_type = "final"
         thought = "植被与气候证据已经收敛，因此提交最终地点。"
         tool = "final_answer"
         params = {"location": "广东省广州市"}
         observation = None
 
     class _Result:
-        steps = [_Step(), _FinalStep()]
+        steps = [_Reasoning(), _Step(), _FinalStep()]
         notes = None
 
     captured: dict[str, str] = {}
@@ -64,8 +73,11 @@ def test_run_stage2_mock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     traj = stage2.run_stage2(str(video), transcript)
     assert isinstance(traj, FreeFormTrajectory)
     assert traj.source_video == "vid"
-    assert len(traj.steps) == 2
-    assert traj.steps[0].tool == "inspect_plants"
+    assert len(traj.steps) == 3
+    assert traj.steps[0].event_type == "reasoning"
+    assert traj.steps[0].tool is None
+    assert traj.steps[1].event_type == "tool_call"
+    assert traj.steps[1].tool == "web_search"
     assert traj.steps[-1].tool == "final_answer"
     assert traj.steps[-1].params == {"location": "广东省广州市"}
     assert "字幕" not in traj.steps[0].thought
@@ -74,14 +86,23 @@ def test_run_stage2_mock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
 
     prompt = captured["prompt"]
     assert "禁止写入产物" in prompt
-    assert "假设缺口" in prompt
-    assert "为何调用本步 tool" in prompt
+    assert "reasoning、tool_call、final" in prompt
+    assert "Thought→Thought→Action" in prompt
+    assert "形成目标签名或时间一致性判断" in prompt
+    assert "不得发明 inspect/filter/build/assess 类伪工具" in prompt
     assert "讲解内容参考" in prompt
     assert "无外部工作范围" in prompt
     assert "河南许昌附近" not in prompt
     assert "notes 可简述删除了哪些无用部分" not in prompt
     assert "字幕（带时间戳）" not in prompt
     assert "不得自行补写材料中没有的坐标" in prompt
+    assert "计划查询、查询条件、待验证假设、候选值和常识推断都不是工具结果" in prompt
+    assert "不同题目、不同镜头、不同时间段、不同辅助线" in prompt
+    assert "某一天或少数样本外推出长期频率" in prompt
+    assert "内部静默复查每个 tool_call" in prompt
+    assert "若视频包含多道独立定位题" in prompt
+    assert "按讲解顺序列出全部最终地点" in prompt
+    assert '"event_type":"final"' in prompt
     assert '"tool":"final_answer"' in prompt
     assert '"params":{"location":"最终地点"}' in prompt
     assert "求助者" in prompt
@@ -205,6 +226,96 @@ def test_llm_result_accepts_single_or_multiple_locations() -> None:
             }
         )
         assert result.steps[-1].params["location"] == location
+
+
+def test_reasoning_chain_and_real_tool_call_contract() -> None:
+    result = stage2._LLMFreeFormResult.model_validate(
+        {
+            "steps": [
+                {
+                    "event_type": "reasoning",
+                    "thought": "先根据画面方向排除北向候选。",
+                    "tool": None,
+                    "params": {},
+                    "observation": None,
+                },
+                {
+                    "event_type": "reasoning",
+                    "thought": "剩余两地只能通过外部日落时间继续区分。",
+                    "tool": None,
+                    "params": {},
+                    "observation": None,
+                },
+                {
+                    "event_type": "tool_call",
+                    "thought": "需要新证据，因此查询日落时间。",
+                    "tool": "sunset_time_lookup",
+                    "params": {"date": "2023-11-13"},
+                    "observation": {"result": "甲地日落更晚"},
+                },
+                {
+                    "event_type": "final",
+                    "thought": "证据闭合。",
+                    "tool": "final_answer",
+                    "params": {"location": "甲地"},
+                    "observation": None,
+                },
+            ]
+        }
+    )
+    assert [step.event_type for step in result.steps[:3]] == [
+        "reasoning",
+        "reasoning",
+        "tool_call",
+    ]
+
+
+def test_tool_call_requires_real_observation() -> None:
+    with pytest.raises(ValueError, match="必须提供 observation"):
+        stage2._LLMFreeFormResult.model_validate(
+            {
+                "steps": [
+                    {
+                        "event_type": "tool_call",
+                        "thought": "查询外部地图。",
+                        "tool": "map_query",
+                        "params": {"q": "甲地"},
+                        "observation": None,
+                    },
+                    {
+                        "event_type": "final",
+                        "thought": "提交。",
+                        "tool": "final_answer",
+                        "params": {"location": "甲地"},
+                        "observation": None,
+                    },
+                ]
+            }
+        )
+
+
+def test_legacy_freeform_step_infers_event_type() -> None:
+    legacy = FreeFormTrajectory.model_validate(
+        {
+            "source_video": "legacy",
+            "steps": [
+                {
+                    "thought": "查询地图",
+                    "tool": "map_lookup",
+                    "params": {},
+                    "observation": {"hits": []},
+                },
+                {
+                    "thought": "提交",
+                    "tool": "final_answer",
+                    "params": {"location": "甲地"},
+                    "observation": None,
+                },
+            ],
+        }
+    )
+    assert legacy.steps[0].event_type == "tool_call"
+    assert legacy.steps[1].event_type == "final"
 
 
 def test_stage2_rewrites_meta_leak_once(

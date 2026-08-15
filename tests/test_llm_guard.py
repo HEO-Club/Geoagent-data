@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from pipeline import llm
 from pipeline.config import Settings, clear_settings_cache
@@ -106,6 +107,94 @@ def test_anthropic_relay_parameter_wrapper_is_unwrapped() -> None:
     assert result.steps == ["one", "two"]
 
 
+def test_anthropic_relay_same_field_root_wrapper_is_unwrapped() -> None:
+    class _WrappedResult(BaseModel):
+        steps: list[str]
+        notes: str | None = None
+
+    class _Messages:
+        def create(self, **_kwargs):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(
+                content=[
+                    SimpleNamespace(
+                        type="tool_use",
+                        input={
+                            "steps": {
+                                "steps": ["one", "two"],
+                                "notes": None,
+                            }
+                        },
+                    )
+                ]
+            )
+
+    endpoint = llm._EndpointConfig(
+        provider="anthropic",
+        base_url="https://relay.example",
+        model="claude-test",
+        api_key="test-key",
+        timeout_sec=30.0,
+        max_output_tokens=1024,
+        reasoning_effort=None,
+        omit_sampling_params=True,
+        multimodal=True,
+    )
+    result = llm._create_anthropic_structured(
+        SimpleNamespace(messages=_Messages()),
+        endpoint=endpoint,
+        response_model=_WrappedResult,
+        content="prompt",
+    )
+    assert result.steps == ["one", "two"]
+    assert result.notes is None
+
+
+@pytest.mark.parametrize(
+    "wrapped",
+    [
+        {"params": {"steps": ["one", "two"], "notes": None}},
+        {
+            "arguments": '{"steps": ["one", "two"], "notes": null}'
+        },
+    ],
+)
+def test_anthropic_relay_generic_protocol_wrapper_is_unwrapped(wrapped) -> None:  # type: ignore[no-untyped-def]
+    class _WrappedResult(BaseModel):
+        steps: list[str]
+        notes: str | None = None
+
+    result = llm._validate_anthropic_tool_payload(wrapped, _WrappedResult)
+    assert result.steps == ["one", "two"]
+    assert result.notes is None
+
+
+def test_anthropic_relay_single_field_semantic_envelope_is_unwrapped() -> None:
+    class _FrameVerdict(BaseModel):
+        kind: str
+        reason: str = ""
+
+    result = llm._validate_anthropic_tool_payload(
+        {
+            "verdict": {
+                "kind": "teaching_ui",
+                "reason": "地图核验画面",
+            }
+        },
+        _FrameVerdict,
+    )
+    assert result.kind == "teaching_ui"
+    assert result.reason == "地图核验画面"
+
+
+def test_structured_validation_error_is_retryable() -> None:
+    class _RequiredResult(BaseModel):
+        value: str
+
+    with pytest.raises(ValidationError) as caught:
+        _RequiredResult.model_validate({})
+    assert llm._is_transient_llm_error(caught.value) is True
+
+
 def test_anthropic_stream_uses_final_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -148,6 +237,90 @@ def test_anthropic_stream_uses_final_message(
         content="prompt",
     )
     assert result.x == "ok"
+    clear_settings_cache()
+
+
+def test_anthropic_stream_can_be_disabled_per_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Messages:
+        def stream(self, **_kwargs):  # type: ignore[no-untyped-def]
+            raise AssertionError("单帧调用覆盖为非流式后不应走 stream")
+
+        def create(self, **_kwargs):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(
+                content=[SimpleNamespace(type="tool_use", input={"x": "ok"})]
+            )
+
+    monkeypatch.setenv("LLM_ANTHROPIC_STREAM", "true")
+    clear_settings_cache()
+    endpoint = llm._EndpointConfig(
+        provider="anthropic",
+        base_url="https://relay.example",
+        model="claude-test",
+        api_key="test-key",
+        timeout_sec=30.0,
+        max_output_tokens=1024,
+        reasoning_effort=None,
+        omit_sampling_params=True,
+        multimodal=True,
+    )
+    result = llm._create_anthropic_structured(
+        SimpleNamespace(messages=_Messages()),
+        endpoint=endpoint,
+        response_model=_T,
+        content="prompt",
+        stream_override=False,
+    )
+    assert result.x == "ok"
+    clear_settings_cache()
+
+
+def test_anthropic_stream_has_overall_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _StreamResult:
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            # 总时限必须覆盖 SDK 建立 SSE 会话本身，而非只覆盖最终读取。
+            time.sleep(2.0)
+            return self
+
+        def __exit__(self, *_args):  # type: ignore[no-untyped-def]
+            return False
+
+        def get_final_message(self):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(
+                content=[SimpleNamespace(type="tool_use", input={"x": "late"})]
+            )
+
+    stream = _StreamResult()
+
+    class _Messages:
+        def stream(self, **_kwargs):  # type: ignore[no-untyped-def]
+            return stream
+
+    monkeypatch.setenv("LLM_ANTHROPIC_STREAM", "true")
+    clear_settings_cache()
+    endpoint = llm._EndpointConfig(
+        provider="anthropic",
+        base_url="https://relay.example",
+        model="claude-test",
+        api_key="test-key",
+        timeout_sec=0.1,
+        max_output_tokens=1024,
+        reasoning_effort=None,
+        omit_sampling_params=True,
+        multimodal=True,
+    )
+    started = time.monotonic()
+    with pytest.raises(TimeoutError, match="overall timeout"):
+        llm._create_anthropic_structured(
+            SimpleNamespace(messages=_Messages()),
+            endpoint=endpoint,
+            response_model=_T,
+            content="prompt",
+        )
+    assert time.monotonic() - started < 0.5
     clear_settings_cache()
 
 
