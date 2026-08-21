@@ -21,6 +21,12 @@ from pipeline.schemas.clues import (
     RawGivenClue,
     WorkingScope,
 )
+from pipeline.schemas.confidence import (
+    ConfidenceJudgeDraft,
+    ConfidenceReport,
+    DimensionScore,
+    HardGateHit,
+)
 from pipeline.schemas.dataset import ChatMessage, DatasetEntry, ManifestV2
 from pipeline.schemas.freeform import FreeFormStep, FreeFormTrajectory
 from pipeline.schemas.tools import (
@@ -45,10 +51,14 @@ __all__ = [
     "ChatMessage",
     "ClueExtractionResult",
     "ClueRole",
+    "ConfidenceJudgeDraft",
+    "ConfidenceReport",
     "DatasetEntry",
+    "DimensionScore",
     "FreeFormStep",
     "FreeFormTrajectory",
     "GeoTaskSpec",
+    "HardGateHit",
     "KeyframeAssessment",
     "ManifestV2",
     "MatchDecision",

@@ -1,7 +1,7 @@
 # 图片地理定位 Agent 训练数据集生成流水线 — 项目规格
 
-版本：3.3.7 | 生成时间：2026-08-15
-修订说明：v3.3.7 条件式复核的「明确答案重复」改为：多 resolved task 时用 LLM 判定最终地点是否同地/同答案链（字符串全等仅作零成本正例短路），命中后再走双向复核；不得靠措辞归一化猜同地。v3.3.6 源输入归并改为「包含/放大硬合并 + 是否同一张照片」两两判定（union-find）；brief 只核验画面事实、不作张数配额；拼图中已出现的一格全屏再出示必须同组。v3.3.5 选图密采样改为过程时间线：蒸馏窗字幕抽取多段 `process_intervals`（`show_source`/`tool`/`reveal`/`other`），只在 `show_source` 并集内密采样；逐帧注入区间角色软先验；时间线失败回退单出示粗窗；多段不相邻出示却只选出 1 张且 brief 非空 → `needs_review`；Stage 2 后置门禁可拦「轨迹明确依赖第二份输入却只选 1 张」。v3.3.4 选图改为定位链证据对齐：题级 `visual_evidence_brief` + 逐帧 `evidence_role`/`chain_support_score`；组间按证据支撑择优、组内仍按干净度；Stage 2 后可选轨迹–选图一致性门禁（只拦入库、不换图）。v3.3.3 取消审核模型预定选图张数；选图改为每题「最小源输入集」（出示连续段折叠 + 源输入关系判定），`expected_image_count` 仅记录实选张数。v3.3.2 将数据落盘三分：`data/selected/` 仅最终选图，`data/intermediate/` 仅阶段 JSON/门禁元数据，密采样探测帧进 `.cache/audit_candidates/`；跑批摘要进 `data/runs/`。v3.3.1 将阶段1.5 选图改为蒸馏窗与出示窗分离。v3.3.0 将阶段2改为 `reasoning / tool_call / final` 三类事件；阶段3引入执行器级 Canonical Tool 目录。旧规格见 `SPEC_legacy_v2.md`。
+版本：3.3.9 | 生成时间：2026-08-21
+修订说明：v3.3.9 阶段4 VLM 裁判增加分档刻度：禁止把「能复述字幕」直接打 0.9+；0.95+ 仅限近乎无可指摘。v3.3.8 新增阶段4样本置信度评分：按 task 综合字幕/选图/自由轨迹/规范化 JSONL 做多维质量分，写入 `stage4_confidence.json` 并回写 `DatasetEntry.quality_score`；硬门槛只压分不拦入库，禁止 GT 进入裁判上下文。v3.3.7 条件式复核的「明确答案重复」改为：多 resolved task 时用 LLM 判定最终地点是否同地/同答案链（字符串全等仅作零成本正例短路），命中后再走双向复核；不得靠措辞归一化猜同地。v3.3.6 源输入归并改为「包含/放大硬合并 + 是否同一张照片」两两判定（union-find）；brief 只核验画面事实、不作张数配额；拼图中已出现的一格全屏再出示必须同组。v3.3.5 选图密采样改为过程时间线：蒸馏窗字幕抽取多段 `process_intervals`（`show_source`/`tool`/`reveal`/`other`），只在 `show_source` 并集内密采样；逐帧注入区间角色软先验；时间线失败回退单出示粗窗；多段不相邻出示却只选出 1 张且 brief 非空 → `needs_review`；Stage 2 后置门禁可拦「轨迹明确依赖第二份输入却只选 1 张」。v3.3.4 选图改为定位链证据对齐：题级 `visual_evidence_brief` + 逐帧 `evidence_role`/`chain_support_score`；组间按证据支撑择优、组内仍按干净度；Stage 2 后可选轨迹–选图一致性门禁（只拦入库、不换图）。v3.3.3 取消审核模型预定选图张数；选图改为每题「最小源输入集」（出示连续段折叠 + 源输入关系判定），`expected_image_count` 仅记录实选张数。v3.3.2 将数据落盘三分：`data/selected/` 仅最终选图，`data/intermediate/` 仅阶段 JSON/门禁元数据，密采样探测帧进 `.cache/audit_candidates/`；跑批摘要进 `data/runs/`。v3.3.1 将阶段1.5 选图改为蒸馏窗与出示窗分离。v3.3.0 将阶段2改为 `reasoning / tool_call / final` 三类事件；阶段3引入执行器级 Canonical Tool 目录。旧规格见 `SPEC_legacy_v2.md`。
 
 ## 0. 给 Cursor 的元指令（先读这一段）
 
@@ -17,7 +17,7 @@
 - 模型名只能从配置读取；SDK 调用必须封装在 adapter 中；不得把具体模型名散落在业务代码中。
 - 禁止引入 LangChain / LangGraph 作为核心流水线框架。
 - 测试中禁止调用真实付费 API（`ALLOW_REAL_API=false` 时 adapter 必须拒绝）。
-- **groundtruth 不得进入阶段2 或任何轨迹生成模型的上下文**（为日后校验预留）。
+- **groundtruth 不得进入阶段2、阶段3 生成或阶段4 裁判上下文**（为日后校验预留）。
 - **严禁过拟合**：不得为单条视频发明特判硬门禁/词表。
 
 ## 1. 项目目标与背景
@@ -42,15 +42,16 @@
    - 数量：普通静图默认 1 张最佳帧；多张只来自源输入关系判定为不同；`expected_image_count` / `multi_target_images` 为选完后的实选结果（`len(image_paths)` / `>1`），不作预定配额。
 3. **阶段2（自由事件轨迹）**：优先接收 Stage 1.5 的单题字幕切片 + `image_paths`；若上游拆题不可用而收到整视频，则恢复字幕级保险，识别全部独立定位题，并令末步 `location` 以字符串数组按讲解顺序列出全部最终地点。事件分为 `reasoning / tool_call / final`：直接看图、合并已有证据、比较、筛选、排除、排名、形成目标签名和计划转向只写 reasoning；只有真实访问外部搜索、数据库、地图/街景/卫星/天气服务或执行图像/GIS/计算程序并产生新证据时才写 tool_call + Observation。允许连续 reasoning，但每条必须完成实质认知更新；只为解释下一次调用的一句话并入该 tool_call 的 Thought。产物禁止「求助者/网友/评论区」等渠道元话语，末步严格为 `event_type=final`、`final_answer`、`params.location`、`observation=null`。生成成功后可选 **轨迹–选图–brief 一致性门禁**（高精度冲突才拦）：含「开篇 reasoning 明确依赖第二份独立输入但 `image_paths` 只有 1 张」；冲突则跳过 Stage 3 入库，**不换图、不重蒸、不改轨迹**。过程时间线不得写入阶段2 prompt。
 4. **阶段3（执行器级归并与格式化）**：**按 task** 从 `canonical_tool_catalog.json` 加载小型执行器目录，结合自由 Tool 的 Thought、Params、Observation 和调用上下文进行语义归并。同一执行器的不同用途通过 `operation` 区分，不得因参数或目标对象不同拆成新工具；调用参数统一为 `operation + purpose + inputs`，其中 `inputs` 宽容保留原始字段。确无同类执行器时，模型可严格生成含 description/executor/usage/operations 的新 Tool 定义；高置信伪工具可降回 reasoning。最后写入 `working_scope`、标准 JSONL 和 `stage3_tool_mapping.json` 审计指标。
+5. **阶段4（样本置信度评分）**：在阶段3 JSONL 落盘之后，**按 task** 综合字幕切片、选图/brief、自由轨迹、规范化轨迹与 tool mapping，输出多维质量置信度，供人工按分排队检查。VLM 维度分须按刻度苛评：0.95+ 仅限近乎无可指摘；能复述字幕但存在答案粒度偏粗、Observation 像讲解总结、选中图带讲解包装等瑕疵时落在中高档而非满分。程序化硬门槛（缺 final / 空 location / 格式契约破坏 / 选中帧答案泄露 / 空字幕等）与 VLM 裁判硬门槛（伪造 Observation、工具参数不可执行、无源精细数据、图轨不一致、多目标明显漏答等）命中时只将 `quality_score` 压到配置上限，**不拦入库、不改轨迹、不换图、不重蒸**。`review_priority` 默认：`<0.70` high、`<0.93` medium、否则 low（可由配置覆盖）。详细报告写入 `stage4_confidence.json`，并回写 `DatasetEntry.quality_score`（只改该字段）。LLM 调用失败时失败开放：程序化门槛仍生效，其余维度记中性分。禁止 groundtruth 进入裁判上下文；阶段3 因轨迹–选图冲突跳过入库的 task 不跑阶段4。
 ### 1.3 输入
 
 - 原始视频；可选 ASR（仅阶段1 时间锚）
-- groundtruth：本次不消费，不得注入阶段2/3 生成 prompt
+- groundtruth：本次不消费，不得注入阶段2/3 生成 prompt 或阶段4 裁判上下文
 
 ### 1.4 质量铁律
 
-- 阶段2 内容忠实、静默去噪、agent 视角决策链；Observation 不得补写材料中不存在的精细数据；阶段3 格式归一
-- 禁止真实 Tool API；禁止 GT 进生成上下文
+- 阶段2 内容忠实、静默去噪、agent 视角决策链；Observation 不得补写材料中不存在的精细数据；阶段3 格式归一；阶段4 只评分不门禁
+- 禁止真实 Tool API；禁止 GT 进生成与裁判上下文
 - 宁缺毋滥；禁止样本特化硬门禁
 
 ### 1.5 外部给定线索 / 工作范围（沿用 v2 分层，单 Agent）
@@ -69,8 +70,9 @@
 阶段1.5  字幕 + 稀疏帧 → AuditSplitResult（视频审核 + task 级门禁/关键帧）
 阶段2    每个 accepted task：字幕切片 + image_paths → reasoning/tool_call/final FreeFormTrajectory
 阶段3    每 task：FreeFormTrajectory + canonical catalog/runtime trees → Trajectory + tool mapping audit → DatasetEntry JSONL
+阶段4    每 task：多产物置信度评分 → ConfidenceReport + 回写 DatasetEntry.quality_score（不拦入库）
 
-编排：run_stage{1,2,3}.py / run_stage_audit.py / run_one_video.py / batch_run.py
+编排：run_stage{1,2,3,4}.py / run_stage_audit.py / run_one_video.py / batch_run.py
 基础 Tool 目录：canonical_tool_catalog.json；运行时增量：tool_trees.json
 ```
 
@@ -89,6 +91,7 @@ geo-agent-dataset/
 │   ├── stage_audit_split/
 │   ├── stage2_freeform_tao/
 │   ├── stage3_normalize_format/
+│   ├── stage4_confidence/
 │   └── orchestrator.py
 ├── tool_trees.json
 ├── canonical_tool_catalog.json
@@ -96,6 +99,7 @@ geo-agent-dataset/
 ├── run_stage_audit.py
 ├── run_stage2.py
 ├── run_stage3.py
+├── run_stage4.py
 ├── run_one_video.py
 ├── batch_run.py
 ├── tests/
@@ -114,7 +118,8 @@ geo-agent-dataset/
     │       ├── candidate_assessments.partial.json  # 验收断点（可删）
     │       ├── stage2_freeform_tao.json            # 仅 accepted
     │       ├── stage3_trajectory.json
-    │       └── stage3_tool_mapping.json
+    │       ├── stage3_tool_mapping.json
+    │       └── stage4_confidence.json              # 置信度报告（人工检查）
     └── output/
         ├── shards/{task_id}.jsonl
         └── geolocate_agent.jsonl
@@ -126,7 +131,7 @@ geo-agent-dataset/
 
 ## 4. 数据 Schema
 
-见 `pipeline/schemas/`：`TranscriptSegment`、`AuditSplitResult`/`GeoTaskSpec`、`RawGivenClue`/`WorkingScope`/`ClueExtractionResult`、`FreeFormStep`/`FreeFormTrajectory`、`ToolTree`/`ToolForest`、`Trajectory`（`image_paths: list[str]`）、`DatasetEntry`。
+见 `pipeline/schemas/`：`TranscriptSegment`、`AuditSplitResult`/`GeoTaskSpec`、`RawGivenClue`/`WorkingScope`/`ClueExtractionResult`、`FreeFormStep`/`FreeFormTrajectory`、`ToolTree`/`ToolForest`、`Trajectory`（`image_paths: list[str]`）、`DatasetEntry`、`DimensionScore`/`HardGateHit`/`ConfidenceReport`/`ConfidenceJudgeDraft`。
 
 ## 5. 阶段接口
 
@@ -147,6 +152,10 @@ def ensure_tool_trees(freeform: FreeFormTrajectory, trees_path: Path) -> ToolFor
 def remap_trajectory(...) -> Trajectory: ...
 def format_dataset_entry(traj: Trajectory, *, source_video: str) -> DatasetEntry: ...
 def run_stage3(freeform: FreeFormTrajectory, ..., image_paths: list[str] | None = None) -> DatasetEntry: ...
+
+def run_stage4(*, task: GeoTaskSpec, transcript: list[TranscriptSegment],
+               freeform: FreeFormTrajectory, trajectory: Trajectory,
+               entry: DatasetEntry, ..., judge=None) -> ConfidenceReport: ...
 ```
 
 ## 6. Tool 树规则

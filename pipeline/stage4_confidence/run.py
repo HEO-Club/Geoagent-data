@@ -1,0 +1,256 @@
+"""阶段4：样本置信度评分（人工检查用，不拦入库）。"""
+
+from __future__ import annotations
+
+import json
+import logging
+from pathlib import Path
+from typing import Any, Optional
+
+from pipeline.config import get_settings
+from pipeline.schemas.audit import GeoTaskSpec
+from pipeline.schemas.confidence import (
+    DIMENSION_NAMES,
+    ConfidenceJudgeDraft,
+    ConfidenceReport,
+    DimensionScore,
+    HardGateHit,
+    ReviewPriority,
+)
+from pipeline.schemas.dataset import DatasetEntry
+from pipeline.schemas.freeform import FreeFormTrajectory
+from pipeline.schemas.trajectory import Trajectory
+from pipeline.schemas.transcript import TranscriptSegment
+from pipeline.stage4_confidence.judge import JudgeFn, call_confidence_judge
+from pipeline.stage4_confidence.rules import evaluate_programmatic_gates
+
+logger = logging.getLogger(__name__)
+
+
+def _dimension_weights() -> dict[str, float]:
+    settings = get_settings()
+    raw = {
+        "evidence_grounding": float(settings.STAGE4_W_EVIDENCE_GROUNDING),
+        "final_answer_support": float(settings.STAGE4_W_FINAL_ANSWER_SUPPORT),
+        "tool_param_correctness": float(settings.STAGE4_W_TOOL_PARAM_CORRECTNESS),
+        "logical_consistency": float(settings.STAGE4_W_LOGICAL_CONSISTENCY),
+        "input_quality_alignment": float(settings.STAGE4_W_INPUT_QUALITY_ALIGNMENT),
+        "sft_format_completeness": float(settings.STAGE4_W_SFT_FORMAT_COMPLETENESS),
+    }
+    total = sum(max(0.0, v) for v in raw.values())
+    if total <= 0:
+        n = len(raw)
+        return {k: 1.0 / n for k in raw}
+    return {k: max(0.0, v) / total for k, v in raw.items()}
+
+
+def _review_priority(score: float) -> ReviewPriority:
+    settings = get_settings()
+    if score < float(settings.STAGE4_PRIORITY_HIGH_BELOW):
+        return "high"
+    if score < float(settings.STAGE4_PRIORITY_MEDIUM_BELOW):
+        return "medium"
+    return "low"
+
+
+def _draft_score(draft: ConfidenceJudgeDraft | None, name: str, neutral: float) -> float:
+    if draft is None:
+        return neutral
+    value = getattr(draft, name, None)
+    if value is None:
+        return neutral
+    return float(max(0.0, min(1.0, value)))
+
+
+def _draft_reason(draft: ConfidenceJudgeDraft | None, name: str, fallback: str) -> str:
+    if draft is None:
+        return fallback
+    reasons = draft.dimension_reasons or {}
+    text = str(reasons.get(name) or "").strip()
+    return text or fallback
+
+
+def merge_confidence(
+    *,
+    task_id: str,
+    format_score: float,
+    format_reason: str,
+    programmatic_gates: list[HardGateHit],
+    draft: ConfidenceJudgeDraft | None,
+    judge_call_failed: bool,
+) -> ConfidenceReport:
+    """加权合成 base_score；硬门槛命中则压到 cap。"""
+    settings = get_settings()
+    weights = _dimension_weights()
+    neutral = float(settings.STAGE4_JUDGE_NEUTRAL_SCORE)
+    cap = float(settings.STAGE4_HARD_GATE_CAP)
+
+    scores: dict[str, float] = {}
+    reasons: dict[str, str] = {}
+    for name in DIMENSION_NAMES:
+        if name == "sft_format_completeness":
+            scores[name] = float(max(0.0, min(1.0, format_score)))
+            reasons[name] = format_reason
+        else:
+            scores[name] = _draft_score(draft, name, neutral)
+            reasons[name] = _draft_reason(
+                draft,
+                name,
+                "裁判调用失败，记中性分" if judge_call_failed else "",
+            )
+
+    dimensions = [
+        DimensionScore(
+            name=name,
+            score=scores[name],
+            weight=weights[name],
+            reason=reasons[name],
+        )
+        for name in DIMENSION_NAMES
+    ]
+    base = sum(d.score * d.weight for d in dimensions)
+    base = float(max(0.0, min(1.0, base)))
+
+    model_gates = list(draft.hard_gates) if draft else []
+    # 去重 code
+    gates: list[HardGateHit] = []
+    seen: set[str] = set()
+    for g in [*programmatic_gates, *model_gates]:
+        code = str(g.code).strip()
+        if not code or code in seen:
+            continue
+        seen.add(code)
+        gates.append(HardGateHit(code=code, evidence=str(g.evidence or "").strip()))
+
+    quality = min(base, cap) if gates else base
+    quality = float(max(0.0, min(1.0, quality)))
+
+    notes_parts: list[str] = []
+    if judge_call_failed:
+        notes_parts.append("judge_call_failed")
+    if draft and draft.notes.strip():
+        notes_parts.append(draft.notes.strip())
+    if gates:
+        notes_parts.append(f"hard_gates={len(gates)}")
+
+    return ConfidenceReport(
+        task_id=task_id,
+        base_score=base,
+        quality_score=quality,
+        dimensions=dimensions,
+        hard_gates=gates,
+        review_priority=_review_priority(quality),
+        notes="；".join(notes_parts),
+        judge_call_failed=judge_call_failed,
+    )
+
+
+def rewrite_entry_quality_score(
+    entry: DatasetEntry,
+    quality_score: float,
+    *,
+    out_jsonl_path: str | Path | None = None,
+) -> DatasetEntry:
+    """只回写 quality_score，不改 messages。"""
+    updated = entry.model_copy(update={"quality_score": float(quality_score)})
+    if out_jsonl_path:
+        path = Path(out_jsonl_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(updated.model_dump_json() + "\n", encoding="utf-8")
+    return updated
+
+
+def load_confidence_report(path: str | Path) -> ConfidenceReport:
+    """从 intermediate 加载阶段4报告。"""
+    return ConfidenceReport.model_validate_json(
+        Path(path).read_text(encoding="utf-8")
+    )
+
+
+def _load_tool_mapping(path: Path | None) -> dict[str, Any] | None:
+    if path is None or not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("无法读取 tool mapping %s: %s", path, exc)
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def run_stage4(
+    *,
+    task: GeoTaskSpec,
+    transcript: list[TranscriptSegment],
+    freeform: FreeFormTrajectory,
+    trajectory: Trajectory,
+    entry: DatasetEntry,
+    tool_mapping: dict[str, Any] | None = None,
+    tool_mapping_path: str | Path | None = None,
+    out_report_path: str | None = None,
+    out_jsonl_path: str | None = None,
+    judge: Optional[JudgeFn] = None,
+) -> ConfidenceReport:
+    """阶段4：多维置信度评分 → 报告落盘 + 回写 JSONL.quality_score。
+
+    硬门槛只压分，不拦入库、不改轨迹。
+    """
+    mapping = tool_mapping
+    if mapping is None and tool_mapping_path is not None:
+        mapping = _load_tool_mapping(Path(tool_mapping_path))
+
+    programmatic_gates, format_score, format_reason = evaluate_programmatic_gates(
+        trajectory, task, transcript
+    )
+
+    draft: ConfidenceJudgeDraft | None = None
+    judge_failed = False
+    try:
+        draft = call_confidence_judge(
+            task=task,
+            transcript=transcript,
+            freeform=freeform,
+            trajectory=trajectory,
+            tool_mapping=mapping,
+            judge=judge,
+        )
+    except Exception as exc:  # noqa: BLE001 — 失败开放
+        judge_failed = True
+        logger.warning(
+            "stage4 judge failed for %s: %s",
+            task.task_id,
+            type(exc).__name__,
+        )
+
+    report = merge_confidence(
+        task_id=task.task_id,
+        format_score=format_score,
+        format_reason=format_reason,
+        programmatic_gates=programmatic_gates,
+        draft=draft,
+        judge_call_failed=judge_failed,
+    )
+
+    settings = get_settings()
+    report_path = (
+        Path(out_report_path)
+        if out_report_path
+        else (
+            Path(settings.INTERMEDIATE_DIR)
+            / freeform.source_video
+            / "tasks"
+            / task.task_id
+            / "stage4_confidence.json"
+        )
+    )
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+
+    shard = (
+        Path(out_jsonl_path)
+        if out_jsonl_path
+        else Path(settings.OUTPUT_DIR) / "shards" / f"{task.task_id}.jsonl"
+    )
+    rewrite_entry_quality_score(entry, report.quality_score, out_jsonl_path=shard)
+
+    return report

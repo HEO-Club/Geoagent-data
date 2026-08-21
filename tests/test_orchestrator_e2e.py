@@ -15,8 +15,21 @@ from pipeline.schemas.audit import (
     TaskStatus,
     TargetKind,
 )
+from pipeline.schemas.confidence import ConfidenceJudgeDraft
 from pipeline.schemas.freeform import FreeFormStep, FreeFormTrajectory
 from pipeline.schemas.transcript import TranscriptSegment
+
+
+def _dummy_stage4_judge(**_kwargs: Any) -> ConfidenceJudgeDraft:
+    """e2e 注入：高分、无硬门槛。"""
+    return ConfidenceJudgeDraft(
+        evidence_grounding=0.85,
+        final_answer_support=0.8,
+        tool_param_correctness=0.8,
+        logical_consistency=0.85,
+        input_quality_alignment=0.8,
+        notes="e2e-mock",
+    )
 
 
 def test_run_one_video_e2e(
@@ -100,7 +113,14 @@ def test_run_one_video_e2e(
                     tool="plant_check",
                     params={},
                     observation={"hint": "south"},
-                )
+                ),
+                FreeFormStep(
+                    event_type="final",
+                    thought="conclude",
+                    tool="final_answer",
+                    params={"location": "南方"},
+                    observation=None,
+                ),
             ],
         )
         path = Path(kwargs["out_path"]) if kwargs.get("out_path") else (
@@ -118,22 +138,28 @@ def test_run_one_video_e2e(
         str(video),
         image_path="img.jpg",
         stage3_matcher=lambda _n, _f: None,
+        stage4_judge=_dummy_stage4_judge,
     )
     assert len(entries) == 1
     entry = entries[0]
     assert entry.source_video == "e2e"
     assert any(m.role == "assistant" for m in entry.messages)
     assert "[Image:" in entry.messages[1].content
+    assert entry.quality_score is not None
+    assert entry.quality_score >= 0.5
     manifest = orchestrator.load_manifest("e2e")
     assert manifest.stages["stage1"] == "done"
     assert manifest.stages["stage_audit_split"] == "done"
     assert manifest.stages["task:e2e__t01:stage2"] == "done"
     assert manifest.stages["task:e2e__t01:stage3"] == "done"
+    assert manifest.stages["task:e2e__t01:stage4"] == "done"
     assert manifest.stages["task:e2e__t02:stage2"] == "rejected"
     assert manifest.stages["task:e2e__t02:stage3"] == "rejected"
+    assert manifest.stages["task:e2e__t02:stage4"] == "rejected"
     task_dir = tmp_path / "intermediate" / "e2e" / "tasks" / "e2e__t01"
     assert (task_dir / "stage2_freeform_tao.json").is_file()
     assert (task_dir / "stage3_trajectory.json").is_file()
+    assert (task_dir / "stage4_confidence.json").is_file()
     rejected_dir = (
         tmp_path / "intermediate" / "e2e" / "tasks" / "e2e__t02"
     )
@@ -145,6 +171,12 @@ def test_run_one_video_e2e(
     assert final.is_file()
     shard = tmp_path / "output" / "shards" / "e2e__t01.jsonl"
     assert shard.is_file()
+    from pipeline.schemas.dataset import DatasetEntry
+
+    shard_entry = DatasetEntry.model_validate_json(
+        shard.read_text(encoding="utf-8").splitlines()[0]
+    )
+    assert shard_entry.quality_score == pytest.approx(entry.quality_score)
 
 
 def test_run_one_video_reject_skips_downstream(
@@ -333,5 +365,8 @@ def test_run_one_video_skips_stage3_on_trajectory_image_conflict(
     manifest = orchestrator.load_manifest("conflict")
     assert manifest.stages["task:conflict__t01:stage2"] == "done"
     assert manifest.stages["task:conflict__t01:stage3"] == "needs_review"
+    assert manifest.stages["task:conflict__t01:stage4"] == "skipped_conflict"
+    conf_path = task_dir / "stage4_confidence.json"
+    assert not conf_path.exists()
     # 轨迹未被改写
     assert freeform_path.read_text(encoding="utf-8") == original
