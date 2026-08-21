@@ -5,15 +5,22 @@ from __future__ import annotations
 import json
 import uuid
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from pipeline.config import get_settings
+from pipeline.schemas.audit import GeoTaskSpec
 from pipeline.schemas.clues import WorkingScope
 from pipeline.schemas.dataset import ChatMessage, DatasetEntry
 from pipeline.schemas.freeform import FreeFormTrajectory
-from pipeline.schemas.tools import ToolForest
+from pipeline.schemas.quality import SemanticQualityReview
+from pipeline.schemas.tools import ToolForest, ToolParameterAudit
 from pipeline.schemas.trajectory import Action, Trajectory, TrajectoryStep
 from pipeline.stage3_normalize_format.map_tools import ensure_tool_trees
+from pipeline.stage3_normalize_format.params import (
+    initial_parameter_context,
+    normalize_and_validate_tool_inputs,
+    update_parameter_context,
+)
 from pipeline.stage3_normalize_format.trees import (
     find_tree_for_name,
     resolve_canonical_name,
@@ -40,10 +47,10 @@ def _json_dumps(obj: Any) -> str:
 
 
 def _normalize_observation(
-    observation: Optional[dict[str, Any]],
+    observation: dict[str, Any] | None,
     *,
     is_terminal: bool,
-) -> Optional[dict[str, Any]]:
+) -> dict[str, Any] | None:
     if is_terminal:
         return None
     if observation is None:
@@ -74,10 +81,15 @@ def remap_trajectory(
     image_paths: list[str] | None = None,
     image_path: str | None = None,
     trajectory_id: str | None = None,
+    parameter_audits: list[ToolParameterAudit] | None = None,
 ) -> Trajectory:
     """自由链 → 单 Agent 标准 Trajectory（canonical tools）。"""
     steps: list[TrajectoryStep] = []
-    for step in freeform.steps:
+    resolved_image_paths = _resolve_image_paths(
+        image_paths=image_paths, image_path=image_path
+    )
+    available_context = initial_parameter_context(resolved_image_paths)
+    for step_index, step in enumerate(freeform.steps, start=1):
         if step.event_type == "reasoning":
             steps.append(
                 TrajectoryStep(
@@ -104,11 +116,22 @@ def remap_trajectory(
             operation = resolve_operation(forest, step.tool)
             if not operation and tree and tree.canonical.operations:
                 operation = tree.canonical.operations[0].name
+            parameter_audit = normalize_and_validate_tool_inputs(
+                forest,
+                tool=canonical,
+                operation=operation or "execute",
+                inputs=dict(step.params or {}),
+                step_index=step_index,
+                available_context=available_context,
+            )
+            if parameter_audits is not None:
+                parameter_audits.append(parameter_audit)
             normalized_params = {
-                "operation": operation or "execute",
+                "operation": parameter_audit.operation,
                 "purpose": step.thought,
-                "inputs": dict(step.params or {}),
+                "inputs": parameter_audit.normalized_inputs,
             }
+            update_parameter_context(available_context, parameter_audit)
             event_type = "tool_call"
         steps.append(
             TrajectoryStep(
@@ -124,9 +147,7 @@ def remap_trajectory(
         id=trajectory_id or str(uuid.uuid4()),
         system_prompt=system_prompt,
         user_query=user_query,
-        image_paths=_resolve_image_paths(
-            image_paths=image_paths, image_path=image_path
-        ),
+        image_paths=resolved_image_paths,
         steps=steps,
     )
 
@@ -160,13 +181,18 @@ def trajectory_to_messages(traj: Trajectory) -> list[ChatMessage]:
     return messages
 
 
-def format_dataset_entry(traj: Trajectory, *, source_video: str) -> DatasetEntry:
+def format_dataset_entry(
+    traj: Trajectory,
+    *,
+    source_video: str,
+    quality_score: float | None = None,
+) -> DatasetEntry:
     """Trajectory → 单条 JSONL DatasetEntry。"""
     return DatasetEntry(
         id=traj.id,
         source_video=source_video,
         messages=trajectory_to_messages(traj),
-        quality_score=None,
+        quality_score=quality_score,
     )
 
 
@@ -237,6 +263,10 @@ def run_stage3(
     system_prompt: str | None = None,
     user_query: str | None = None,
     matcher=None,
+    task: GeoTaskSpec | None = None,
+    observation_audit: dict[str, Any] | None = None,
+    trajectory_consistency: dict[str, Any] | None = None,
+    semantic_review: SemanticQualityReview | None = None,
 ) -> DatasetEntry:
     """阶段3 一站式：树维护 → 重写 → DatasetEntry。"""
     settings = get_settings()
@@ -255,6 +285,7 @@ def run_stage3(
         if user_query is not None
         else build_user_query(freeform.working_scope)
     )
+    parameter_audits: list[ToolParameterAudit] = []
     traj = remap_trajectory(
         freeform,
         forest,
@@ -263,8 +294,26 @@ def run_stage3(
         image_paths=image_paths,
         image_path=image_path or None,
         trajectory_id=shard_id,
+        parameter_audits=parameter_audits,
     )
-    entry = format_dataset_entry(traj, source_video=freeform.source_video)
+    # 延迟导入避免 package 公共导出与质量模块之间形成循环依赖。
+    from pipeline.quality.scorer import score_trajectory_quality
+
+    quality_report = score_trajectory_quality(
+        freeform,
+        traj,
+        forest,
+        task=task,
+        observation_audit=observation_audit,
+        trajectory_consistency=trajectory_consistency,
+        parameter_audits=[item.model_dump() for item in parameter_audits],
+        semantic_review=semantic_review,
+    )
+    entry = format_dataset_entry(
+        traj,
+        source_video=freeform.source_video,
+        quality_score=quality_report.quality_score,
+    )
 
     video_id = freeform.source_video
     traj_path = (
@@ -283,6 +332,22 @@ def run_stage3(
         ),
         encoding="utf-8",
     )
+    parameter_audit_path = traj_path.with_name("stage3_parameter_audit.json")
+    parameter_audit_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "canonical_inputs_v1",
+                "calls": [item.model_dump() for item in parameter_audits],
+                "valid_calls": sum(item.valid for item in parameter_audits),
+                "total_calls": len(parameter_audits),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    quality_path = traj_path.with_name("stage3_quality_report.json")
+    quality_path.write_text(quality_report.model_dump_json(indent=2), encoding="utf-8")
 
     if out_jsonl_path:
         shard = Path(out_jsonl_path)

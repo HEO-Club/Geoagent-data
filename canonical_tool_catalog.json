@@ -122,6 +122,7 @@
         "operations": [
           {"name": "retrieve", "description": "获取指定区域和时间的卫星或航片"},
           {"name": "change_time", "description": "切换历史年份、季节或水期影像"},
+          {"name": "compare_candidates", "description": "在多个候选区域的卫星影像中按同一视觉/空间模板进行比对"},
           {"name": "compare_time", "description": "调用影像服务进行多时相对比"},
           {"name": "oblique_view", "description": "获取倾斜或三维地形视角"}
         ]
@@ -221,6 +222,35 @@
       },
       "variants": ["AI推理咨询", "ask_external_llm", "consult_reasoning_model"],
       "variant_operations": {"AI推理咨询": "consult", "ask_external_llm": "consult", "consult_reasoning_model": "consult"}
+    },
+    {
+      "canonical": {
+        "name": "flight_data_query",
+        "description": "查询航班历史、航迹、航路和指定区域附近的航空器活动记录。",
+        "executor": "flight_tracking_or_archive_service",
+        "usage": "只有真实访问航班跟踪或历史档案服务时调用；对已有航班截图进行肉眼读取属于 reasoning。",
+        "operations": [
+          {"name": "search", "description": "按日期、区域、机场或航线查询航班记录"},
+          {"name": "track", "description": "查询指定航班或区域内航迹"},
+          {"name": "nearby_traffic", "description": "统计指定时间和空间范围内的航空器活动"}
+        ]
+      },
+      "variants": ["historical_flight_search", "flight_archive_query", "aircraft_track_query"],
+      "variant_operations": {"historical_flight_search": "search", "flight_archive_query": "search", "aircraft_track_query": "track"}
+    },
+    {
+      "canonical": {
+        "name": "metadata_read",
+        "description": "读取输入图片或媒体文件中真实存在的 EXIF、时间、设备和嵌入式位置元数据。",
+        "executor": "local_media_metadata_reader",
+        "usage": "仅在实际文件可访问且执行了元数据读取时调用；不得凭图像内容猜测 GPS 或设备信息。",
+        "operations": [
+          {"name": "exif", "description": "读取图片 EXIF 和 GPS 元数据"},
+          {"name": "file", "description": "读取文件容器、编码、创建时间等通用元数据"}
+        ]
+      },
+      "variants": ["exif_metadata_read", "read_exif", "media_metadata_read"],
+      "variant_operations": {"exif_metadata_read": "exif", "read_exif": "exif", "media_metadata_read": "file"}
     },
     {
       "canonical": {

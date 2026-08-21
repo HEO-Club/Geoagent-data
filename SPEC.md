@@ -1,7 +1,7 @@
 # 图片地理定位 Agent 训练数据集生成流水线 — 项目规格
 
-版本：3.3.7 | 生成时间：2026-08-15
-修订说明：v3.3.7 条件式复核的「明确答案重复」改为：多 resolved task 时用 LLM 判定最终地点是否同地/同答案链（字符串全等仅作零成本正例短路），命中后再走双向复核；不得靠措辞归一化猜同地。v3.3.6 源输入归并改为「包含/放大硬合并 + 是否同一张照片」两两判定（union-find）；brief 只核验画面事实、不作张数配额；拼图中已出现的一格全屏再出示必须同组。v3.3.5 选图密采样改为过程时间线：蒸馏窗字幕抽取多段 `process_intervals`（`show_source`/`tool`/`reveal`/`other`），只在 `show_source` 并集内密采样；逐帧注入区间角色软先验；时间线失败回退单出示粗窗；多段不相邻出示却只选出 1 张且 brief 非空 → `needs_review`；Stage 2 后置门禁可拦「轨迹明确依赖第二份输入却只选 1 张」。v3.3.4 选图改为定位链证据对齐：题级 `visual_evidence_brief` + 逐帧 `evidence_role`/`chain_support_score`；组间按证据支撑择优、组内仍按干净度；Stage 2 后可选轨迹–选图一致性门禁（只拦入库、不换图）。v3.3.3 取消审核模型预定选图张数；选图改为每题「最小源输入集」（出示连续段折叠 + 源输入关系判定），`expected_image_count` 仅记录实选张数。v3.3.2 将数据落盘三分：`data/selected/` 仅最终选图，`data/intermediate/` 仅阶段 JSON/门禁元数据，密采样探测帧进 `.cache/audit_candidates/`；跑批摘要进 `data/runs/`。v3.3.1 将阶段1.5 选图改为蒸馏窗与出示窗分离。v3.3.0 将阶段2改为 `reasoning / tool_call / final` 三类事件；阶段3引入执行器级 Canonical Tool 目录。旧规格见 `SPEC_legacy_v2.md`。
+版本：3.4.1 | 生成时间：2026-08-21
+修订说明：v3.4.1 将参数完整度与轨迹语义质量解耦：operation 字段增加 `requirement_level`、`acquisition_hint`、上下文来源和缺参修复动作；当前图片、前置 Tool 结果、活动区域/会话等可使用显式 `$current_image` / `$previous_tool_result` 引用，缺失参数分为 `ready / context_resolvable / repairable / invalid`。质量路由扩展为 `accept / provisional_pass / parameter_repair / needs_review / reject`，缺少可自动取得的执行参数不再把整条轨迹笼统送人工复核。v3.4.0 为 Stage 3 增加 operation 级 `input_schema`、参数解释、别名归一、宽容扩展字段与参数审计；基础目录补充航班档案和媒体元数据执行器。新增证据校准的轨迹质量置信度：六维加权分数、审核覆盖率、硬错误门槛、独立语义审核 Agent 接口及 `stage3_quality_report.json`，最终 JSONL 写入 `quality_score`。旧规格见 `SPEC_legacy_v2.md`。
 
 ## 0. 给 Cursor 的元指令（先读这一段）
 
@@ -41,7 +41,8 @@
    - **答案与 task 门禁**：每题分别输出 `answer_status=resolved|ambiguous|unsolved` 与 `status=accepted|needs_review|rejected`。只有答案唯一明确、图片完整干净的 `accepted` task 进入 Stage 2；模棱两可或明确无解的题单独拒绝，选图失败进入人工复核，均不得影响同视频其他题。切题过粗（一题塞多个最终地点）走结构复核，**不在选图里用答案个数定张数**。
    - 数量：普通静图默认 1 张最佳帧；多张只来自源输入关系判定为不同；`expected_image_count` / `multi_target_images` 为选完后的实选结果（`len(image_paths)` / `>1`），不作预定配额。
 3. **阶段2（自由事件轨迹）**：优先接收 Stage 1.5 的单题字幕切片 + `image_paths`；若上游拆题不可用而收到整视频，则恢复字幕级保险，识别全部独立定位题，并令末步 `location` 以字符串数组按讲解顺序列出全部最终地点。事件分为 `reasoning / tool_call / final`：直接看图、合并已有证据、比较、筛选、排除、排名、形成目标签名和计划转向只写 reasoning；只有真实访问外部搜索、数据库、地图/街景/卫星/天气服务或执行图像/GIS/计算程序并产生新证据时才写 tool_call + Observation。允许连续 reasoning，但每条必须完成实质认知更新；只为解释下一次调用的一句话并入该 tool_call 的 Thought。产物禁止「求助者/网友/评论区」等渠道元话语，末步严格为 `event_type=final`、`final_answer`、`params.location`、`observation=null`。生成成功后可选 **轨迹–选图–brief 一致性门禁**（高精度冲突才拦）：含「开篇 reasoning 明确依赖第二份独立输入但 `image_paths` 只有 1 张」；冲突则跳过 Stage 3 入库，**不换图、不重蒸、不改轨迹**。过程时间线不得写入阶段2 prompt。
-4. **阶段3（执行器级归并与格式化）**：**按 task** 从 `canonical_tool_catalog.json` 加载小型执行器目录，结合自由 Tool 的 Thought、Params、Observation 和调用上下文进行语义归并。同一执行器的不同用途通过 `operation` 区分，不得因参数或目标对象不同拆成新工具；调用参数统一为 `operation + purpose + inputs`，其中 `inputs` 宽容保留原始字段。确无同类执行器时，模型可严格生成含 description/executor/usage/operations 的新 Tool 定义；高置信伪工具可降回 reasoning。最后写入 `working_scope`、标准 JSONL 和 `stage3_tool_mapping.json` 审计指标。
+4. **阶段3（执行器级归并、参数合同与格式化）**：**按 task** 从 `canonical_tool_catalog.json` 加载执行器目录，结合自由 Tool 的 Thought、Params、Observation 和调用上下文进行语义归并。同一执行器的不同用途通过 `operation` 区分，不得因参数或目标对象不同拆成新工具；调用参数统一为 `operation + purpose + inputs`。每个 operation 必须有带字段类型、必填关系、`requirement_level`、别名、取值约束、示例、解释和 `acquisition_hint` 的 `input_schema`；Stage 3 先做 operation alias 与输入字段归一，未识别字段保存在 `inputs.extensions`，不得因额外字段直接丢弃。当前图片、前置工具结果、活动区域或会话可显式写成 `$current_image`、`$previous_tool_result`、`$active_area`、`$active_session`；若所需图片尚不存在，指导 Agent 先 crop/zoom/capture 或从视频补截帧并传回图片 ID，禁止编造路径。缺参审计输出 `ready / context_resolvable / repairable / invalid` 及结构化 repair actions。OSM 默认接收 area/tags 等结构化条件并由执行器生成 Overpass QL；只有原链确实提供代码时才填写可选 `overpass_ql`。确无同类执行器时，模型可严格新建 Tool；高置信伪工具可降回 reasoning。最后写入标准 JSONL、`stage3_tool_mapping.json` 和 `stage3_parameter_audit.json`。
+5. **轨迹质量置信度（Stage 3 后置审计，不改写轨迹）**：按证据落地度 30%、最终答案支撑度 20%、Tool 与参数正确性 20%、逻辑一致性 15%、输入质量与对齐 10%、SFT 格式完整性 5% 形成 `quality_score`，同时输出各维度 `audit_coverage`。明确虚假 Observation、最终答案缺失/不完整、答案泄露图、轨迹依赖图片与实际选图冲突等为硬错误。`quality_score>=0.85` 且覆盖率 `>=0.70`、无硬错误才可 `accept`；证据与格式可靠但审核覆盖尚不足可 `provisional_pass`；只有可补参数缺口时为 `parameter_repair`；Tool 不存在、语义冲突等进入 `needs_review`；硬错误或覆盖充分后仍低质量才 `reject`。独立审核 Agent 只能评估和引用 step/字幕时间/图片，禁止重写或补全轨迹；审核结果写入 `stage3_quality_report.json`，JSONL 的 `quality_score` 取该报告总分。
 ### 1.3 输入
 
 - 原始视频；可选 ASR（仅阶段1 时间锚）
@@ -68,7 +69,8 @@
 阶段1    视频 → TranscriptSegment 列表
 阶段1.5  字幕 + 稀疏帧 → AuditSplitResult（视频审核 + task 级门禁/关键帧）
 阶段2    每个 accepted task：字幕切片 + image_paths → reasoning/tool_call/final FreeFormTrajectory
-阶段3    每 task：FreeFormTrajectory + canonical catalog/runtime trees → Trajectory + tool mapping audit → DatasetEntry JSONL
+阶段3    每 task：FreeFormTrajectory + canonical catalog/runtime trees → 参数归一/校验 → Trajectory + tool/parameter audit → DatasetEntry JSONL
+质量审计 Trajectory + Stage1.5/Observation/参数/可选独立审核结果 → 分维度置信度 + coverage + accept/review/reject
 
 编排：run_stage{1,2,3}.py / run_stage_audit.py / run_one_video.py / batch_run.py
 基础 Tool 目录：canonical_tool_catalog.json；运行时增量：tool_trees.json
@@ -89,6 +91,7 @@ geo-agent-dataset/
 │   ├── stage_audit_split/
 │   ├── stage2_freeform_tao/
 │   ├── stage3_normalize_format/
+│   ├── quality/
 │   └── orchestrator.py
 ├── tool_trees.json
 ├── canonical_tool_catalog.json
@@ -114,7 +117,9 @@ geo-agent-dataset/
     │       ├── candidate_assessments.partial.json  # 验收断点（可删）
     │       ├── stage2_freeform_tao.json            # 仅 accepted
     │       ├── stage3_trajectory.json
-    │       └── stage3_tool_mapping.json
+    │       ├── stage3_tool_mapping.json
+    │       ├── stage3_parameter_audit.json
+    │       └── stage3_quality_report.json
     └── output/
         ├── shards/{task_id}.jsonl
         └── geolocate_agent.jsonl
@@ -126,7 +131,7 @@ geo-agent-dataset/
 
 ## 4. 数据 Schema
 
-见 `pipeline/schemas/`：`TranscriptSegment`、`AuditSplitResult`/`GeoTaskSpec`、`RawGivenClue`/`WorkingScope`/`ClueExtractionResult`、`FreeFormStep`/`FreeFormTrajectory`、`ToolTree`/`ToolForest`、`Trajectory`（`image_paths: list[str]`）、`DatasetEntry`。
+见 `pipeline/schemas/`：`TranscriptSegment`、`AuditSplitResult`/`GeoTaskSpec`、`RawGivenClue`/`WorkingScope`/`ClueExtractionResult`、`FreeFormStep`/`FreeFormTrajectory`、`ToolTree`/`ToolForest`、`ToolInputSchema`/`ToolParameterAudit`、`Trajectory`（`image_paths: list[str]`）、`TrajectoryQualityReport`、`DatasetEntry`。
 
 ## 5. 阶段接口
 

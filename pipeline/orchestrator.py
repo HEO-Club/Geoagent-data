@@ -189,6 +189,7 @@ def run_one_video(
             freeform.source_video = vid
 
         consistency_path = task_dir / "image_trajectory_consistency.json"
+        consistency_payload: dict | None = None
         if settings.AUDIT_TRAJECTORY_IMAGE_CHECK:
             consistency = check_trajectory_image_consistency(
                 image_paths=task_images,
@@ -197,6 +198,7 @@ def run_one_video(
                 ),
                 trajectory=freeform,
             )
+            consistency_payload = consistency.model_dump()
             consistency_path.write_text(
                 consistency.model_dump_json(indent=2),
                 encoding="utf-8",
@@ -216,6 +218,12 @@ def run_one_video(
             and manifest.stages.get(stage3_key) == "done"
             and shard_path.is_file()
         ):
+            observation_audit_path = task_dir / "stage2_observation_audit.json"
+            observation_audit = (
+                json.loads(observation_audit_path.read_text(encoding="utf-8"))
+                if observation_audit_path.is_file()
+                else None
+            )
             entry = run_stage3(
                 freeform,
                 out_trajectory_path=str(traj_path),
@@ -223,6 +231,9 @@ def run_one_video(
                 image_paths=task_images or None,
                 shard_id=task.task_id,
                 matcher=stage3_matcher,
+                task=task,
+                observation_audit=observation_audit,
+                trajectory_consistency=consistency_payload,
             )
             manifest.stages[stage3_key] = "done"
             save_manifest(manifest)

@@ -7,7 +7,6 @@ import json
 import re
 from collections.abc import Callable
 from pathlib import Path
-from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -23,6 +22,7 @@ from pipeline.schemas.tools import (
     ToolOperation,
     ToolTree,
 )
+from pipeline.stage3_normalize_format.params import attach_operation_input_schemas
 from pipeline.stage3_normalize_format.trees import (
     add_operation,
     add_variant,
@@ -33,7 +33,7 @@ from pipeline.stage3_normalize_format.trees import (
     with_file_lock,
 )
 
-MatcherFn = Callable[[str, ToolForest], Optional[str] | MatchDecision]
+MatcherFn = Callable[[str, ToolForest], str | None | MatchDecision]
 RESERVED_TERMINAL_TOOLS = {"final_answer", "submit_answer", "done"}
 REASONING_DEMOTION_CONFIDENCE = 0.85
 
@@ -82,8 +82,10 @@ def _load_runtime_with_catalog(path: Path) -> ToolForest:
     runtime = load_forest(path)
     catalog_path = Path(get_settings().TOOL_CATALOG_PATH)
     if not catalog_path.is_file() or catalog_path.resolve() == path.resolve():
-        return runtime
-    return _merge_catalog(runtime, load_forest(catalog_path))
+        return attach_operation_input_schemas(runtime)
+    return attach_operation_input_schemas(
+        _merge_catalog(runtime, load_forest(catalog_path))
+    )
 
 
 def _slug_tool_name(name: str) -> str:
@@ -231,7 +233,14 @@ def _catalog_payload(forest: ToolForest) -> list[dict]:
             "description": tree.canonical.description,
             "usage": tree.canonical.usage,
             "operations": [
-                {"name": op.name, "description": op.description}
+                {
+                    "name": op.name,
+                    "description": op.description,
+                    "aliases": op.aliases,
+                    "input_schema": (
+                        op.input_schema.model_dump() if op.input_schema else None
+                    ),
+                }
                 for op in tree.canonical.operations
             ],
             "variants": tree.variants,
@@ -266,6 +275,8 @@ def llm_semantic_match_batch(
         "仅当现有目录确实没有相同执行器时 action=create，并提供 proposed_definition："
         "name 必须小写下划线，description 说明能力，executor 说明底层执行器，usage 说明何时调用，"
         "operations 至少包含本次操作及解释。不要因输入字段不同就创建新工具。\n"
+        "现有 operation 的 input_schema 已说明每个输入字段的含义、别名、类型和必填关系；"
+        "归并时应选择能容纳原始参数语义的 operation，不得为了省事一律选择第一个 operation。\n"
         "每个 raw_tool 必须恰好返回一个 decision，并原样填写 raw_tool；confidence 范围0到1。\n"
         f"现有目录：{json.dumps(_catalog_payload(forest), ensure_ascii=False)}\n"
         f"待归并步骤：{json.dumps(raw_steps, ensure_ascii=False)}"
