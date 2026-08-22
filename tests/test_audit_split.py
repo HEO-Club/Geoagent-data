@@ -663,6 +663,11 @@ def test_audit_system_hint_lists_all_localization_inputs() -> None:
     assert "整条答案链" in hint
     assert "预定" in hint
     assert "最小源输入" in hint
+    assert "后续人工解出" in hint
+    assert "绝不能作为 reject 理由" in hint
+    assert "无人机航拍" in hint
+    assert "video_derived" in hint
+    assert "题面明确" in hint
     assert "卫星" not in hint
     assert "谷歌" not in hint
 
@@ -2683,3 +2688,51 @@ def test_same_photo_reshow_merges(
     )
     assert len(selected) == 1
     assert selected[0].timestamp == 80.0
+
+
+def test_anthropic_enum_wrappers_are_unwrapped() -> None:
+    """relay 偶发的 {type}/{primary} 包装不得让正确帧验收整体失败。"""
+
+    frame = audit._LLMFrameVerdict.model_validate(
+        {
+            "kind": {"primary": "target_photo", "confidence": "high"},
+            "quality_score": 0.9,
+            "evidence_role": {"category": {"type": "problem_input"}},
+        }
+    )
+    assert frame.kind == audit.FrameKind.target_photo
+    assert frame.evidence_role == audit.EvidenceRole.problem_input
+
+    probabilistic = audit._LLMFrameVerdict.model_validate(
+        {
+            "kind": {"target_photo": 0.8, "teaching_ui": 0.1, "other": 0.1},
+            "evidence_role": {"problem_input": 0.9, "other": 0.1},
+        }
+    )
+    assert probabilistic.kind == audit.FrameKind.target_photo
+    assert probabilistic.evidence_role == audit.EvidenceRole.problem_input
+
+    recovered = audit._LLMFrameVerdict.model_validate(
+        {
+            "{": (
+                '"kind":"teaching_ui","quality_score":0.2,'
+                '"evidence_role":"process_tool","reason":"包装 JSON"}'
+            )
+        }
+    )
+    assert recovered.kind == audit.FrameKind.teaching_ui
+    assert recovered.evidence_role == audit.EvidenceRole.process_tool
+
+    interval = audit._LLMProcessInterval.model_validate(
+        {
+            "start_time": 1.0,
+            "end_time": 2.0,
+            "role": {"primary": "show_source"},
+        }
+    )
+    assert interval.role == ProcessRole.show_source
+
+    relation = audit._LLMPhotoRelationVerdict.model_validate(
+        {"relation": {"type": "same_photo"}}
+    )
+    assert relation.relation == audit.PhotoRelation.same_photo

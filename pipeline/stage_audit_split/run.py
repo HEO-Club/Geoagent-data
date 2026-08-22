@@ -8,7 +8,7 @@ import re
 from enum import Enum
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from pipeline.config import get_settings
 from pipeline.llm import call_structured
@@ -28,11 +28,60 @@ from pipeline.schemas.transcript import TranscriptSegment
 
 logger = logging.getLogger(__name__)
 
+
+def _unwrap_structured_enum(value: object) -> object:
+    """兼容部分 Anthropic relay 把枚举值包装成 type/primary 对象。"""
+
+    if not isinstance(value, dict):
+        return value
+    for key in (
+        "value",
+        "type",
+        "primary",
+        "role",
+        "kind",
+        "name",
+        "relation",
+        "containment",
+        "status",
+        "decision",
+        "category",
+        "label",
+        "classification",
+        "result",
+        "relationship",
+    ):
+        candidate = value.get(key)
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+        if isinstance(candidate, dict):
+            unwrapped = _unwrap_structured_enum(candidate)
+            if isinstance(unwrapped, str) and unwrapped.strip():
+                return unwrapped.strip()
+    scored = [
+        (str(key), float(score))
+        for key, score in value.items()
+        if isinstance(score, (int, float)) and not isinstance(score, bool)
+    ]
+    if scored:
+        return max(scored, key=lambda item: item[1])[0]
+    return value
+
 AUDIT_SYSTEM_HINT = (
     "你审核讲解视频是否适合蒸馏为「图片/静帧地理定位」训练样本。"
     "输入为带时间戳字幕与若干稀疏审计帧（仅供审核，不是训练图）；"
     "禁止使用 groundtruth；禁止按固定词表或渠道特判。\n"
     "拒识主问句：若去掉讲解/旁白/答案，是否仍存在需 agent 定位的图或场景？\n"
+    "本项目的原料本来就是已经给出完整解法和最终答案的讲解视频。判断时必须把时间"
+    "截在每道题的待定位原图首次出示处：假设 Agent 只能看到该原图和题面已知条件，"
+    "是否仍需要推理定位。后续人工解出、AI 已回答、答案已揭晓、视频以对战/复盘形式"
+    "呈现，都绝不能作为 reject 理由；应把后续内容当作要蒸馏的监督链。\n"
+    "定位输入不只限于静态照片：无人机航拍、行车/步行视频中的一段连续现场同样是"
+    "有效的 video_derived 输入；只要讲解者正通过这些画面推断拍摄地点，就应 accept，"
+    "不能把被分析的航拍画面说成普通素材。任务也不要求仅凭像素孤立求解：题面明确"
+    "给出的时间、IP 属地、活动范围、文字提示等可作为 Agent 已知线索；存在目标实拍"
+    "且这些线索参与定位时仍是有效样本。只有完全不存在待定位视觉目标、地点纯粹是"
+    "文章/科普的讲述对象时才 reject。\n"
     "- has_unresolved_target=false → decision=reject："
     "地名科普、历史故事、奇观介绍、地点仅为讲述对象、"
     "旁白「打开地图就能看到某某地」≠ 定位题。\n"
@@ -201,6 +250,11 @@ class _LLMGeoTaskDraft(BaseModel):
     final_location_text: str = ""
     expected_image_count: int = Field(default=1, ge=1)
 
+    @field_validator("target_kind", "answer_status", mode="before")
+    @classmethod
+    def _unwrap_enum_fields(cls, value: object) -> object:
+        return _unwrap_structured_enum(value)
+
 
 class _LLMAuditDraft(BaseModel):
     """LLM 审核草稿。"""
@@ -211,6 +265,11 @@ class _LLMAuditDraft(BaseModel):
     tasks: list[_LLMGeoTaskDraft] = Field(default_factory=list)
     split_confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     needs_split_review: bool = False
+
+    @field_validator("decision", mode="before")
+    @classmethod
+    def _unwrap_decision(cls, value: object) -> object:
+        return _unwrap_structured_enum(value)
 
 
 class _LLMFrameVerdict(BaseModel):
@@ -224,6 +283,26 @@ class _LLMFrameVerdict(BaseModel):
     evidence_role: EvidenceRole = EvidenceRole.unknown
     chain_support_score: float = Field(default=0.5, ge=0.0, le=1.0)
     reason: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _recover_wrapped_json(cls, value: object) -> object:
+        if not isinstance(value, dict) or "kind" in value or len(value) != 1:
+            return value
+        key, payload = next(iter(value.items()))
+        if key == "{" and isinstance(payload, str):
+            try:
+                recovered = json.loads("{" + payload)
+            except json.JSONDecodeError:
+                return value
+            if isinstance(recovered, dict):
+                return recovered
+        return value
+
+    @field_validator("kind", "evidence_role", mode="before")
+    @classmethod
+    def _unwrap_enum_fields(cls, value: object) -> object:
+        return _unwrap_structured_enum(value)
 
 
 class _LLMEvidenceBrief(BaseModel):
@@ -239,6 +318,35 @@ class _LLMProcessInterval(BaseModel):
     end: float
     role: ProcessRole
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_time_aliases(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        copied = dict(value)
+        if "start" not in copied:
+            for alias in (
+                "start_s",
+                "start_sec",
+                "start_time",
+                "begin",
+                "begin_s",
+            ):
+                if alias in copied:
+                    copied["start"] = copied[alias]
+                    break
+        if "end" not in copied:
+            for alias in ("end_s", "end_sec", "end_time", "stop", "stop_s"):
+                if alias in copied:
+                    copied["end"] = copied[alias]
+                    break
+        return copied
+
+    @field_validator("role", mode="before")
+    @classmethod
+    def _unwrap_role(cls, value: object) -> object:
+        return _unwrap_structured_enum(value)
 
 
 class _LLMProcessTimeline(BaseModel):
@@ -278,6 +386,11 @@ class _LLMContainmentVerdict(BaseModel):
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     reason: str = ""
 
+    @field_validator("containment", mode="before")
+    @classmethod
+    def _unwrap_containment(cls, value: object) -> object:
+        return _unwrap_structured_enum(value)
+
 
 class PhotoRelation(str, Enum):
     """两帧是否同一张照片。"""
@@ -296,6 +409,11 @@ class _LLMPhotoRelationVerdict(BaseModel):
     relation: PhotoRelation = PhotoRelation.same_photo
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     reason: str = ""
+
+    @field_validator("relation", mode="before")
+    @classmethod
+    def _unwrap_relation(cls, value: object) -> object:
+        return _unwrap_structured_enum(value)
 
 
 class _LLMTaskMergeResult(BaseModel):
@@ -1181,9 +1299,9 @@ def _promote_selected_images(
             else f"{task_id}_{src.name}"
         )
         dest = dest_dir / name
-        if src.is_file() and dest.resolve() != src.resolve():
-            dest.write_bytes(src.read_bytes())
-        elif not dest.is_file() and src.is_file():
+        if src.is_file() and (
+            dest.resolve() != src.resolve() or not dest.is_file()
+        ):
             dest.write_bytes(src.read_bytes())
         final = str(dest.resolve()) if dest.is_file() else str(src.resolve())
         item.image_path = final

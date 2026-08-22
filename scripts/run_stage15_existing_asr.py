@@ -84,6 +84,12 @@ def main() -> None:
     parser.add_argument("--out-root", type=Path, required=True)
     parser.add_argument("--max-workers", type=int, default=3)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument(
+        "--ids",
+        nargs="*",
+        default=None,
+        help="可选 video_id 白名单；省略时运行 video-dir 内全部视频",
+    )
     args = parser.parse_args()
 
     root = args.out_root.resolve()
@@ -95,6 +101,9 @@ def main() -> None:
     clear_settings_cache()
 
     videos = sorted(args.video_dir.glob("*.mp4"))
+    if args.ids:
+        wanted = set(args.ids)
+        videos = [video for video in videos if video.stem in wanted]
     results = []
     report_path = root / "runs" / "stage15_batch_report.json"
     report_path.parent.mkdir(parents=True, exist_ok=True)

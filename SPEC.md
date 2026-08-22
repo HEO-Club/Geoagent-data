@@ -1,7 +1,7 @@
 # 图片地理定位 Agent 训练数据集生成流水线 — 项目规格
 
-版本：3.4.1 | 生成时间：2026-08-21
-修订说明：v3.4.1 将参数完整度与轨迹语义质量解耦：operation 字段增加 `requirement_level`、`acquisition_hint`、上下文来源和缺参修复动作；当前图片、前置 Tool 结果、活动区域/会话等可使用显式 `$current_image` / `$previous_tool_result` 引用，缺失参数分为 `ready / context_resolvable / repairable / invalid`。质量路由扩展为 `accept / provisional_pass / parameter_repair / needs_review / reject`，缺少可自动取得的执行参数不再把整条轨迹笼统送人工复核。v3.4.0 为 Stage 3 增加 operation 级 `input_schema`、参数解释、别名归一、宽容扩展字段与参数审计；基础目录补充航班档案和媒体元数据执行器。新增证据校准的轨迹质量置信度：六维加权分数、审核覆盖率、硬错误门槛、独立语义审核 Agent 接口及 `stage3_quality_report.json`，最终 JSONL 写入 `quality_score`。旧规格见 `SPEC_legacy_v2.md`。
+版本：3.4.2 | 生成时间：2026-08-22
+修订说明：v3.4.2 修正 Stage 1.5 对教程/复盘视频的系统性拒识：判断必须截在待定位原图首次出示处，后续人工解出、AI 对战或答案揭晓不能作为 reject 理由；无人机航拍、行车/步行连续现场属于有效 `video_derived` 输入，题面明确给出的时间、IP 属地和文字提示可以作为已知线索。增加 Anthropic relay 枚举包装、概率枚举、`start_s/start_sec/start_time` 等时间别名兼容。v3.4.1 将参数完整度与轨迹语义质量解耦：operation 字段增加 `requirement_level`、`acquisition_hint`、上下文来源和缺参修复动作；当前图片、前置 Tool 结果、活动区域/会话等可使用显式 `$current_image` / `$previous_tool_result` 引用，缺失参数分为 `ready / context_resolvable / repairable / invalid`。质量路由扩展为 `accept / provisional_pass / parameter_repair / needs_review / reject`。v3.4.0 新增 operation 级 `input_schema` 与证据校准置信度。旧规格见 `SPEC_legacy_v2.md`。
 
 ## 0. 给 Cursor 的元指令（先读这一段）
 
