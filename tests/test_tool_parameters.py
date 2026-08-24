@@ -162,7 +162,7 @@ def test_unknown_extra_inputs_are_preserved_as_extensions() -> None:
     }
 
 
-def test_run_stage3_writes_parameter_and_quality_audits(
+def test_run_stage3_writes_parameter_audit_and_leaves_quality_for_stage4(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv("TOOL_CATALOG_PATH", "canonical_tool_catalog.json")
@@ -213,9 +213,6 @@ def test_run_stage3_writes_parameter_and_quality_audits(
     parameter_audit = json.loads(
         (tmp_path / "stage3_parameter_audit.json").read_text(encoding="utf-8")
     )
-    quality = json.loads(
-        (tmp_path / "stage3_quality_report.json").read_text(encoding="utf-8")
-    )
     trajectory = json.loads(trajectory_path.read_text(encoding="utf-8"))
     params = trajectory["steps"][0]["action"]["params"]
     assert params["operation"] == "query"
@@ -225,6 +222,6 @@ def test_run_stage3_writes_parameter_and_quality_audits(
     }
     assert parameter_audit["valid_calls"] == 1
     assert parameter_audit["total_calls"] == 1
-    assert quality["decision"] == "needs_review"
-    assert entry.quality_score == quality["quality_score"]
+    assert not (tmp_path / "stage3_quality_report.json").exists()
+    assert entry.quality_score is None
     clear_settings_cache()

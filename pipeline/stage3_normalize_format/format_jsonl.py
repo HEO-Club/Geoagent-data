@@ -8,11 +8,9 @@ from pathlib import Path
 from typing import Any
 
 from pipeline.config import get_settings
-from pipeline.schemas.audit import GeoTaskSpec
 from pipeline.schemas.clues import WorkingScope
 from pipeline.schemas.dataset import ChatMessage, DatasetEntry
 from pipeline.schemas.freeform import FreeFormTrajectory
-from pipeline.schemas.quality import SemanticQualityReview
 from pipeline.schemas.tools import ToolForest, ToolParameterAudit
 from pipeline.schemas.trajectory import Action, Trajectory, TrajectoryStep
 from pipeline.stage3_normalize_format.map_tools import ensure_tool_trees
@@ -263,10 +261,6 @@ def run_stage3(
     system_prompt: str | None = None,
     user_query: str | None = None,
     matcher=None,
-    task: GeoTaskSpec | None = None,
-    observation_audit: dict[str, Any] | None = None,
-    trajectory_consistency: dict[str, Any] | None = None,
-    semantic_review: SemanticQualityReview | None = None,
 ) -> DatasetEntry:
     """阶段3 一站式：树维护 → 重写 → DatasetEntry。"""
     settings = get_settings()
@@ -296,23 +290,10 @@ def run_stage3(
         trajectory_id=shard_id,
         parameter_audits=parameter_audits,
     )
-    # 延迟导入避免 package 公共导出与质量模块之间形成循环依赖。
-    from pipeline.quality.scorer import score_trajectory_quality
-
-    quality_report = score_trajectory_quality(
-        freeform,
-        traj,
-        forest,
-        task=task,
-        observation_audit=observation_audit,
-        trajectory_consistency=trajectory_consistency,
-        parameter_audits=[item.model_dump() for item in parameter_audits],
-        semantic_review=semantic_review,
-    )
     entry = format_dataset_entry(
         traj,
         source_video=freeform.source_video,
-        quality_score=quality_report.quality_score,
+        quality_score=None,
     )
 
     video_id = freeform.source_video
@@ -346,9 +327,6 @@ def run_stage3(
         ),
         encoding="utf-8",
     )
-    quality_path = traj_path.with_name("stage3_quality_report.json")
-    quality_path.write_text(quality_report.model_dump_json(indent=2), encoding="utf-8")
-
     if out_jsonl_path:
         shard = Path(out_jsonl_path)
     else:

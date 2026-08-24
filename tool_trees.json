@@ -1678,6 +1678,706 @@
       },
       "variants": [],
       "variant_operations": {}
+    },
+    {
+      "canonical": {
+        "name": "sunset_time_query",
+        "description": "执行自由工具 'sunset_time_query' 所代表的外部能力。",
+        "executor": "sunset_time_query",
+        "usage": "仅当该动作确实访问外部数据、程序或服务并产生新证据时调用；纯观察、比较、筛选或总结应保留为 reasoning。",
+        "operations": [
+          {
+            "name": "execute",
+            "description": "执行该自由工具描述的外部操作"
+          }
+        ],
+        "params": [
+          {
+            "name": "operation",
+            "type": "string",
+            "required": true,
+            "description": "本次调用在该执行器中执行的具体操作",
+            "allowed_values": [
+              "execute"
+            ]
+          },
+          {
+            "name": "purpose",
+            "type": "string",
+            "required": true,
+            "description": "本次调用要补齐的证据缺口或任务目的",
+            "allowed_values": []
+          },
+          {
+            "name": "inputs",
+            "type": "object",
+            "required": true,
+            "description": "保留原始调用输入；字段可随 operation 变化，不因额外字段拒绝",
+            "allowed_values": []
+          }
+        ],
+        "observation_fields": [
+          {
+            "name": "result",
+            "type": "object",
+            "nullable": true,
+            "description": "外部执行器实际返回的结构化结果"
+          }
+        ],
+        "is_terminal": false
+      },
+      "variants": [],
+      "variant_operations": {}
+    },
+    {
+      "canonical": {
+        "name": "satellite_imagery_seasonal_comparison",
+        "description": "执行自由工具 'satellite_imagery_seasonal_comparison' 所代表的外部能力。",
+        "executor": "satellite_imagery_seasonal_comparison",
+        "usage": "仅当该动作确实访问外部数据、程序或服务并产生新证据时调用；纯观察、比较、筛选或总结应保留为 reasoning。",
+        "operations": [
+          {
+            "name": "execute",
+            "description": "执行该自由工具描述的外部操作"
+          }
+        ],
+        "params": [
+          {
+            "name": "operation",
+            "type": "string",
+            "required": true,
+            "description": "本次调用在该执行器中执行的具体操作",
+            "allowed_values": [
+              "execute"
+            ]
+          },
+          {
+            "name": "purpose",
+            "type": "string",
+            "required": true,
+            "description": "本次调用要补齐的证据缺口或任务目的",
+            "allowed_values": []
+          },
+          {
+            "name": "inputs",
+            "type": "object",
+            "required": true,
+            "description": "保留原始调用输入；字段可随 operation 变化，不因额外字段拒绝",
+            "allowed_values": []
+          }
+        ],
+        "observation_fields": [
+          {
+            "name": "result",
+            "type": "object",
+            "nullable": true,
+            "description": "外部执行器实际返回的结构化结果"
+          }
+        ],
+        "is_terminal": false
+      },
+      "variants": [],
+      "variant_operations": {}
+    },
+    {
+      "canonical": {
+        "name": "search_engine",
+        "description": "执行自由工具 'search_engine' 所代表的外部能力。",
+        "executor": "search_engine",
+        "usage": "仅当该动作确实访问外部数据、程序或服务并产生新证据时调用；纯观察、比较、筛选或总结应保留为 reasoning。",
+        "operations": [
+          {
+            "name": "execute",
+            "description": "执行该自由工具描述的外部操作"
+          }
+        ],
+        "params": [
+          {
+            "name": "operation",
+            "type": "string",
+            "required": true,
+            "description": "本次调用在该执行器中执行的具体操作",
+            "allowed_values": [
+              "execute"
+            ]
+          },
+          {
+            "name": "purpose",
+            "type": "string",
+            "required": true,
+            "description": "本次调用要补齐的证据缺口或任务目的",
+            "allowed_values": []
+          },
+          {
+            "name": "inputs",
+            "type": "object",
+            "required": true,
+            "description": "保留原始调用输入；字段可随 operation 变化，不因额外字段拒绝",
+            "allowed_values": []
+          }
+        ],
+        "observation_fields": [
+          {
+            "name": "result",
+            "type": "object",
+            "nullable": true,
+            "description": "外部执行器实际返回的结构化结果"
+          }
+        ],
+        "is_terminal": false
+      },
+      "variants": [],
+      "variant_operations": {}
+    },
+    {
+      "canonical": {
+        "name": "map_street_view",
+        "description": "执行自由工具 'map_street_view' 所代表的外部能力。",
+        "executor": "map_street_view",
+        "usage": "仅当该动作确实访问外部数据、程序或服务并产生新证据时调用；纯观察、比较、筛选或总结应保留为 reasoning。",
+        "operations": [
+          {
+            "name": "execute",
+            "description": "执行该自由工具描述的外部操作"
+          }
+        ],
+        "params": [
+          {
+            "name": "operation",
+            "type": "string",
+            "required": true,
+            "description": "本次调用在该执行器中执行的具体操作",
+            "allowed_values": [
+              "execute"
+            ]
+          },
+          {
+            "name": "purpose",
+            "type": "string",
+            "required": true,
+            "description": "本次调用要补齐的证据缺口或任务目的",
+            "allowed_values": []
+          },
+          {
+            "name": "inputs",
+            "type": "object",
+            "required": true,
+            "description": "保留原始调用输入；字段可随 operation 变化，不因额外字段拒绝",
+            "allowed_values": []
+          }
+        ],
+        "observation_fields": [
+          {
+            "name": "result",
+            "type": "object",
+            "nullable": true,
+            "description": "外部执行器实际返回的结构化结果"
+          }
+        ],
+        "is_terminal": false
+      },
+      "variants": [],
+      "variant_operations": {}
+    },
+    {
+      "canonical": {
+        "name": "map_line_analysis",
+        "description": "执行自由工具 'map_line_analysis' 所代表的外部能力。",
+        "executor": "map_line_analysis",
+        "usage": "仅当该动作确实访问外部数据、程序或服务并产生新证据时调用；纯观察、比较、筛选或总结应保留为 reasoning。",
+        "operations": [
+          {
+            "name": "execute",
+            "description": "执行该自由工具描述的外部操作"
+          }
+        ],
+        "params": [
+          {
+            "name": "operation",
+            "type": "string",
+            "required": true,
+            "description": "本次调用在该执行器中执行的具体操作",
+            "allowed_values": [
+              "execute"
+            ]
+          },
+          {
+            "name": "purpose",
+            "type": "string",
+            "required": true,
+            "description": "本次调用要补齐的证据缺口或任务目的",
+            "allowed_values": []
+          },
+          {
+            "name": "inputs",
+            "type": "object",
+            "required": true,
+            "description": "保留原始调用输入；字段可随 operation 变化，不因额外字段拒绝",
+            "allowed_values": []
+          }
+        ],
+        "observation_fields": [
+          {
+            "name": "result",
+            "type": "object",
+            "nullable": true,
+            "description": "外部执行器实际返回的结构化结果"
+          }
+        ],
+        "is_terminal": false
+      },
+      "variants": [],
+      "variant_operations": {}
+    },
+    {
+      "canonical": {
+        "name": "remote_sensing_map_overlay",
+        "description": "执行自由工具 'remote_sensing_map_overlay' 所代表的外部能力。",
+        "executor": "remote_sensing_map_overlay",
+        "usage": "仅当该动作确实访问外部数据、程序或服务并产生新证据时调用；纯观察、比较、筛选或总结应保留为 reasoning。",
+        "operations": [
+          {
+            "name": "execute",
+            "description": "执行该自由工具描述的外部操作"
+          }
+        ],
+        "params": [
+          {
+            "name": "operation",
+            "type": "string",
+            "required": true,
+            "description": "本次调用在该执行器中执行的具体操作",
+            "allowed_values": [
+              "execute"
+            ]
+          },
+          {
+            "name": "purpose",
+            "type": "string",
+            "required": true,
+            "description": "本次调用要补齐的证据缺口或任务目的",
+            "allowed_values": []
+          },
+          {
+            "name": "inputs",
+            "type": "object",
+            "required": true,
+            "description": "保留原始调用输入；字段可随 operation 变化，不因额外字段拒绝",
+            "allowed_values": []
+          }
+        ],
+        "observation_fields": [
+          {
+            "name": "result",
+            "type": "object",
+            "nullable": true,
+            "description": "外部执行器实际返回的结构化结果"
+          }
+        ],
+        "is_terminal": false
+      },
+      "variants": [],
+      "variant_operations": {}
+    },
+    {
+      "canonical": {
+        "name": "map_aerial_comparison",
+        "description": "执行自由工具 'map_aerial_comparison' 所代表的外部能力。",
+        "executor": "map_aerial_comparison",
+        "usage": "仅当该动作确实访问外部数据、程序或服务并产生新证据时调用；纯观察、比较、筛选或总结应保留为 reasoning。",
+        "operations": [
+          {
+            "name": "execute",
+            "description": "执行该自由工具描述的外部操作"
+          }
+        ],
+        "params": [
+          {
+            "name": "operation",
+            "type": "string",
+            "required": true,
+            "description": "本次调用在该执行器中执行的具体操作",
+            "allowed_values": [
+              "execute"
+            ]
+          },
+          {
+            "name": "purpose",
+            "type": "string",
+            "required": true,
+            "description": "本次调用要补齐的证据缺口或任务目的",
+            "allowed_values": []
+          },
+          {
+            "name": "inputs",
+            "type": "object",
+            "required": true,
+            "description": "保留原始调用输入；字段可随 operation 变化，不因额外字段拒绝",
+            "allowed_values": []
+          }
+        ],
+        "observation_fields": [
+          {
+            "name": "result",
+            "type": "object",
+            "nullable": true,
+            "description": "外部执行器实际返回的结构化结果"
+          }
+        ],
+        "is_terminal": false
+      },
+      "variants": [],
+      "variant_operations": {}
+    },
+    {
+      "canonical": {
+        "name": "image_reverse_search",
+        "description": "执行自由工具 'image_reverse_search' 所代表的外部能力。",
+        "executor": "image_reverse_search",
+        "usage": "仅当该动作确实访问外部数据、程序或服务并产生新证据时调用；纯观察、比较、筛选或总结应保留为 reasoning。",
+        "operations": [
+          {
+            "name": "execute",
+            "description": "执行该自由工具描述的外部操作"
+          }
+        ],
+        "params": [
+          {
+            "name": "operation",
+            "type": "string",
+            "required": true,
+            "description": "本次调用在该执行器中执行的具体操作",
+            "allowed_values": [
+              "execute"
+            ]
+          },
+          {
+            "name": "purpose",
+            "type": "string",
+            "required": true,
+            "description": "本次调用要补齐的证据缺口或任务目的",
+            "allowed_values": []
+          },
+          {
+            "name": "inputs",
+            "type": "object",
+            "required": true,
+            "description": "保留原始调用输入；字段可随 operation 变化，不因额外字段拒绝",
+            "allowed_values": []
+          }
+        ],
+        "observation_fields": [
+          {
+            "name": "result",
+            "type": "object",
+            "nullable": true,
+            "description": "外部执行器实际返回的结构化结果"
+          }
+        ],
+        "is_terminal": false
+      },
+      "variants": [],
+      "variant_operations": {}
+    },
+    {
+      "canonical": {
+        "name": "web_image_gallery_browse",
+        "description": "执行自由工具 'web_image_gallery_browse' 所代表的外部能力。",
+        "executor": "web_image_gallery_browse",
+        "usage": "仅当该动作确实访问外部数据、程序或服务并产生新证据时调用；纯观察、比较、筛选或总结应保留为 reasoning。",
+        "operations": [
+          {
+            "name": "execute",
+            "description": "执行该自由工具描述的外部操作"
+          }
+        ],
+        "params": [
+          {
+            "name": "operation",
+            "type": "string",
+            "required": true,
+            "description": "本次调用在该执行器中执行的具体操作",
+            "allowed_values": [
+              "execute"
+            ]
+          },
+          {
+            "name": "purpose",
+            "type": "string",
+            "required": true,
+            "description": "本次调用要补齐的证据缺口或任务目的",
+            "allowed_values": []
+          },
+          {
+            "name": "inputs",
+            "type": "object",
+            "required": true,
+            "description": "保留原始调用输入；字段可随 operation 变化，不因额外字段拒绝",
+            "allowed_values": []
+          }
+        ],
+        "observation_fields": [
+          {
+            "name": "result",
+            "type": "object",
+            "nullable": true,
+            "description": "外部执行器实际返回的结构化结果"
+          }
+        ],
+        "is_terminal": false
+      },
+      "variants": [],
+      "variant_operations": {}
+    },
+    {
+      "canonical": {
+        "name": "street_view",
+        "description": "执行自由工具 'street_view' 所代表的外部能力。",
+        "executor": "street_view",
+        "usage": "仅当该动作确实访问外部数据、程序或服务并产生新证据时调用；纯观察、比较、筛选或总结应保留为 reasoning。",
+        "operations": [
+          {
+            "name": "execute",
+            "description": "执行该自由工具描述的外部操作"
+          }
+        ],
+        "params": [
+          {
+            "name": "operation",
+            "type": "string",
+            "required": true,
+            "description": "本次调用在该执行器中执行的具体操作",
+            "allowed_values": [
+              "execute"
+            ]
+          },
+          {
+            "name": "purpose",
+            "type": "string",
+            "required": true,
+            "description": "本次调用要补齐的证据缺口或任务目的",
+            "allowed_values": []
+          },
+          {
+            "name": "inputs",
+            "type": "object",
+            "required": true,
+            "description": "保留原始调用输入；字段可随 operation 变化，不因额外字段拒绝",
+            "allowed_values": []
+          }
+        ],
+        "observation_fields": [
+          {
+            "name": "result",
+            "type": "object",
+            "nullable": true,
+            "description": "外部执行器实际返回的结构化结果"
+          }
+        ],
+        "is_terminal": false
+      },
+      "variants": [],
+      "variant_operations": {}
+    },
+    {
+      "canonical": {
+        "name": "map_satellite_view",
+        "description": "执行自由工具 'map_satellite_view' 所代表的外部能力。",
+        "executor": "map_satellite_view",
+        "usage": "仅当该动作确实访问外部数据、程序或服务并产生新证据时调用；纯观察、比较、筛选或总结应保留为 reasoning。",
+        "operations": [
+          {
+            "name": "execute",
+            "description": "执行该自由工具描述的外部操作"
+          }
+        ],
+        "params": [
+          {
+            "name": "operation",
+            "type": "string",
+            "required": true,
+            "description": "本次调用在该执行器中执行的具体操作",
+            "allowed_values": [
+              "execute"
+            ]
+          },
+          {
+            "name": "purpose",
+            "type": "string",
+            "required": true,
+            "description": "本次调用要补齐的证据缺口或任务目的",
+            "allowed_values": []
+          },
+          {
+            "name": "inputs",
+            "type": "object",
+            "required": true,
+            "description": "保留原始调用输入；字段可随 operation 变化，不因额外字段拒绝",
+            "allowed_values": []
+          }
+        ],
+        "observation_fields": [
+          {
+            "name": "result",
+            "type": "object",
+            "nullable": true,
+            "description": "外部执行器实际返回的结构化结果"
+          }
+        ],
+        "is_terminal": false
+      },
+      "variants": [],
+      "variant_operations": {}
+    },
+    {
+      "canonical": {
+        "name": "map_satellite_view_3d",
+        "description": "执行自由工具 'map_satellite_view_3d' 所代表的外部能力。",
+        "executor": "map_satellite_view_3d",
+        "usage": "仅当该动作确实访问外部数据、程序或服务并产生新证据时调用；纯观察、比较、筛选或总结应保留为 reasoning。",
+        "operations": [
+          {
+            "name": "execute",
+            "description": "执行该自由工具描述的外部操作"
+          }
+        ],
+        "params": [
+          {
+            "name": "operation",
+            "type": "string",
+            "required": true,
+            "description": "本次调用在该执行器中执行的具体操作",
+            "allowed_values": [
+              "execute"
+            ]
+          },
+          {
+            "name": "purpose",
+            "type": "string",
+            "required": true,
+            "description": "本次调用要补齐的证据缺口或任务目的",
+            "allowed_values": []
+          },
+          {
+            "name": "inputs",
+            "type": "object",
+            "required": true,
+            "description": "保留原始调用输入；字段可随 operation 变化，不因额外字段拒绝",
+            "allowed_values": []
+          }
+        ],
+        "observation_fields": [
+          {
+            "name": "result",
+            "type": "object",
+            "nullable": true,
+            "description": "外部执行器实际返回的结构化结果"
+          }
+        ],
+        "is_terminal": false
+      },
+      "variants": [],
+      "variant_operations": {}
+    },
+    {
+      "canonical": {
+        "name": "satellite_map_search",
+        "description": "执行自由工具 'satellite_map_search' 所代表的外部能力。",
+        "executor": "satellite_map_search",
+        "usage": "仅当该动作确实访问外部数据、程序或服务并产生新证据时调用；纯观察、比较、筛选或总结应保留为 reasoning。",
+        "operations": [
+          {
+            "name": "execute",
+            "description": "执行该自由工具描述的外部操作"
+          }
+        ],
+        "params": [
+          {
+            "name": "operation",
+            "type": "string",
+            "required": true,
+            "description": "本次调用在该执行器中执行的具体操作",
+            "allowed_values": [
+              "execute"
+            ]
+          },
+          {
+            "name": "purpose",
+            "type": "string",
+            "required": true,
+            "description": "本次调用要补齐的证据缺口或任务目的",
+            "allowed_values": []
+          },
+          {
+            "name": "inputs",
+            "type": "object",
+            "required": true,
+            "description": "保留原始调用输入；字段可随 operation 变化，不因额外字段拒绝",
+            "allowed_values": []
+          }
+        ],
+        "observation_fields": [
+          {
+            "name": "result",
+            "type": "object",
+            "nullable": true,
+            "description": "外部执行器实际返回的结构化结果"
+          }
+        ],
+        "is_terminal": false
+      },
+      "variants": [],
+      "variant_operations": {}
+    },
+    {
+      "canonical": {
+        "name": "satellite_map_detail_inspection",
+        "description": "执行自由工具 'satellite_map_detail_inspection' 所代表的外部能力。",
+        "executor": "satellite_map_detail_inspection",
+        "usage": "仅当该动作确实访问外部数据、程序或服务并产生新证据时调用；纯观察、比较、筛选或总结应保留为 reasoning。",
+        "operations": [
+          {
+            "name": "execute",
+            "description": "执行该自由工具描述的外部操作"
+          }
+        ],
+        "params": [
+          {
+            "name": "operation",
+            "type": "string",
+            "required": true,
+            "description": "本次调用在该执行器中执行的具体操作",
+            "allowed_values": [
+              "execute"
+            ]
+          },
+          {
+            "name": "purpose",
+            "type": "string",
+            "required": true,
+            "description": "本次调用要补齐的证据缺口或任务目的",
+            "allowed_values": []
+          },
+          {
+            "name": "inputs",
+            "type": "object",
+            "required": true,
+            "description": "保留原始调用输入；字段可随 operation 变化，不因额外字段拒绝",
+            "allowed_values": []
+          }
+        ],
+        "observation_fields": [
+          {
+            "name": "result",
+            "type": "object",
+            "nullable": true,
+            "description": "外部执行器实际返回的结构化结果"
+          }
+        ],
+        "is_terminal": false
+      },
+      "variants": [],
+      "variant_operations": {}
     }
   ]
 }

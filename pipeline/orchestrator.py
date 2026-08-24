@@ -1,4 +1,4 @@
-"""可选串联阶段1 → 审核切分 → 按 task 跑阶段2–3；manifest 断点续跑。"""
+"""可选串联阶段1 → 审核切分 → 按 task 跑阶段2–4；manifest 断点续跑。"""
 
 from __future__ import annotations
 
@@ -10,10 +10,12 @@ from pathlib import Path
 from pipeline.config import get_settings
 from pipeline.schemas.audit import AuditDecision, TaskStatus
 from pipeline.schemas.dataset import DatasetEntry, ManifestV2
+from pipeline.schemas.trajectory import Trajectory
 from pipeline.schemas.transcript import TranscriptSegment
 from pipeline.stage1_transcript.run import run_stage1
 from pipeline.stage2_freeform_tao.run import load_freeform, run_stage2
 from pipeline.stage3_normalize_format.format_jsonl import run_stage3
+from pipeline.stage4_confidence.run import load_confidence_report, run_stage4
 from pipeline.stage_audit_split.run import (
     load_audit_split,
     run_audit_split,
@@ -25,7 +27,7 @@ from pipeline.stage_audit_split.trajectory_image_check import (
 
 logger = logging.getLogger(__name__)
 
-STAGE_ORDER = ("stage1", "stage_audit_split", "stage2", "stage3")
+STAGE_ORDER = ("stage1", "stage_audit_split", "stage2", "stage3", "stage4")
 
 
 def _utcnow() -> str:
@@ -85,8 +87,9 @@ def run_one_video(
     image_paths: list[str] | None = None,
     skip_completed: bool = True,
     stage3_matcher=None,
+    stage4_judge=None,
 ) -> list[DatasetEntry]:
-    """串联阶段1 → 审核切分 → 按 task 跑阶段2–3。
+    """串联阶段1 → 审核切分 → 按 task 跑阶段2–4。
 
     Args:
         video_path: 视频路径。
@@ -96,9 +99,11 @@ def run_one_video(
         image_paths: 兼容外部多图；无审核任务时回退。
         skip_completed: True 时跳过 manifest 已标记 done 的阶段。
         stage3_matcher: 注入阶段3 匹配器（测试用）。
+        stage4_judge: 注入阶段4 裁判回调（测试用）。
 
     Returns:
-        每个 accept 的 task 对应一条 DatasetEntry；reject 时返回空列表。
+        每个 accept 且完成阶段3的 task 对应一条 DatasetEntry（含 quality_score）；
+        reject 时返回空列表。
     """
     settings = get_settings()
     vid = video_id or Path(video_path).stem
@@ -147,14 +152,20 @@ def run_one_video(
         task_dir.mkdir(parents=True, exist_ok=True)
         freeform_path = task_dir / "stage2_freeform_tao.json"
         traj_path = task_dir / "stage3_trajectory.json"
+        mapping_path = task_dir / "stage3_tool_mapping.json"
+        parameter_path = task_dir / "stage3_parameter_audit.json"
+        observation_audit_path = task_dir / "stage2_observation_audit.json"
+        conf_path = task_dir / "stage4_confidence.json"
         shard_path = Path(settings.OUTPUT_DIR) / "shards" / f"{task.task_id}.jsonl"
         stage2_key = _task_stage_key(task.task_id, "stage2")
         stage3_key = _task_stage_key(task.task_id, "stage3")
+        stage4_key = _task_stage_key(task.task_id, "stage4")
 
         if task.status != TaskStatus.accepted:
             skipped = task.status.value
             manifest.stages[stage2_key] = skipped
             manifest.stages[stage3_key] = skipped
+            manifest.stages[stage4_key] = skipped
             save_manifest(manifest)
             logger.info(
                 "skip downstream for %s status=%s reason=%s",
@@ -189,7 +200,6 @@ def run_one_video(
             freeform.source_video = vid
 
         consistency_path = task_dir / "image_trajectory_consistency.json"
-        consistency_payload: dict | None = None
         if settings.AUDIT_TRAJECTORY_IMAGE_CHECK:
             consistency = check_trajectory_image_consistency(
                 image_paths=task_images,
@@ -198,13 +208,14 @@ def run_one_video(
                 ),
                 trajectory=freeform,
             )
-            consistency_payload = consistency.model_dump()
             consistency_path.write_text(
                 consistency.model_dump_json(indent=2),
                 encoding="utf-8",
             )
             if consistency.conflict:
                 manifest.stages[stage3_key] = "needs_review"
+                # 无 JSONL 可评，阶段4跳过
+                manifest.stages[stage4_key] = "skipped_conflict"
                 save_manifest(manifest)
                 logger.info(
                     "skip stage3 for %s: trajectory-image conflict (%s)",
@@ -218,12 +229,6 @@ def run_one_video(
             and manifest.stages.get(stage3_key) == "done"
             and shard_path.is_file()
         ):
-            observation_audit_path = task_dir / "stage2_observation_audit.json"
-            observation_audit = (
-                json.loads(observation_audit_path.read_text(encoding="utf-8"))
-                if observation_audit_path.is_file()
-                else None
-            )
             entry = run_stage3(
                 freeform,
                 out_trajectory_path=str(traj_path),
@@ -231,9 +236,6 @@ def run_one_video(
                 image_paths=task_images or None,
                 shard_id=task.task_id,
                 matcher=stage3_matcher,
-                task=task,
-                observation_audit=observation_audit,
-                trajectory_consistency=consistency_payload,
             )
             manifest.stages[stage3_key] = "done"
             save_manifest(manifest)
@@ -242,6 +244,48 @@ def run_one_video(
             entry = DatasetEntry.model_validate_json(
                 shard_path.read_text(encoding="utf-8").splitlines()[0]
             )
+
+        if not (
+            skip_completed
+            and manifest.stages.get(stage4_key) == "done"
+            and conf_path.is_file()
+        ):
+            trajectory = Trajectory.model_validate_json(
+                traj_path.read_text(encoding="utf-8")
+            )
+            report = run_stage4(
+                task=task,
+                transcript=task_transcript,
+                freeform=freeform,
+                trajectory=trajectory,
+                entry=entry,
+                tool_mapping_path=mapping_path,
+                parameter_audit_path=parameter_path,
+                observation_audit_path=observation_audit_path,
+                trajectory_consistency_path=consistency_path,
+                out_report_path=str(conf_path),
+                out_jsonl_path=str(shard_path),
+                judge=stage4_judge,
+            )
+            entry = DatasetEntry.model_validate_json(
+                shard_path.read_text(encoding="utf-8").splitlines()[0]
+            )
+            manifest.stages[stage4_key] = "done"
+            save_manifest(manifest)
+            logger.info(
+                "stage4 %s quality_score=%.3f priority=%s",
+                task.task_id,
+                report.quality_score,
+                report.review_priority,
+            )
+        else:
+            logger.info("skip stage4 (done) for %s", task.task_id)
+            report = load_confidence_report(conf_path)
+            if entry.quality_score is None:
+                entry = entry.model_copy(
+                    update={"quality_score": report.quality_score}
+                )
+
         entries.append(entry)
 
     return entries

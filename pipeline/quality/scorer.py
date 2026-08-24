@@ -264,7 +264,7 @@ def _check_final(
             importance=2.0,
         )
 
-    if task is None:
+    if task is None or not str(task.final_location_text or "").strip():
         builder.unknown(
             "final_answer_support",
             "answer_reference_unavailable",
@@ -590,14 +590,22 @@ def _check_input(
         )
         selected = [item for item in task.frame_assessments if item.selected]
         if not selected:
-            builder.add(
-                "input_alignment",
-                "selected_frame_audit",
-                0.0,
-                "Stage 1.5 没有已选帧审计记录",
-                severity="hard_fail",
-                importance=3.0,
-            )
+            if task.image_paths:
+                builder.unknown(
+                    "input_alignment",
+                    "selected_frame_audit_unavailable",
+                    "存在选中图片，但缺少逐帧审计记录",
+                    importance=3.0,
+                )
+            else:
+                builder.add(
+                    "input_alignment",
+                    "selected_frame_audit",
+                    0.0,
+                    "Stage 1.5 没有选中图片或已选帧审计记录",
+                    severity="hard_fail",
+                    importance=3.0,
+                )
         else:
             leaked = [item for item in selected if item.answer_leakage]
             aligned_paths = {_norm_text(path) for path in trajectory.image_paths}
@@ -704,12 +712,12 @@ def score_trajectory_quality(
 
     if hard_failures:
         decision = "reject"
-    elif quality_score >= ACCEPT_SCORE and audit_coverage >= ACCEPT_COVERAGE:
-        decision = "accept"
     elif has_invalid_parameters:
         decision = "needs_review"
     elif has_repairable_parameters:
         decision = "parameter_repair"
+    elif quality_score >= ACCEPT_SCORE and audit_coverage >= ACCEPT_COVERAGE:
+        decision = "accept"
     elif (
         quality_score >= PROVISIONAL_SCORE
         and dimension_by_name["evidence_grounding"].score >= 0.9
