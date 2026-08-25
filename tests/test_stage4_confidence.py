@@ -348,6 +348,38 @@ def test_judge_prompt_has_score_anchors() -> None:
     assert "final_answer_support" in prompt
 
 
+def test_anthropic_confidence_wrappers_are_normalized() -> None:
+    draft = ConfidenceJudgeDraft.model_validate(
+        {
+            "evidence_grounding": {"score": 0.9, "reason": "扎实"},
+            "final_answer_support": {"value": 0.8},
+            "tool_param_correctness": {"rating": 0.7},
+            "logical_consistency": {"confidence": 0.85},
+            "input_quality_alignment": 0.75,
+            "dimension_reasons": [
+                {"dimension": "evidence_grounding", "reason": "有引用"}
+            ],
+            "hard_gates": {
+                "gates": [
+                    {
+                        "type": "fabricated_observation",
+                        "reason": "无直接证据",
+                    }
+                ]
+            },
+            "notes": {"summary": "包装返回"},
+        }
+    )
+    assert draft.evidence_grounding == pytest.approx(0.9)
+    assert draft.final_answer_support == pytest.approx(0.8)
+    assert draft.tool_param_correctness == pytest.approx(0.7)
+    assert draft.logical_consistency == pytest.approx(0.85)
+    assert draft.dimension_reasons["evidence_grounding"] == "有引用"
+    assert draft.hard_gates[0].code == "fabricated_observation"
+    assert draft.hard_gates[0].evidence == "无直接证据"
+    assert "包装返回" in draft.notes
+
+
 def test_fused_stage4_uses_parameter_observation_and_coverage(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

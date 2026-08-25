@@ -82,7 +82,10 @@ def _quality_task(video_id: str, trajectory: Trajectory) -> GeoTaskSpec:
             else TargetKind.still_image
         ),
         image_paths=list(trajectory.image_paths),
-        status=TaskStatus.accepted,
+        status=TaskStatus.needs_review,
+        status_reason=(
+            f"历史轨迹聚合了 {len(tasks)} 个 Stage 1.5 task，需按 task 重新运行 Stage 2/3"
+        ),
         answer_status=AnswerStatus.resolved,
         final_location_text="",
     )
@@ -180,6 +183,7 @@ def main() -> None:
     )
     parser.add_argument("--max-workers", type=int, default=3)
     parser.add_argument("--real-judge", action="store_true")
+    parser.add_argument("--ids", nargs="*", default=None)
     args = parser.parse_args()
 
     args.out.mkdir(parents=True, exist_ok=True)
@@ -187,6 +191,14 @@ def main() -> None:
         load_forest(Path("canonical_tool_catalog.json"))
     )
     paths = sorted(args.root.rglob("stage3_trajectory.json"))
+    if args.ids:
+        wanted = set(args.ids)
+        paths = [
+            path
+            for path in paths
+            if path.parent.name in wanted
+            or any(token in path.parent.name for token in wanted)
+        ]
     rows = []
     with ThreadPoolExecutor(max_workers=max(1, args.max_workers)) as pool:
         futures = {

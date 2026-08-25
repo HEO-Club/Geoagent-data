@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 ReviewPriority = Literal["high", "medium", "low"]
 ConfidenceDecision = Literal[
@@ -41,6 +42,41 @@ class HardGateHit(BaseModel):
     code: str
     evidence: str = ""
 
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_gate(cls, value: object) -> object:
+        if isinstance(value, str):
+            return {"code": value}
+        if not isinstance(value, dict):
+            return value
+        copied = dict(value)
+        if "code" not in copied:
+            for alias in ("type", "name", "gate", "label"):
+                if alias in copied:
+                    copied["code"] = copied[alias]
+                    break
+        if "evidence" not in copied:
+            for alias in ("reason", "detail", "description"):
+                if alias in copied:
+                    copied["evidence"] = copied[alias]
+                    break
+        return copied
+
+
+def _unwrap_score(value: object) -> object:
+    if not isinstance(value, dict):
+        return value
+    for key in ("score", "value", "confidence", "rating"):
+        candidate = value.get(key)
+        if isinstance(candidate, (int, float)) and not isinstance(candidate, bool):
+            return candidate
+    numeric = [
+        candidate
+        for candidate in value.values()
+        if isinstance(candidate, (int, float)) and not isinstance(candidate, bool)
+    ]
+    return numeric[0] if len(numeric) == 1 else value
+
 
 class ConfidenceJudgeDraft(BaseModel):
     """VLM/LLM 裁判软信封：维度分 + 模型侧硬门槛。"""
@@ -55,6 +91,63 @@ class ConfidenceJudgeDraft(BaseModel):
     dimension_reasons: dict[str, str] = Field(default_factory=dict)
     hard_gates: list[HardGateHit] = Field(default_factory=list)
     notes: str = ""
+
+    @field_validator(
+        "evidence_grounding",
+        "final_answer_support",
+        "tool_param_correctness",
+        "logical_consistency",
+        "input_quality_alignment",
+        "sft_format_completeness",
+        mode="before",
+    )
+    @classmethod
+    def _unwrap_dimension_score(cls, value: object) -> object:
+        return _unwrap_score(value)
+
+    @field_validator("dimension_reasons", mode="before")
+    @classmethod
+    def _normalize_dimension_reasons(cls, value: object) -> object:
+        if isinstance(value, dict):
+            return {
+                str(key): (
+                    str(reason.get("reason") or reason.get("detail") or "")
+                    if isinstance(reason, dict)
+                    else str(reason)
+                )
+                for key, reason in value.items()
+            }
+        if isinstance(value, list):
+            result: dict[str, str] = {}
+            for item in value:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or item.get("dimension") or "").strip()
+                reason = str(item.get("reason") or item.get("detail") or "").strip()
+                if name:
+                    result[name] = reason
+            return result
+        return value
+
+    @field_validator("hard_gates", mode="before")
+    @classmethod
+    def _normalize_hard_gates(cls, value: object) -> object:
+        if isinstance(value, dict):
+            for key in ("items", "gates", "hard_gates"):
+                candidate = value.get(key)
+                if isinstance(candidate, list):
+                    return candidate
+            return [value] if value else []
+        return value
+
+    @field_validator("notes", mode="before")
+    @classmethod
+    def _normalize_notes(cls, value: object) -> str:
+        if isinstance(value, str):
+            return value
+        if value is None:
+            return ""
+        return json.dumps(value, ensure_ascii=False)
 
 
 class ConfidenceReport(BaseModel):

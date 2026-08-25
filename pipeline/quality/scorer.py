@@ -741,6 +741,10 @@ def score_trajectory_quality(
     ]
     has_invalid_parameters = "invalid" in parameter_readiness
     has_repairable_parameters = "repairable" in parameter_readiness
+    has_stage15_review = any(
+        issue.code == "task_gate" and issue.severity == "warning"
+        for issue in builder.issues
+    )
     dimensions = builder.dimensions()
     raw_quality_score = sum(item.weight * item.score for item in dimensions)
     applied_soft_caps: dict[str, float] = {}
@@ -764,7 +768,12 @@ def score_trajectory_quality(
 
     if hard_failures:
         decision = "reject"
-    elif has_nonparameter_error or has_invalid_parameters or audit_coverage < ACCEPT_COVERAGE:
+    elif (
+        has_nonparameter_error
+        or has_invalid_parameters
+        or has_stage15_review
+        or audit_coverage < ACCEPT_COVERAGE
+    ):
         decision = "needs_review"
     elif has_repairable_parameters:
         decision = "parameter_repair"
