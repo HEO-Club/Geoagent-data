@@ -171,6 +171,56 @@ def test_task_answer_mismatch_is_hard_reject() -> None:
     assert "answer_matches_task" in report.hard_failures
 
 
+def test_equivalent_location_wording_is_not_a_hard_mismatch() -> None:
+    task = _task().model_copy(
+        update={"final_location_text": "兰州近水广场东侧第二列花坛旁第三个台阶"}
+    )
+    report = score_trajectory_quality(
+        _freeform(),
+        _trajectory(location="甘肃省兰州市近水广场东侧第二列花坛旁第三个台阶"),
+        _forest(),
+        task=task,
+    )
+    assert "answer_matches_task" not in report.hard_failures
+
+
+def test_stage15_review_and_image_version_mismatch_route_review_not_reject() -> None:
+    task = _task().model_copy(
+        update={
+            "status": "needs_review",
+            "status_reason": "截图带讲解覆盖",
+            "image_paths": ["new_selected.jpg"],
+        }
+    )
+    report = score_trajectory_quality(
+        _freeform(), _trajectory(), _forest(), task=task
+    )
+    assert report.decision == "needs_review"
+    assert report.quality_score <= 0.75
+    assert "task_gate" not in report.hard_failures
+    assert "trajectory_uses_selected_images" not in report.hard_failures
+
+
+def test_repairable_parameters_do_not_override_low_audit_coverage() -> None:
+    report = score_trajectory_quality(
+        _freeform(),
+        _trajectory(),
+        _forest(),
+        parameter_audits=[
+            {
+                "step_index": 2,
+                "tool": "map_query",
+                "operation": "browse",
+                "valid": False,
+                "readiness": "repairable",
+                "issues": [],
+            }
+        ],
+    )
+    assert report.audit_coverage < 0.7
+    assert report.decision == "needs_review"
+
+
 def test_missing_final_is_hard_reject() -> None:
     traj = _trajectory().model_copy(update={"steps": _trajectory().steps[:-1]})
     report = score_trajectory_quality(_freeform(), traj, _forest())

@@ -10,6 +10,7 @@ import json
 import re
 from collections import defaultdict
 from collections.abc import Iterable
+from difflib import SequenceMatcher
 from typing import Any
 
 from pipeline.schemas.audit import AnswerStatus, GeoTaskSpec, TaskStatus
@@ -32,6 +33,14 @@ DIMENSION_WEIGHTS: dict[QualityDimensionName, float] = {
     "reasoning_consistency": 0.15,
     "input_alignment": 0.10,
     "sft_format": 0.05,
+}
+
+SOFT_QUALITY_CAPS = {
+    "trajectory_uses_selected_images": 0.75,
+    "task_gate": 0.80,
+    "canonical_tools_known": 0.70,
+    "operation_known": 0.70,
+    "operation_inputs_validated": 0.70,
 }
 
 ACCEPT_SCORE = 0.85
@@ -63,6 +72,16 @@ def _valid_location(value: Any) -> bool:
     if isinstance(value, list):
         return bool(value) and all(isinstance(x, str) and x.strip() for x in value)
     return False
+
+
+def _location_similarity(expected: Any, actual: Any) -> float:
+    expected_norm = _norm_text(expected)
+    actual_norm = _norm_text(actual)
+    if not expected_norm or not actual_norm:
+        return 0.0
+    if expected_norm in actual_norm or actual_norm in expected_norm:
+        return 1.0
+    return SequenceMatcher(None, expected_norm, actual_norm).ratio()
 
 
 def _iter_leaf_strings(value: Any) -> Iterable[str]:
@@ -274,19 +293,22 @@ def _check_final(
     else:
         expected = task.final_location_text
         actual = location[0] if isinstance(location, list) and len(location) == 1 else location
-        expected_norm = _norm_text(expected)
-        actual_norm = _norm_text(actual)
-        matched = bool(expected_norm and actual_norm) and (
-            expected_norm in actual_norm or actual_norm in expected_norm
-        )
+        similarity = _location_similarity(expected, actual)
+        matched = similarity >= 0.55
+        strong_mismatch = similarity < 0.35
         builder.add(
             "final_answer_support",
             "answer_matches_task",
-            1.0 if matched else 0.0,
+            1.0 if matched else (0.4 if not strong_mismatch else 0.0),
             "最终地点与 Stage 1.5 resolved 答案一致"
             if matched
-            else f"最终地点与 task 答案不一致：expected={expected!r}, actual={actual!r}",
-            severity="hard_fail" if not matched else None,
+            else (
+                f"最终地点与 task 答案相似度不足（{similarity:.2f}）："
+                f"expected={expected!r}, actual={actual!r}"
+            ),
+            severity=(
+                "hard_fail" if strong_mismatch else ("warning" if not matched else None)
+            ),
             importance=2.0,
         )
 
@@ -576,18 +598,33 @@ def _check_input(
             importance=4.0,
         )
     else:
-        accepted = task.status == TaskStatus.accepted
         resolved = task.answer_status == AnswerStatus.resolved
-        builder.add(
-            "input_alignment",
-            "task_gate",
-            1.0 if accepted and resolved else 0.0,
-            "Stage 1.5 task 已 accepted 且答案 resolved"
-            if accepted and resolved
-            else f"task 状态不允许入库：status={task.status}, answer={task.answer_status}",
-            severity="hard_fail" if not (accepted and resolved) else None,
-            importance=2.0,
-        )
+        if not resolved or task.status == TaskStatus.rejected:
+            builder.add(
+                "input_alignment",
+                "task_gate",
+                0.0,
+                f"task 无法用于下游：status={task.status}, answer={task.answer_status}",
+                severity="hard_fail",
+                importance=2.0,
+            )
+        elif task.status == TaskStatus.needs_review:
+            builder.add(
+                "input_alignment",
+                "task_gate",
+                0.5,
+                f"Stage 1.5 task 仍需复核：{task.status_reason or '未给出原因'}",
+                severity="warning",
+                importance=2.0,
+            )
+        else:
+            builder.add(
+                "input_alignment",
+                "task_gate",
+                1.0,
+                "Stage 1.5 task 已 accepted 且答案 resolved",
+                importance=2.0,
+            )
         selected = [item for item in task.frame_assessments if item.selected]
         if not selected:
             if task.image_paths:
@@ -633,7 +670,7 @@ def _check_input(
                 "Stage 3 图片与 Stage 1.5 选图完全一致"
                 if path_match
                 else "Stage 3 image_paths 与 Stage 1.5 选图不一致",
-                severity="hard_fail" if not path_match else None,
+                severity="error" if not path_match else None,
                 importance=2.0,
             )
 
@@ -695,10 +732,6 @@ def score_trajectory_quality(
                 builder.hard_failures.append(issue.code)
         builder.hard_failures.extend(semantic_review.hard_failures)
 
-    dimensions = builder.dimensions()
-    quality_score = sum(item.weight * item.score for item in dimensions)
-    audit_coverage = sum(item.weight * item.audit_coverage for item in dimensions)
-    hard_failures = sorted(set(builder.hard_failures))
     parameter_readiness = [
         str(
             audit.get("readiness")
@@ -708,11 +741,30 @@ def score_trajectory_quality(
     ]
     has_invalid_parameters = "invalid" in parameter_readiness
     has_repairable_parameters = "repairable" in parameter_readiness
+    dimensions = builder.dimensions()
+    raw_quality_score = sum(item.weight * item.score for item in dimensions)
+    applied_soft_caps: dict[str, float] = {}
+    for issue in builder.issues:
+        cap = SOFT_QUALITY_CAPS.get(issue.code)
+        if cap is None:
+            continue
+        if issue.code == "task_gate" and issue.severity != "warning":
+            continue
+        if issue.code == "operation_inputs_validated" and not has_invalid_parameters:
+            continue
+        applied_soft_caps[issue.code] = cap
+    quality_score = min([raw_quality_score, *applied_soft_caps.values()])
+    audit_coverage = sum(item.weight * item.audit_coverage for item in dimensions)
+    hard_failures = sorted(set(builder.hard_failures))
+    has_nonparameter_error = any(
+        issue.severity == "error" and issue.dimension != "tool_parameter_validity"
+        for issue in builder.issues
+    )
     dimension_by_name = {item.name: item for item in dimensions}
 
     if hard_failures:
         decision = "reject"
-    elif has_invalid_parameters:
+    elif has_nonparameter_error or has_invalid_parameters or audit_coverage < ACCEPT_COVERAGE:
         decision = "needs_review"
     elif has_repairable_parameters:
         decision = "parameter_repair"
@@ -740,6 +792,8 @@ def score_trajectory_quality(
         issues=builder.issues,
         metadata={
             "weights": DIMENSION_WEIGHTS,
+            "raw_quality_score": round(raw_quality_score, 4),
+            "applied_soft_caps": applied_soft_caps,
             "thresholds": {
                 "accept_score": ACCEPT_SCORE,
                 "accept_coverage": ACCEPT_COVERAGE,
