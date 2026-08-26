@@ -98,6 +98,8 @@ class GeoTaskSpec(BaseModel):
     final_location_text: str = ""
     expected_image_count: int = Field(default=1, ge=1)
     frame_assessments: list[KeyframeAssessment] = Field(default_factory=list)
+    # 程序化选图评价：质量等级 + 选中帧明细；不拦下游
+    image_selection_note: str = ""
 
     @field_validator("task_id")
     @classmethod

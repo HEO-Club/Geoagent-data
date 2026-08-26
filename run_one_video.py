@@ -11,7 +11,7 @@ from pipeline.orchestrator import run_one_video
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="单视频流水线：阶段1 → 审核切分 → 阶段2–3")
+    parser = argparse.ArgumentParser(description="单视频流水线：阶段1 → 审核切分 → 阶段2–4")
     parser.add_argument("--video", required=True)
     parser.add_argument("--video-id", default=None)
     parser.add_argument("--anchor-transcript", default=None)
@@ -48,6 +48,7 @@ def main() -> None:
                         "id": e.id,
                         "source_video": e.source_video,
                         "messages": len(e.messages),
+                        "quality_score": e.quality_score,
                     }
                     for e in entries
                 ],

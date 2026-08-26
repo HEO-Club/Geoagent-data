@@ -23,12 +23,12 @@ from pipeline.schemas.clues import (
 )
 from pipeline.schemas.dataset import ChatMessage, DatasetEntry, ManifestV2
 from pipeline.schemas.freeform import FreeFormStep, FreeFormTrajectory
-from pipeline.schemas.quality import (
-    QualityCheck,
-    QualityDimensionScore,
-    QualityIssue,
-    SemanticQualityReview,
-    TrajectoryQualityReport,
+from pipeline.schemas.confidence import (
+    ConfidenceJudgeDraft,
+    ConfidenceReport,
+    DimensionScore,
+    HardGateHit,
+    ParameterReadinessSummary,
 )
 from pipeline.schemas.tools import (
     InputFieldSpec,
@@ -57,10 +57,14 @@ __all__ = [
     "ChatMessage",
     "ClueExtractionResult",
     "ClueRole",
+    "ConfidenceJudgeDraft",
+    "ConfidenceReport",
     "DatasetEntry",
+    "DimensionScore",
     "FreeFormStep",
     "FreeFormTrajectory",
     "GeoTaskSpec",
+    "HardGateHit",
     "InputFieldSpec",
     "KeyframeAssessment",
     "ManifestV2",
@@ -68,14 +72,11 @@ __all__ = [
     "ObservationField",
     "ParamSpec",
     "ParameterAuditIssue",
+    "ParameterReadinessSummary",
     "ParameterRepairAction",
     "ProcessInterval",
     "ProcessRole",
-    "QualityCheck",
-    "QualityDimensionScore",
-    "QualityIssue",
     "RawGivenClue",
-    "SemanticQualityReview",
     "Stage1Result",
     "TargetKind",
     "TaskStatus",
@@ -86,7 +87,6 @@ __all__ = [
     "ToolParameterAudit",
     "ToolTree",
     "Trajectory",
-    "TrajectoryQualityReport",
     "TrajectoryStep",
     "TranscriptSegment",
     "WorkingScope",

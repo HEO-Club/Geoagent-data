@@ -66,7 +66,31 @@ class Settings(BaseSettings):
     AUDIT_MIN_FRAME_QUALITY: float = 0.65
     AUDIT_MIN_CHAIN_SUPPORT: float = 0.5
     AUDIT_VISUAL_HASH_DISTANCE: int = 6
-    AUDIT_TRAJECTORY_IMAGE_CHECK: bool = True
+
+    # 阶段4 置信度评分（权重运行时归一化）
+    STAGE4_W_EVIDENCE_GROUNDING: float = 0.30
+    STAGE4_W_FINAL_ANSWER_SUPPORT: float = 0.20
+    STAGE4_W_TOOL_PARAM_CORRECTNESS: float = 0.20
+    STAGE4_W_LOGICAL_CONSISTENCY: float = 0.15
+    STAGE4_W_INPUT_QUALITY_ALIGNMENT: float = 0.10
+    STAGE4_W_SFT_FORMAT_COMPLETENESS: float = 0.05
+    STAGE4_HARD_GATE_CAP: float = 0.30
+    # 配合苛评刻度：硬门槛/核心缺口优先看；0.93+ 才标低优先级
+    STAGE4_PRIORITY_HIGH_BELOW: float = 0.70
+    STAGE4_PRIORITY_MEDIUM_BELOW: float = 0.93
+    STAGE4_JUDGE_NEUTRAL_SCORE: float = 0.50
+    # 弱维度阈值：低于此分须在 notes / DimensionScore.reason 写明细
+    STAGE4_WEAK_DIMENSION_BELOW: float = 0.80
+    # tool_param_correctness：按最差一次调用 readiness 映射
+    STAGE4_PARAM_SCORE_READY: float = 1.0
+    STAGE4_PARAM_SCORE_CONTEXT_RESOLVABLE: float = 0.80
+    STAGE4_PARAM_SCORE_REPAIRABLE: float = 0.45
+    STAGE4_PARAM_SCORE_INVALID: float = 0.15
+    STAGE4_PARAM_SCORE_AUDIT_MISSING: float = 0.50
+
+
+    # 阶段3：每个 tool_call 用 LLM 对照 schema 从 Thought 编译 params（失败开放）
+    STAGE3_COMPILE_PARAMS: bool = True
 
     TOOL_CATALOG_PATH: str = "canonical_tool_catalog.json"
     TOOL_TREES_PATH: str = "tool_trees.json"
