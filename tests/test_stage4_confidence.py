@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -15,26 +16,28 @@ from pipeline.schemas.confidence import (
 )
 from pipeline.schemas.dataset import ChatMessage, DatasetEntry
 from pipeline.schemas.freeform import FreeFormStep, FreeFormTrajectory
+from pipeline.schemas.tools import (
+    ParameterAuditIssue,
+    ParameterRepairAction,
+    ToolParameterAudit,
+)
 from pipeline.schemas.trajectory import Action, Trajectory, TrajectoryStep
 from pipeline.schemas.transcript import TranscriptSegment
-from pipeline.stage3_normalize_format.params import attach_operation_input_schemas
-from pipeline.stage3_normalize_format.trees import load_forest
-from pipeline.stage4_confidence import (
-    merge_confidence,
-    rewrite_entry_quality_score,
-    run_stage4,
+from pipeline.stage4_confidence import merge_confidence, rewrite_entry_quality_score, run_stage4
+from pipeline.stage4_confidence.rules import (
+    evaluate_parameter_readiness,
+    evaluate_programmatic_gates,
 )
-from pipeline.stage4_confidence.rules import evaluate_programmatic_gates
 
 
 def _task(**kwargs: Any) -> GeoTaskSpec:
-    base = {
-        "task_id": "vid__t01",
-        "time_start": 0.0,
-        "time_end": 10.0,
-        "target_kind": TargetKind.still_image,
-        "image_paths": ["img.jpg"],
-    }
+    base = dict(
+        task_id="vid__t01",
+        time_start=0.0,
+        time_end=10.0,
+        target_kind=TargetKind.still_image,
+        image_paths=["img.jpg"],
+    )
     base.update(kwargs)
     return GeoTaskSpec(**base)
 
@@ -109,6 +112,50 @@ def _entry() -> DatasetEntry:
     )
 
 
+def _audit(
+    *,
+    readiness: str,
+    step_index: int = 2,
+    tool: str = "map_query",
+    operation: str = "query",
+    with_issue: bool = False,
+) -> ToolParameterAudit:
+    issues: list[ParameterAuditIssue] = []
+    repairs: list[ParameterRepairAction] = []
+    if with_issue or readiness != "ready":
+        issues.append(
+            ParameterAuditIssue(
+                code="missing_field",
+                severity="error" if readiness == "invalid" else "warning",
+                field="area",
+                message="缺少 area",
+                repairable=readiness == "repairable",
+                guidance="从 Thought 提取区域",
+            )
+        )
+    if readiness == "repairable":
+        repairs.append(
+            ParameterRepairAction(
+                field="area",
+                requirement_level="execution",
+                strategy="extract_from_thought",
+                guidance="从 Thought 提取区域名",
+            )
+        )
+    return ToolParameterAudit(
+        step_index=step_index,
+        tool=tool,
+        raw_operation=operation,
+        operation=operation,
+        raw_inputs={},
+        normalized_inputs={},
+        valid=readiness in {"ready", "context_resolvable"},
+        readiness=readiness,  # type: ignore[arg-type]
+        issues=issues,
+        repair_actions=repairs,
+    )
+
+
 def test_weighted_merge_and_hard_gate_cap(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("STAGE4_HARD_GATE_CAP", "0.3")
     clear_settings_cache()
@@ -131,11 +178,47 @@ def test_weighted_merge_and_hard_gate_cap(monkeypatch: pytest.MonkeyPatch) -> No
         programmatic_gates=[],
         draft=draft,
         judge_call_failed=False,
+        param_score=0.9,
+        param_reason="全部 ready",
     )
     assert report.base_score >= 0.85
     assert report.quality_score == pytest.approx(0.3)
     assert report.review_priority == "high"
     assert any(g.code == "fabricated_observation" for g in report.hard_gates)
+    assert report.notes.strip()
+
+
+def test_merge_confidence_appends_image_selection_note(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stage 1.5 选图评价追加进 notes，不改打分。"""
+    monkeypatch.setenv("STAGE4_HARD_GATE_CAP", "0.3")
+    clear_settings_cache()
+    draft = ConfidenceJudgeDraft(
+        evidence_grounding=0.9,
+        final_answer_support=0.9,
+        logical_consistency=0.9,
+        input_quality_alignment=0.9,
+        notes="裁判说图尚可",
+    )
+    report = merge_confidence(
+        task_id="vid__t01",
+        format_score=1.0,
+        format_reason="ok",
+        programmatic_gates=[],
+        draft=draft,
+        judge_call_failed=False,
+        param_score=1.0,
+        param_reason="全部 ready",
+        image_selection_note=(
+            "选图质量等级=needs_review\n选中张数=1\n"
+            "选图原因: 选中帧仍含讲解覆盖"
+        ),
+    )
+    assert "选图评价:" in report.notes
+    assert "选图质量等级=needs_review" in report.notes
+    assert "选中帧仍含讲解覆盖" in report.notes
+    assert report.quality_score >= 0.8
 
 
 def test_review_priority_bands_after_strict_scale(
@@ -149,10 +232,10 @@ def test_review_priority_bands_after_strict_scale(
         draft = ConfidenceJudgeDraft(
             evidence_grounding=score,
             final_answer_support=score,
-            tool_param_correctness=score,
             logical_consistency=score,
             input_quality_alignment=score,
             hard_gates=gates or [],
+            notes="band",
         )
         return merge_confidence(
             task_id="t",
@@ -161,6 +244,8 @@ def test_review_priority_bands_after_strict_scale(
             programmatic_gates=[],
             draft=draft,
             judge_call_failed=False,
+            param_score=score,
+            param_reason="ok",
         ).review_priority
 
     assert _report(0.96) == "low"
@@ -183,7 +268,10 @@ def test_programmatic_missing_final_and_empty_location() -> None:
             TrajectoryStep(
                 event_type="tool_call",
                 thought="误作末步",
-                action=Action(tool="map_query", params={"operation": "x", "purpose": "p", "inputs": {}}),
+                action=Action(
+                    tool="map_query",
+                    params={"operation": "x", "purpose": "p", "inputs": {}},
+                ),
                 observation={"result": None},
             ),
         ],
@@ -241,6 +329,157 @@ def test_answer_leakage_selected_gate() -> None:
     assert any(g.code == "answer_leakage_selected" for g in gates)
 
 
+def test_parameter_readiness_score_mapping(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("STAGE4_PARAM_SCORE_READY", "1.0")
+    monkeypatch.setenv("STAGE4_PARAM_SCORE_CONTEXT_RESOLVABLE", "0.80")
+    monkeypatch.setenv("STAGE4_PARAM_SCORE_REPAIRABLE", "0.45")
+    monkeypatch.setenv("STAGE4_PARAM_SCORE_INVALID", "0.15")
+    monkeypatch.setenv("STAGE4_PARAM_SCORE_AUDIT_MISSING", "0.50")
+    clear_settings_cache()
+
+    score, reason, gates, summary = evaluate_parameter_readiness([])
+    assert score == pytest.approx(1.0)
+    assert summary.total_calls == 0
+    assert not gates
+    assert "无 Tool" in reason
+
+    score_r, _, gates_r, sum_r = evaluate_parameter_readiness(
+        [_audit(readiness="ready")]
+    )
+    assert score_r == pytest.approx(1.0)
+    assert sum_r.ready == 1
+    assert not gates_r
+
+    score_c, _, gates_c, sum_c = evaluate_parameter_readiness(
+        [_audit(readiness="context_resolvable", with_issue=True)]
+    )
+    assert score_c == pytest.approx(0.80)
+    assert sum_c.context_resolvable == 1
+    assert not gates_c
+
+    score_p, reason_p, gates_p, sum_p = evaluate_parameter_readiness(
+        [
+            _audit(readiness="ready"),
+            _audit(readiness="repairable", step_index=3, with_issue=True),
+        ]
+    )
+    assert score_p == pytest.approx(0.45)
+    assert sum_p.worst == "repairable"
+    assert not gates_p
+    assert "missing_field" in reason_p
+
+    score_i, reason_i, gates_i, sum_i = evaluate_parameter_readiness(
+        [
+            _audit(readiness="context_resolvable", with_issue=True),
+            _audit(readiness="invalid", step_index=4, with_issue=True),
+        ]
+    )
+    assert score_i == pytest.approx(0.15)
+    assert sum_i.invalid == 1
+    assert any(g.code == "tool_params_invalid" for g in gates_i)
+    assert "invalid" in reason_i
+
+    score_m, reason_m, gates_m, sum_m = evaluate_parameter_readiness(
+        None, audit_missing=True
+    )
+    assert score_m == pytest.approx(0.50)
+    assert sum_m.audit_missing is True
+    assert not gates_m
+    assert "缺失" in reason_m
+
+
+def test_invalid_param_hard_gate_caps_score(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("STAGE4_HARD_GATE_CAP", "0.3")
+    clear_settings_cache()
+
+    def fake_judge(**_k: Any) -> ConfidenceJudgeDraft:
+        return ConfidenceJudgeDraft(
+            evidence_grounding=0.95,
+            final_answer_support=0.95,
+            logical_consistency=0.95,
+            input_quality_alignment=0.95,
+            dimension_reasons={
+                "evidence_grounding": "证据充分可核对",
+                "final_answer_support": "答案完整",
+                "logical_consistency": "链路自洽",
+                "input_quality_alignment": "选图干净",
+            },
+            notes="整体不错但参数 invalid",
+        )
+
+    audit_path = tmp_path / "stage3_parameter_audit.json"
+    audit_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "canonical_inputs_v1",
+                "calls": [
+                    _audit(readiness="invalid", with_issue=True).model_dump()
+                ],
+                "valid_calls": 0,
+                "total_calls": 1,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    report = run_stage4(
+        task=_task(),
+        transcript=[TranscriptSegment(start=0, end=1, text="旁白")],
+        freeform=_freeform(),
+        trajectory=_traj_ok(),
+        entry=_entry(),
+        parameter_audit_path=audit_path,
+        out_report_path=str(tmp_path / "r.json"),
+        out_jsonl_path=str(tmp_path / "s.jsonl"),
+        judge=fake_judge,
+    )
+    assert any(g.code == "tool_params_invalid" for g in report.hard_gates)
+    assert report.quality_score == pytest.approx(0.3)
+    dim_map = {d.name: d for d in report.dimensions}
+    assert dim_map["tool_param_correctness"].score == pytest.approx(0.15)
+    assert "missing_field" in dim_map["tool_param_correctness"].reason
+    assert report.notes.strip()
+    assert "参数质检" in report.notes
+    assert report.parameter_readiness is not None
+    assert report.parameter_readiness.invalid == 1
+
+
+def test_audit_missing_fail_open_notes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("STAGE4_PARAM_SCORE_AUDIT_MISSING", "0.50")
+    clear_settings_cache()
+
+    def fake_judge(**_k: Any) -> ConfidenceJudgeDraft:
+        return ConfidenceJudgeDraft(
+            evidence_grounding=0.8,
+            final_answer_support=0.8,
+            logical_consistency=0.8,
+            input_quality_alignment=0.8,
+            notes="",  # 空 notes 须被程序化补全
+        )
+
+    report = run_stage4(
+        task=_task(),
+        transcript=[TranscriptSegment(start=0, end=1, text="旁白")],
+        freeform=_freeform(),
+        trajectory=_traj_ok(),
+        entry=_entry(),
+        parameter_audit_path=tmp_path / "missing.json",
+        out_report_path=str(tmp_path / "r.json"),
+        out_jsonl_path=str(tmp_path / "s.jsonl"),
+        judge=fake_judge,
+    )
+    dim_map = {d.name: d.score for d in report.dimensions}
+    assert dim_map["tool_param_correctness"] == pytest.approx(0.50)
+    assert not any(g.code == "tool_params_invalid" for g in report.hard_gates)
+    assert report.notes.strip()
+    assert "缺失" in report.notes or "audit" in report.notes.lower()
+
+
 def test_run_stage4_writes_sidecar_and_jsonl(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -266,6 +505,19 @@ def test_run_stage4_writes_sidecar_and_jsonl(
             notes="注入裁判",
         )
 
+    audit_path = tmp_path / "stage3_parameter_audit.json"
+    audit_path.write_text(
+        json.dumps(
+            {
+                "calls": [_audit(readiness="ready").model_dump()],
+                "valid_calls": 1,
+                "total_calls": 1,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
     report_path = tmp_path / "stage4_confidence.json"
     shard = tmp_path / "out.jsonl"
     original_messages = _entry().messages
@@ -278,6 +530,7 @@ def test_run_stage4_writes_sidecar_and_jsonl(
         freeform=_freeform(),
         trajectory=traj,
         entry=entry,
+        parameter_audit_path=audit_path,
         out_report_path=str(report_path),
         out_jsonl_path=str(shard),
         judge=fake_judge,
@@ -285,6 +538,8 @@ def test_run_stage4_writes_sidecar_and_jsonl(
     assert report_path.is_file()
     assert report.quality_score <= 0.3
     assert any(g.code == "fabricated_observation" for g in report.hard_gates)
+    assert report.notes.strip()
+    assert "弱维度" in report.notes or "final_answer_support" in report.notes
 
     rewritten = DatasetEntry.model_validate_json(
         shard.read_text(encoding="utf-8").splitlines()[0]
@@ -308,19 +563,20 @@ def test_judge_failure_fail_open(
         freeform=_freeform(),
         trajectory=_traj_ok(),
         entry=_entry(),
+        parameter_audits=[],  # 显式空审计：无 Tool 记满分
         out_report_path=str(tmp_path / "r.json"),
         out_jsonl_path=str(tmp_path / "s.jsonl"),
         judge=boom,
     )
     assert report.judge_call_failed is True
     assert "judge_call_failed" in report.notes
-    # 裁判失败时保留确定性检查，并通过 coverage 表示语义维度未审核。
-    assert 0.4 <= report.quality_score <= 0.7
-    assert report.audit_coverage < 0.7
-    assert report.decision != "accept"
+    assert report.notes.strip()
+    # VLM 维中性 + 格式 1.0 + 参数 1.0（无 Tool）
+    assert 0.4 <= report.quality_score <= 0.8
     dim_map = {d.name: d.score for d in report.dimensions}
     assert dim_map["sft_format_completeness"] == pytest.approx(1.0)
-    assert dim_map["evidence_grounding"] == pytest.approx(0.6)
+    assert dim_map["evidence_grounding"] == pytest.approx(0.5)
+    assert dim_map["tool_param_correctness"] == pytest.approx(1.0)
 
 
 def test_rewrite_only_quality_score() -> None:
@@ -331,126 +587,25 @@ def test_rewrite_only_quality_score() -> None:
     assert updated.id == entry.id
 
 
-def test_judge_prompt_has_score_anchors() -> None:
-    """裁判 prompt 必须含分档刻度，避免「能讲通就 0.9+」。"""
+def test_judge_prompt_has_score_anchors_and_params() -> None:
+    """裁判 prompt 必须含分档刻度、notes 要求与 params/audit。"""
     from pipeline.stage4_confidence.judge import JUDGE_HINT, build_judge_prompt
 
     assert "0.95–1.00" in JUDGE_HINT
     assert "默认从 0.75 起评" in JUDGE_HINT
     assert "incomplete_final_targets" in JUDGE_HINT
+    assert "notes 必填" in JUDGE_HINT
+    assert "程序化参数审计" in JUDGE_HINT
     prompt = build_judge_prompt(
         task=_task(),
         transcript=[TranscriptSegment(start=0, end=1, text="旁白")],
         freeform=_freeform(),
         trajectory=_traj_ok(),
+        parameter_audits=[_audit(readiness="repairable", with_issue=True)],
     )
     assert "禁止把「能复述字幕 / 主链能讲通」直接打 0.9+" in prompt
     assert "final_answer_support" in prompt
-
-
-def test_anthropic_confidence_wrappers_are_normalized() -> None:
-    draft = ConfidenceJudgeDraft.model_validate(
-        {
-            "evidence_grounding": {"score": 0.9, "reason": "扎实"},
-            "final_answer_support": {"value": 0.8},
-            "tool_param_correctness": {"rating": 0.7},
-            "logical_consistency": {"confidence": 0.85},
-            "input_quality_alignment": 0.75,
-            "dimension_reasons": [
-                {"dimension": "evidence_grounding", "reason": "有引用"}
-            ],
-            "hard_gates": {
-                "gates": [
-                    {
-                        "type": "fabricated_observation",
-                        "reason": "无直接证据",
-                    }
-                ]
-            },
-            "notes": {"summary": "包装返回"},
-        }
-    )
-    assert draft.evidence_grounding == pytest.approx(0.9)
-    assert draft.final_answer_support == pytest.approx(0.8)
-    assert draft.tool_param_correctness == pytest.approx(0.7)
-    assert draft.logical_consistency == pytest.approx(0.85)
-    assert draft.dimension_reasons["evidence_grounding"] == "有引用"
-    assert draft.hard_gates[0].code == "fabricated_observation"
-    assert draft.hard_gates[0].evidence == "无直接证据"
-    assert "包装返回" in draft.notes
-
-
-def test_fused_stage4_uses_parameter_observation_and_coverage(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    frame = tmp_path / "img.jpg"
-    frame.write_bytes(b"jpg")
-    task = _task(
-        image_paths=[str(frame)],
-        final_location_text="某市某镇",
-        frame_assessments=[
-            KeyframeAssessment(
-                timestamp=1.0,
-                image_path=str(frame),
-                kind="target_photo",
-                quality_score=0.95,
-                clean_source=True,
-                chain_support_score=0.95,
-                selected=True,
-            )
-        ],
-    )
-    trajectory = _traj_ok().model_copy(update={"image_paths": [str(frame)]})
-    parameter_audit = {
-        "calls": [
-            {
-                "step_index": 2,
-                "tool": "map_query",
-                "operation": "browse",
-                "valid": True,
-                "readiness": "ready",
-                "issues": [],
-            }
-        ]
-    }
-    observation_audit = {
-        "accepted": True,
-        "passes": [{"items": [{"call_id": "C001", "verdict": "supported"}]}],
-    }
-
-    def high_judge(**_kwargs: Any) -> ConfidenceJudgeDraft:
-        return ConfidenceJudgeDraft(
-            evidence_grounding=0.96,
-            final_answer_support=0.96,
-            tool_param_correctness=0.95,
-            logical_consistency=0.95,
-            input_quality_alignment=0.95,
-        )
-
-    forest = attach_operation_input_schemas(
-        load_forest(Path("canonical_tool_catalog.json"))
-    )
-    report = run_stage4(
-        task=task,
-        transcript=[TranscriptSegment(start=0, end=1, text="最终地点是某市某镇")],
-        freeform=_freeform(),
-        trajectory=trajectory,
-        entry=_entry(),
-        parameter_audit=parameter_audit,
-        observation_audit=observation_audit,
-        trajectory_consistency={
-            "conflict": False,
-            "confidence": 0.95,
-            "reason": "一致",
-        },
-        forest=forest,
-        out_report_path=str(tmp_path / "fused.json"),
-        out_jsonl_path=str(tmp_path / "fused.jsonl"),
-        judge=high_judge,
-    )
-    assert report.quality_score >= 0.85
-    assert report.audit_coverage >= 0.9
-    assert report.decision == "accept"
-    assert report.parameter_readiness_counts["ready"] == 1
-    assert "parameter_audit" in report.evidence_sources
-    assert "strict_observation_audit" in report.evidence_sources
+    assert "operation=" in prompt
+    assert "inputs=" in prompt
+    assert "参数审计摘要" in prompt
+    assert "readiness=repairable" in prompt

@@ -21,9 +21,6 @@ from pipeline.stage_audit_split.run import (
     run_audit_split,
     slice_transcript_for_task,
 )
-from pipeline.stage_audit_split.trajectory_image_check import (
-    check_trajectory_image_consistency,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -102,8 +99,8 @@ def run_one_video(
         stage4_judge: 注入阶段4 裁判回调（测试用）。
 
     Returns:
-        每个 accept 且完成阶段3的 task 对应一条 DatasetEntry（含 quality_score）；
-        reject 时返回空列表。
+        每个视频级 accept 且完成阶段3的 task（accepted / needs_review）对应一条
+        DatasetEntry（含 quality_score）；视频级 reject 或答案 rejected 题返回空列表。
     """
     settings = get_settings()
     vid = video_id or Path(video_path).stem
@@ -153,15 +150,14 @@ def run_one_video(
         freeform_path = task_dir / "stage2_freeform_tao.json"
         traj_path = task_dir / "stage3_trajectory.json"
         mapping_path = task_dir / "stage3_tool_mapping.json"
-        parameter_path = task_dir / "stage3_parameter_audit.json"
-        observation_audit_path = task_dir / "stage2_observation_audit.json"
+        param_audit_path = task_dir / "stage3_parameter_audit.json"
         conf_path = task_dir / "stage4_confidence.json"
         shard_path = Path(settings.OUTPUT_DIR) / "shards" / f"{task.task_id}.jsonl"
         stage2_key = _task_stage_key(task.task_id, "stage2")
         stage3_key = _task_stage_key(task.task_id, "stage3")
         stage4_key = _task_stage_key(task.task_id, "stage4")
 
-        if task.status != TaskStatus.accepted:
+        if task.status == TaskStatus.rejected:
             skipped = task.status.value
             manifest.stages[stage2_key] = skipped
             manifest.stages[stage3_key] = skipped
@@ -175,6 +171,13 @@ def run_one_video(
             )
             continue
 
+        # accepted / needs_review：选图质量只作标注，继续跑 Stage 2–4
+        if task.status == TaskStatus.needs_review:
+            logger.info(
+                "continue downstream for %s status=needs_review reason=%s",
+                task.task_id,
+                task.status_reason,
+            )
         task_images = list(task.image_paths) or list(fallback_images)
         task_transcript = slice_transcript_for_task(transcript, task)
 
@@ -198,31 +201,6 @@ def run_one_video(
         freeform = load_freeform(freeform_path)
         if freeform.source_video != vid:
             freeform.source_video = vid
-
-        consistency_path = task_dir / "image_trajectory_consistency.json"
-        if settings.AUDIT_TRAJECTORY_IMAGE_CHECK:
-            consistency = check_trajectory_image_consistency(
-                image_paths=task_images,
-                visual_evidence_brief=str(
-                    getattr(task, "visual_evidence_brief", "") or ""
-                ),
-                trajectory=freeform,
-            )
-            consistency_path.write_text(
-                consistency.model_dump_json(indent=2),
-                encoding="utf-8",
-            )
-            if consistency.conflict:
-                manifest.stages[stage3_key] = "needs_review"
-                # 无 JSONL 可评，阶段4跳过
-                manifest.stages[stage4_key] = "skipped_conflict"
-                save_manifest(manifest)
-                logger.info(
-                    "skip stage3 for %s: trajectory-image conflict (%s)",
-                    task.task_id,
-                    consistency.reason,
-                )
-                continue
 
         if not (
             skip_completed
@@ -260,9 +238,7 @@ def run_one_video(
                 trajectory=trajectory,
                 entry=entry,
                 tool_mapping_path=mapping_path,
-                parameter_audit_path=parameter_path,
-                observation_audit_path=observation_audit_path,
-                trajectory_consistency_path=consistency_path,
+                parameter_audit_path=param_audit_path,
                 out_report_path=str(conf_path),
                 out_jsonl_path=str(shard_path),
                 judge=stage4_judge,

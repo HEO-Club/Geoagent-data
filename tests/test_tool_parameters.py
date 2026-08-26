@@ -147,6 +147,35 @@ def test_missing_previous_result_gets_explicit_prerequisite_guidance() -> None:
     )
 
 
+def test_instance_specific_field_names_stay_in_extensions() -> None:
+    """个别轨迹里的对象名不得升格成合同别名。"""
+
+    satellite = normalize_and_validate_tool_inputs(
+        _forest(),
+        tool="satellite_imagery_query",
+        operation="retrieve",
+        inputs={"电塔坐标": [113.6, 34.7], "区域": "河南省"},
+        step_index=4,
+    )
+    assert satellite.normalized_inputs["area"] == "河南省"
+    assert "coordinates" not in satellite.normalized_inputs
+    assert satellite.normalized_inputs["extensions"] == {"电塔坐标": [113.6, 34.7]}
+
+    sightline = normalize_and_validate_tool_inputs(
+        _forest(),
+        tool="geospatial_analysis",
+        operation="sightline",
+        inputs={"参照物1": "塔基", "参照物2": "山顶"},
+        step_index=5,
+    )
+    assert "observer" not in sightline.normalized_inputs
+    assert "target" not in sightline.normalized_inputs
+    assert sightline.normalized_inputs["extensions"] == {
+        "参照物1": "塔基",
+        "参照物2": "山顶",
+    }
+
+
 def test_unknown_extra_inputs_are_preserved_as_extensions() -> None:
     audit = normalize_and_validate_tool_inputs(
         _forest(),
@@ -162,11 +191,10 @@ def test_unknown_extra_inputs_are_preserved_as_extensions() -> None:
     }
 
 
-def test_run_stage3_writes_parameter_audit_and_leaves_quality_for_stage4(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_run_stage3_writes_parameter_audit(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("TOOL_CATALOG_PATH", "canonical_tool_catalog.json")
     monkeypatch.setenv("TOOL_TREES_PATH", str(tmp_path / "runtime_tools.json"))
+    monkeypatch.setenv("ALLOW_REAL_API", "false")
     clear_settings_cache()
     freeform = FreeFormTrajectory.model_validate(
         {
@@ -209,6 +237,7 @@ def test_run_stage3_writes_parameter_audit_and_leaves_quality_for_stage4(
         out_jsonl_path=str(tmp_path / "demo.jsonl"),
         image_paths=["input.jpg"],
         matcher=matcher,
+        compile_params=False,
     )
     parameter_audit = json.loads(
         (tmp_path / "stage3_parameter_audit.json").read_text(encoding="utf-8")
@@ -222,6 +251,6 @@ def test_run_stage3_writes_parameter_audit_and_leaves_quality_for_stage4(
     }
     assert parameter_audit["valid_calls"] == 1
     assert parameter_audit["total_calls"] == 1
-    assert not (tmp_path / "stage3_quality_report.json").exists()
     assert entry.quality_score is None
+    assert not (tmp_path / "stage3_quality_report.json").exists()
     clear_settings_cache()

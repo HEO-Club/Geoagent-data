@@ -35,12 +35,10 @@ def main() -> None:
     parser.add_argument("--trajectory", required=True, help="stage3_trajectory.json")
     parser.add_argument("--entry-jsonl", required=True, help="shards/*.jsonl")
     parser.add_argument("--tool-mapping", default=None, help="stage3_tool_mapping.json")
-    parser.add_argument("--parameter-audit", default=None, help="stage3_parameter_audit.json")
-    parser.add_argument("--observation-audit", default=None, help="stage2_observation_audit.json")
     parser.add_argument(
-        "--trajectory-consistency",
+        "--parameter-audit",
         default=None,
-        help="image_trajectory_consistency.json",
+        help="stage3_parameter_audit.json（缺省则记参数中性分）",
     )
     parser.add_argument("--out-report", default=None, help="stage4_confidence.json")
     args = parser.parse_args()
@@ -58,6 +56,14 @@ def main() -> None:
     entry = DatasetEntry.model_validate_json(
         Path(args.entry_jsonl).read_text(encoding="utf-8").splitlines()[0]
     )
+
+    parameter_audit_path = args.parameter_audit
+    if parameter_audit_path is None:
+        # 约定：与 trajectory 同目录的 stage3_parameter_audit.json
+        sibling = Path(args.trajectory).with_name("stage3_parameter_audit.json")
+        if sibling.is_file():
+            parameter_audit_path = str(sibling)
+
     report = run_stage4(
         task=task,
         transcript=transcript,
@@ -65,9 +71,7 @@ def main() -> None:
         trajectory=trajectory,
         entry=entry,
         tool_mapping_path=args.tool_mapping,
-        parameter_audit_path=args.parameter_audit,
-        observation_audit_path=args.observation_audit,
-        trajectory_consistency_path=args.trajectory_consistency,
+        parameter_audit_path=parameter_audit_path,
         out_report_path=args.out_report,
         out_jsonl_path=args.entry_jsonl,
     )
@@ -79,6 +83,7 @@ def main() -> None:
                 "base_score": report.base_score,
                 "review_priority": report.review_priority,
                 "hard_gates": [g.code for g in report.hard_gates],
+                "notes_preview": report.notes[:200],
             },
             ensure_ascii=False,
         )

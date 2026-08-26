@@ -76,17 +76,20 @@ AUDIT_SYSTEM_HINT = (
     "截在每道题的待定位原图首次出示处：假设 Agent 只能看到该原图和题面已知条件，"
     "是否仍需要推理定位。后续人工解出、AI 已回答、答案已揭晓、视频以对战/复盘形式"
     "呈现，都绝不能作为 reject 理由；应把后续内容当作要蒸馏的监督链。\n"
-    "定位输入不只限于静态照片：无人机航拍、行车/步行视频中的一段连续现场同样是"
+    "定位输入不只限于静态照片：一段连续实拍现场同样是"
     "有效的 video_derived 输入；只要讲解者正通过这些画面推断拍摄地点，就应 accept，"
-    "不能把被分析的航拍画面说成普通素材。任务也不要求仅凭像素孤立求解：题面明确"
-    "给出的时间、IP 属地、活动范围、文字提示等可作为 Agent 已知线索；存在目标实拍"
+    "不能把被分析的现场画面说成普通素材。任务也不要求仅凭像素孤立求解：题面明确"
+    "给出的时间、属地、活动范围、文字提示等可作为 Agent 已知线索；存在目标实拍"
     "且这些线索参与定位时仍是有效样本。只有完全不存在待定位视觉目标、地点纯粹是"
     "文章/科普的讲述对象时才 reject。\n"
-    "- has_unresolved_target=false → decision=reject："
+    "- has_unresolved_target=true：去掉讲解/旁白/答案后，仍存在需 Agent 定位的视觉目标"
+    "（与视频后面是否已揭晓无关；本项目原料通常已揭晓）。\n"
+    "- has_unresolved_target=false：完全没有待定位视觉目标（地名科普、历史故事等）。\n"
+    "- decision 必须与 has_unresolved_target 一致："
+    "true→accept，false→reject。\n"
     "地名科普、历史故事、奇观介绍、地点仅为讲述对象、"
     "旁白「打开地图就能看到某某地」≠ 定位题。\n"
-    "- has_unresolved_target=true → decision=accept："
-    "存在一个或多个独立的待定位输入。\n"
+    "存在一个或多个独立的待定位输入时必须 accept。\n"
     "先理解整段定位过程，区分过程角色：\n"
     "- (A) 待定位实拍输入：人眼/相机拍到的、被定位的现场场景或静帧；\n"
     "- (B) 推理工具与核验步骤：用地图或影像底图比对、街景浏览确认等工具画面；\n"
@@ -1895,6 +1898,37 @@ def _materialize_task_images(
         process_intervals,
     )
 
+
+def compose_image_selection_note(
+    *,
+    status: TaskStatus,
+    status_reason: str = "",
+    assessments: list[KeyframeAssessment] | None = None,
+) -> str:
+    """程序化组装选图评价 note（质量等级 + 选中帧明细）。
+
+    ``accepted`` / ``needs_review`` 都必须有非空 note；不另调 VLM。
+    """
+    grade = status.value
+    selected = [item for item in (assessments or []) if item.selected]
+    parts: list[str] = [f"选图质量等级={grade}", f"选中张数={len(selected)}"]
+    reason = (status_reason or "").strip()
+    if reason:
+        parts.append(f"选图原因: {reason}")
+    if not selected:
+        parts.append("选中帧: 无")
+    else:
+        parts.append("选中帧明细:")
+        for idx, item in enumerate(selected, start=1):
+            frame_reason = (item.reason or "").strip() or "（无逐帧理由）"
+            parts.append(
+                f"- [{idx}] t={item.timestamp:.3f}s quality={item.quality_score:.2f} "
+                f"overlay={item.tutorial_overlay} clean={item.clean_source} "
+                f"support={item.chain_support_score:.2f} reason={frame_reason}"
+            )
+    return "\n".join(parts)
+
+
 def slice_transcript_for_task(
     transcript: list[TranscriptSegment],
     task: GeoTaskSpec,
@@ -2034,7 +2068,21 @@ def run_audit_split(
             lane="vlm",
         )
 
+    # 字段名易被模型理解成「视频未揭晓」；若 decision=accept 且已给 tasks，
+    # 以 decision/tasks 为准，不因 has_unresolved_target=false 整片强制拒识。
     force_reject = not bool(draft.has_unresolved_target)
+    accept_with_tasks = (
+        draft.decision == AuditDecision.accept and bool(getattr(draft, "tasks", None))
+    )
+    if force_reject and accept_with_tasks:
+        logger.warning(
+            "ignore has_unresolved_target=false for %s: decision=accept with %d tasks",
+            video_id,
+            len(draft.tasks),
+        )
+        force_reject = False
+        draft.has_unresolved_target = True
+
     if draft.decision == AuditDecision.reject or force_reject:
         reason = draft.reason.strip() or "非地理定位任务"
         if force_reject and draft.decision != AuditDecision.reject:
@@ -2157,6 +2205,14 @@ def run_audit_split(
 
             # multi_target / expected_image_count 记录实选结果，不作预定配额
             multi = len(paths) > 1
+            # rejected（答案歧义/无解）仍可不写选图明细；其余均写评价 note
+            selection_note = ""
+            if status != TaskStatus.rejected:
+                selection_note = compose_image_selection_note(
+                    status=status,
+                    status_reason=status_reason,
+                    assessments=assessments,
+                )
             task = GeoTaskSpec(
                 task_id=task_id,
                 time_start=t0,
@@ -2176,6 +2232,7 @@ def run_audit_split(
                 final_location_text=final_location,
                 expected_image_count=max(1, len(paths)) if paths else 1,
                 frame_assessments=assessments,
+                image_selection_note=selection_note,
             )
             tasks.append(task)
             _write_json(task_checkpoint, task)

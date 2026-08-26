@@ -13,6 +13,12 @@ from pipeline.schemas.dataset import ChatMessage, DatasetEntry
 from pipeline.schemas.freeform import FreeFormTrajectory
 from pipeline.schemas.tools import ToolForest, ToolParameterAudit
 from pipeline.schemas.trajectory import Action, Trajectory, TrajectoryStep
+from pipeline.stage3_normalize_format.compile_params import (
+    ParamCompilerFn,
+    apply_compile_and_revalidate,
+    build_compile_request,
+    compile_params_batch,
+)
 from pipeline.stage3_normalize_format.map_tools import ensure_tool_trees
 from pipeline.stage3_normalize_format.params import (
     initial_parameter_context,
@@ -61,13 +67,14 @@ def _resolve_image_paths(
     image_paths: list[str] | None,
     image_path: str | None,
 ) -> list[str]:
+    """解析任务图路径；无图返回空列表，不伪造占位路径。"""
     if image_paths:
         cleaned = [p.strip() for p in image_paths if str(p).strip()]
         if cleaned:
             return cleaned
     if image_path and str(image_path).strip():
         return [str(image_path).strip()]
-    return ["unknown.jpg"]
+    return []
 
 
 def remap_trajectory(
@@ -80,22 +87,34 @@ def remap_trajectory(
     image_path: str | None = None,
     trajectory_id: str | None = None,
     parameter_audits: list[ToolParameterAudit] | None = None,
+    param_compiler: ParamCompilerFn | None = None,
+    compile_params: bool | None = None,
 ) -> Trajectory:
-    """自由链 → 单 Agent 标准 Trajectory（canonical tools）。"""
-    steps: list[TrajectoryStep] = []
+    """自由链 → 单 Agent 标准 Trajectory（canonical tools）。
+
+    规则别名作种子后，每个有 schema 的 tool_call 用 LLM 对照 Thought 编译 params。
+    """
+    settings = get_settings()
+    do_compile = (
+        settings.STAGE3_COMPILE_PARAMS if compile_params is None else compile_params
+    )
+
     resolved_image_paths = _resolve_image_paths(
         image_paths=image_paths, image_path=image_path
     )
     available_context = initial_parameter_context(resolved_image_paths)
+
+    # 第一轮：规则别名 + 上下文补全（种子）；每个有 schema 的 tool_call 再编译
+    drafts: list[dict[str, Any]] = []
+    compile_requests = []
     for step_index, step in enumerate(freeform.steps, start=1):
         if step.event_type == "reasoning":
-            steps.append(
-                TrajectoryStep(
-                    event_type="reasoning",
-                    thought=step.thought,
-                    action=None,
-                    observation=None,
-                )
+            drafts.append(
+                {
+                    "kind": "reasoning",
+                    "step": step,
+                    "step_index": step_index,
+                }
             )
             continue
 
@@ -108,39 +127,117 @@ def remap_trajectory(
             bool(tree.canonical.is_terminal) if tree else False
         )
         if is_terminal:
-            normalized_params = dict(step.params or {})
-            event_type = "final"
-        else:
-            operation = resolve_operation(forest, step.tool)
-            if not operation and tree and tree.canonical.operations:
-                operation = tree.canonical.operations[0].name
-            parameter_audit = normalize_and_validate_tool_inputs(
-                forest,
-                tool=canonical,
-                operation=operation or "execute",
-                inputs=dict(step.params or {}),
-                step_index=step_index,
-                available_context=available_context,
+            drafts.append(
+                {
+                    "kind": "final",
+                    "step": step,
+                    "step_index": step_index,
+                    "canonical": canonical,
+                    "normalized_params": dict(step.params or {}),
+                }
             )
-            if parameter_audits is not None:
-                parameter_audits.append(parameter_audit)
-            normalized_params = {
-                "operation": parameter_audit.operation,
-                "purpose": step.thought,
-                "inputs": parameter_audit.normalized_inputs,
+            continue
+
+        operation = resolve_operation(forest, step.tool)
+        if not operation and tree and tree.canonical.operations:
+            operation = tree.canonical.operations[0].name
+        context_snapshot = dict(available_context)
+        parameter_audit = normalize_and_validate_tool_inputs(
+            forest,
+            tool=canonical,
+            operation=operation or "execute",
+            inputs=dict(step.params or {}),
+            step_index=step_index,
+            available_context=available_context,
+        )
+        req = None
+        if do_compile:
+            req = build_compile_request(
+                forest=forest,
+                audit=parameter_audit,
+                thought=step.thought,
+                available_context=context_snapshot,
+            )
+            if req is not None:
+                compile_requests.append(req)
+        drafts.append(
+            {
+                "kind": "tool_call",
+                "step": step,
+                "step_index": step_index,
+                "canonical": canonical,
+                "audit": parameter_audit,
+                "compile_request": req,
             }
-            update_parameter_context(available_context, parameter_audit)
-            event_type = "tool_call"
+        )
+        update_parameter_context(available_context, parameter_audit)
+
+    fills: dict[int, Any] = {}
+    if compile_requests and do_compile:
+        # 生产：默认 LLM；测试：须注入 param_compiler（ALLOW_REAL_API=false 时不自动打网）
+        if param_compiler is not None:
+            fills = compile_params_batch(
+                compile_requests, compiler=param_compiler
+            )
+        elif settings.ALLOW_REAL_API:
+            fills = compile_params_batch(compile_requests, compiler=None)
+        # else: 测试环境未注入编译器 → 保留规则审计（失败开放）
+
+    # 第二轮：对有编译结果的步骤合并并重校验，组装 Trajectory
+    steps: list[TrajectoryStep] = []
+    for draft in drafts:
+        kind = draft["kind"]
+        step = draft["step"]
+        if kind == "reasoning":
+            steps.append(
+                TrajectoryStep(
+                    event_type="reasoning",
+                    thought=step.thought,
+                    action=None,
+                    observation=None,
+                )
+            )
+            continue
+        if kind == "final":
+            steps.append(
+                TrajectoryStep(
+                    event_type="final",
+                    thought=step.thought,
+                    action=Action(
+                        tool=draft["canonical"],
+                        params=draft["normalized_params"],
+                    ),
+                    observation=_normalize_observation(
+                        step.observation, is_terminal=True
+                    ),
+                )
+            )
+            continue
+
+        audit: ToolParameterAudit = draft["audit"]
+        req = draft.get("compile_request")
+        if req is not None and draft["step_index"] in fills:
+            audit = apply_compile_and_revalidate(
+                forest, req, fills[draft["step_index"]]
+            )
+        if parameter_audits is not None:
+            parameter_audits.append(audit)
+        normalized_params = {
+            "operation": audit.operation,
+            "purpose": step.thought,
+            "inputs": audit.normalized_inputs,
+        }
         steps.append(
             TrajectoryStep(
-                event_type=event_type,
+                event_type="tool_call",
                 thought=step.thought,
-                action=Action(tool=canonical, params=normalized_params),
+                action=Action(tool=draft["canonical"], params=normalized_params),
                 observation=_normalize_observation(
-                    step.observation, is_terminal=is_terminal
+                    step.observation, is_terminal=False
                 ),
             )
         )
+
     return Trajectory(
         id=trajectory_id or str(uuid.uuid4()),
         system_prompt=system_prompt,
@@ -160,13 +257,13 @@ def _format_assistant_content(step: TrajectoryStep) -> str:
 
 def trajectory_to_messages(traj: Trajectory) -> list[ChatMessage]:
     """将 Trajectory 展开为 chat messages（loss：仅 assistant）。"""
-    images_block = "\n".join(f"[Image: {p}]" for p in traj.image_paths)
+    user_content = traj.user_query
+    if traj.image_paths:
+        images_block = "\n".join(f"[Image: {p}]" for p in traj.image_paths)
+        user_content = f"{traj.user_query}\n{images_block}"
     messages: list[ChatMessage] = [
         ChatMessage(role="system", content=traj.system_prompt),
-        ChatMessage(
-            role="user",
-            content=f"{traj.user_query}\n{images_block}",
-        ),
+        ChatMessage(role="user", content=user_content),
     ]
     for step in traj.steps:
         messages.append(
@@ -179,18 +276,13 @@ def trajectory_to_messages(traj: Trajectory) -> list[ChatMessage]:
     return messages
 
 
-def format_dataset_entry(
-    traj: Trajectory,
-    *,
-    source_video: str,
-    quality_score: float | None = None,
-) -> DatasetEntry:
-    """Trajectory → 单条 JSONL DatasetEntry。"""
+def format_dataset_entry(traj: Trajectory, *, source_video: str) -> DatasetEntry:
+    """Trajectory → 单条 JSONL DatasetEntry。quality_score 由阶段4回写。"""
     return DatasetEntry(
         id=traj.id,
         source_video=source_video,
         messages=trajectory_to_messages(traj),
-        quality_score=quality_score,
+        quality_score=None,
     )
 
 
@@ -261,8 +353,10 @@ def run_stage3(
     system_prompt: str | None = None,
     user_query: str | None = None,
     matcher=None,
+    param_compiler: ParamCompilerFn | None = None,
+    compile_params: bool | None = None,
 ) -> DatasetEntry:
-    """阶段3 一站式：树维护 → 重写 → DatasetEntry。"""
+    """阶段3 一站式：树维护 → 参数归一/审计 → DatasetEntry。"""
     settings = get_settings()
     forest_path = Path(trees_path) if trees_path else Path(settings.TOOL_TREES_PATH)
     raw_events = [
@@ -289,12 +383,10 @@ def run_stage3(
         image_path=image_path or None,
         trajectory_id=shard_id,
         parameter_audits=parameter_audits,
+        param_compiler=param_compiler,
+        compile_params=compile_params,
     )
-    entry = format_dataset_entry(
-        traj,
-        source_video=freeform.source_video,
-        quality_score=None,
-    )
+    entry = format_dataset_entry(traj, source_video=freeform.source_video)
 
     video_id = freeform.source_video
     traj_path = (
@@ -327,6 +419,7 @@ def run_stage3(
         ),
         encoding="utf-8",
     )
+
     if out_jsonl_path:
         shard = Path(out_jsonl_path)
     else:

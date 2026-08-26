@@ -64,13 +64,11 @@ class Trajectory(BaseModel):
     id: str
     system_prompt: str
     user_query: str
-    image_paths: list[str] = Field(min_length=1)
+    # 允许空列表：选图失败但仍需入库的 needs_review 样本
+    image_paths: list[str] = Field(default_factory=list)
     steps: list[TrajectoryStep] = Field(default_factory=list)
 
     @field_validator("image_paths")
     @classmethod
-    def _nonempty_paths(cls, value: list[str]) -> list[str]:
-        cleaned = [p.strip() for p in value if str(p).strip()]
-        if not cleaned:
-            raise ValueError("image_paths 至少包含一张图")
-        return cleaned
+    def _clean_paths(cls, value: list[str]) -> list[str]:
+        return [p.strip() for p in value if str(p).strip()]

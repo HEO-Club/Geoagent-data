@@ -1,13 +1,24 @@
-"""阶段4：程序化硬门槛与 SFT 格式分。"""
+"""阶段4：程序化硬门槛、SFT 格式分与参数 readiness 分。"""
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal, Optional
 
+from pipeline.config import get_settings
 from pipeline.schemas.audit import GeoTaskSpec
-from pipeline.schemas.confidence import HardGateHit
+from pipeline.schemas.confidence import HardGateHit, ParameterReadinessSummary
+from pipeline.schemas.tools import ToolParameterAudit
 from pipeline.schemas.trajectory import Trajectory
 from pipeline.schemas.transcript import TranscriptSegment
+
+Readiness = Literal["ready", "context_resolvable", "repairable", "invalid"]
+
+_READINESS_RANK: dict[str, int] = {
+    "ready": 0,
+    "context_resolvable": 1,
+    "repairable": 2,
+    "invalid": 3,
+}
 
 
 def _location_nonempty(params: dict[str, Any] | None) -> bool:
@@ -140,3 +151,132 @@ def evaluate_programmatic_gates(
     format_score = max(0.0, min(1.0, score))
     reason = "；".join(dict.fromkeys(deductions)) if deductions else "SFT 格式契约通过"
     return unique_gates, format_score, reason
+
+
+def _call_detail_line(audit: ToolParameterAudit) -> str:
+    """单次非 ready / 需说明的调用明细。"""
+    issue_bits: list[str] = []
+    for issue in audit.issues[:6]:
+        field = f"{issue.field}=" if issue.field else ""
+        issue_bits.append(f"{field}{issue.code}:{issue.message}")
+    if len(audit.issues) > 6:
+        issue_bits.append(f"…另有 {len(audit.issues) - 6} 条 issue")
+    repair_bits: list[str] = []
+    for action in audit.repair_actions[:4]:
+        repair_bits.append(
+            f"{action.field}/{action.strategy}:{action.guidance[:80]}"
+        )
+    if len(audit.repair_actions) > 4:
+        repair_bits.append(f"…另有 {len(audit.repair_actions) - 4} 条 repair")
+    parts = [
+        f"step={audit.step_index}",
+        f"tool={audit.tool}",
+        f"operation={audit.operation}",
+        f"readiness={audit.readiness}",
+    ]
+    if issue_bits:
+        parts.append("issues=[" + "; ".join(issue_bits) + "]")
+    if repair_bits:
+        parts.append("repairs=[" + "; ".join(repair_bits) + "]")
+    return " | ".join(parts)
+
+
+def evaluate_parameter_readiness(
+    audits: list[ToolParameterAudit] | None,
+    *,
+    audit_missing: bool = False,
+) -> tuple[float, str, list[HardGateHit], ParameterReadinessSummary]:
+    """将 stage3 参数审计四级 readiness 映射为 tool_param_correctness。
+
+    按最差一次 Tool 调用取分；``invalid`` 另记硬门槛 ``tool_params_invalid``。
+    审计缺失时记中性分，不加硬门槛（失败开放）。
+
+    Returns:
+        (score, reason, gates, summary)
+    """
+    settings = get_settings()
+    score_map: dict[str, float] = {
+        "ready": float(settings.STAGE4_PARAM_SCORE_READY),
+        "context_resolvable": float(settings.STAGE4_PARAM_SCORE_CONTEXT_RESOLVABLE),
+        "repairable": float(settings.STAGE4_PARAM_SCORE_REPAIRABLE),
+        "invalid": float(settings.STAGE4_PARAM_SCORE_INVALID),
+    }
+    missing_score = float(settings.STAGE4_PARAM_SCORE_AUDIT_MISSING)
+
+    if audit_missing:
+        summary = ParameterReadinessSummary(audit_missing=True)
+        return (
+            missing_score,
+            "stage3_parameter_audit 缺失或损坏，参数分记中性",
+            [],
+            summary,
+        )
+
+    calls = list(audits or [])
+    counts = {
+        "ready": 0,
+        "context_resolvable": 0,
+        "repairable": 0,
+        "invalid": 0,
+    }
+    worst: Optional[str] = None
+    detail_lines: list[str] = []
+
+    for audit in calls:
+        readiness = str(audit.readiness or "ready").strip()
+        if readiness not in counts:
+            readiness = "invalid"
+        counts[readiness] += 1
+        if worst is None or _READINESS_RANK[readiness] > _READINESS_RANK[worst]:
+            worst = readiness
+        if readiness != "ready":
+            detail_lines.append(_call_detail_line(audit))
+
+    summary = ParameterReadinessSummary(
+        total_calls=len(calls),
+        ready=counts["ready"],
+        context_resolvable=counts["context_resolvable"],
+        repairable=counts["repairable"],
+        invalid=counts["invalid"],
+        worst=worst,  # type: ignore[arg-type]
+        audit_missing=False,
+        detail_lines=detail_lines,
+    )
+
+    if not calls:
+        return (
+            float(settings.STAGE4_PARAM_SCORE_READY),
+            "无 Tool 调用，参数合同不适用，记满分",
+            [],
+            summary,
+        )
+
+    assert worst is not None
+    score = float(max(0.0, min(1.0, score_map[worst])))
+    count_bits = (
+        f"total={summary.total_calls} ready={summary.ready} "
+        f"context_resolvable={summary.context_resolvable} "
+        f"repairable={summary.repairable} invalid={summary.invalid}"
+    )
+    reason_parts = [f"最差 readiness={worst}", count_bits]
+    if detail_lines:
+        reason_parts.append("非 ready 调用: " + " || ".join(detail_lines[:8]))
+        if len(detail_lines) > 8:
+            reason_parts.append(f"…另有 {len(detail_lines) - 8} 次")
+    else:
+        reason_parts.append("全部 Tool 调用 ready")
+
+    gates: list[HardGateHit] = []
+    if counts["invalid"] > 0:
+        invalid_lines = [
+            line for line in detail_lines if "readiness=invalid" in line
+        ]
+        evidence = (
+            f"{counts['invalid']} 次 invalid；"
+            + (" || ".join(invalid_lines[:3]) if invalid_lines else count_bits)
+        )
+        gates.append(
+            HardGateHit(code="tool_params_invalid", evidence=evidence)
+        )
+
+    return score, "；".join(reason_parts), gates, summary

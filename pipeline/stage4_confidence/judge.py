@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Optional
 
 from pipeline.llm import call_structured
 from pipeline.schemas.audit import GeoTaskSpec
-from pipeline.schemas.confidence import ConfidenceJudgeDraft
+from pipeline.schemas.confidence import (
+    ConfidenceJudgeDraft,
+    ParameterReadinessSummary,
+)
 from pipeline.schemas.freeform import FreeFormTrajectory
+from pipeline.schemas.tools import ToolParameterAudit
 from pipeline.schemas.trajectory import Trajectory
 from pipeline.schemas.transcript import TranscriptSegment
 
@@ -40,19 +43,25 @@ JUDGE_HINT = (
     "Observation 若只是旁白总结而非材料中的工具回执，本维应落在 0.80–0.90 而非 0.95+\n"
     "- final_answer_support：location 是否完整、是否由前置证据链推出、有无无源精细坐标；"
     "题面/字幕要求的独立定位目标未全部出现在 location 时，本维应 ≤0.65\n"
-    "- tool_param_correctness：思考是否误写成 Tool；canonical/operation/inputs 是否合理\n"
+    "- tool_param_correctness：可选参考分；程序化参数审计（ready/"
+    "context_resolvable/repairable/invalid）会覆盖本维\n"
     "- logical_consistency：候选生成→排除→收敛是否自洽，有无矛盾或跳跃\n"
     "- input_quality_alignment：ASR 是否缺关键条件；选中图是否像题面原图；"
     "带讲解水印/字幕条但仍是同一场景时本维应 0.70–0.85，不得因「内容能对上」打 0.95+\n"
     "- sft_format_completeness：可选参考分；程序化规则会覆盖\n"
     "硬门槛 hard_gates（仅高精度命中时填写，code 用英文蛇形）：\n"
     "- fabricated_observation：明显伪造 Observation\n"
-    "- tool_params_unexecutable：工具参数无法执行或与 purpose 矛盾\n"
+    "- tool_params_unexecutable：工具参数无法执行或与 purpose 矛盾"
+    "（schema 级 invalid 由程序化门槛覆盖，此处只记语义矛盾）\n"
     "- hallucinated_precision：无源精细坐标/距离/检索命中/库结果\n"
     "- image_trajectory_mismatch：轨迹所依原图与实选图明显不一致\n"
     "- answer_leaking_image：选中图含答案泄露（评估记录未覆盖时）\n"
     "- incomplete_final_targets：题面要求多个独立最终地点，location 明显少答\n"
-    "低置信问题不要记硬门槛。"
+    "低置信问题不要记硬门槛。\n"
+    "输出要求：\n"
+    "- notes 必填：概括样本质量与主要问题，禁止空字符串。\n"
+    "- 任一维度得分 < 0.80 时，dimension_reasons 必须写可核对证据"
+    "（引用字幕/轨迹/选中图/参数审计中的具体事实），禁止只写「较差」。"
 )
 
 
@@ -64,10 +73,18 @@ def _format_transcript(transcript: list[TranscriptSegment], *, max_chars: int = 
     return text or "（空）"
 
 
+def _truncate_json(value: Any, *, max_chars: int = 240) -> str:
+    text = json.dumps(value, ensure_ascii=False)
+    if len(text) > max_chars:
+        return text[: max_chars - 1] + "…"
+    return text
+
+
 def _format_trajectory_brief(traj: Trajectory, *, max_steps: int = 24) -> str:
     parts: list[str] = []
     for i, step in enumerate(traj.steps[:max_steps], start=1):
         tool = step.action.tool if step.action else None
+        params = step.action.params if step.action else None
         loc = None
         if step.action and step.event_type == "final":
             loc = (step.action.params or {}).get("location")
@@ -81,7 +98,19 @@ def _format_trajectory_brief(traj: Trajectory, *, max_steps: int = 24) -> str:
             line += f" tool={tool}"
         if loc is not None:
             line += f" location={loc!r}"
-        if step.event_type == "tool_call":
+        if step.event_type == "tool_call" and isinstance(params, dict):
+            op = params.get("operation")
+            purpose = params.get("purpose")
+            inputs = params.get("inputs")
+            if op is not None:
+                line += f" operation={op!r}"
+            if purpose is not None:
+                purpose_s = str(purpose)
+                if len(purpose_s) > 80:
+                    purpose_s = purpose_s[:80] + "…"
+                line += f" purpose={purpose_s!r}"
+            if inputs is not None:
+                line += f" inputs={_truncate_json(inputs)}"
             line += f" obs={obs_s}"
         parts.append(line)
     if len(traj.steps) > max_steps:
@@ -96,52 +125,48 @@ def _format_freeform_brief(freeform: FreeFormTrajectory, *, max_steps: int = 24)
         line = f"{i}. [{step.event_type}] {thought}"
         if step.tool:
             line += f" | tool={step.tool}"
+        if step.event_type == "tool_call" and step.params:
+            line += f" | params={_truncate_json(step.params, max_chars=160)}"
         parts.append(line)
     return "\n".join(parts) or "（空）"
 
 
-def _parameter_audit_summary(audit: dict[str, Any] | None) -> str:
-    if not audit:
+def _format_parameter_audit_brief(
+    audits: list[ToolParameterAudit] | None,
+    summary: ParameterReadinessSummary | None,
+    *,
+    max_calls: int = 16,
+) -> str:
+    if summary is not None and summary.audit_missing:
+        return "（parameter audit 缺失或损坏）"
+    if not audits:
+        if summary is not None and summary.total_calls == 0:
+            return "（无 Tool 调用）"
         return "（无）"
-    calls = []
-    for item in list(audit.get("calls") or [])[:24]:
-        issues = [
-            str(issue.get("code") or "")
-            for issue in item.get("issues", [])
-            if str(issue.get("code") or "")
-        ]
-        calls.append(
-            {
-                "step": item.get("step_index"),
-                "tool": item.get("tool"),
-                "operation": item.get("operation"),
-                "readiness": item.get("readiness"),
-                "issues": issues,
-            }
+    lines: list[str] = []
+    if summary is not None:
+        lines.append(
+            f"汇总 total={summary.total_calls} ready={summary.ready} "
+            f"context_resolvable={summary.context_resolvable} "
+            f"repairable={summary.repairable} invalid={summary.invalid}"
+            + (f" worst={summary.worst}" if summary.worst else "")
         )
-    return json.dumps(calls, ensure_ascii=False)
-
-
-def _observation_audit_summary(audit: dict[str, Any] | None) -> str:
-    if not audit:
-        return "（无）"
-    passes = list(audit.get("passes") or [])
-    items = list((passes[-1] if passes else {}).get("items") or [])
-    return json.dumps(
-        {
-            "policy": audit.get("policy"),
-            "accepted": audit.get("accepted"),
-            "final_verdicts": [
-                {
-                    "call_id": item.get("call_id"),
-                    "verdict": item.get("verdict"),
-                    "evidence": item.get("evidence"),
-                }
-                for item in items[:24]
-            ],
-        },
-        ensure_ascii=False,
-    )
+    for audit in audits[:max_calls]:
+        issue_codes = ",".join(i.code for i in audit.issues[:5]) or "-"
+        line = (
+            f"step={audit.step_index} tool={audit.tool} "
+            f"op={audit.operation} readiness={audit.readiness} "
+            f"issues={issue_codes}"
+        )
+        if audit.repair_actions:
+            strategies = ",".join(
+                f"{a.field}:{a.strategy}" for a in audit.repair_actions[:3]
+            )
+            line += f" repairs={strategies}"
+        lines.append(line)
+    if len(audits) > max_calls:
+        lines.append(f"…共 {len(audits)} 次调用，已截断")
+    return "\n".join(lines)
 
 
 def build_judge_prompt(
@@ -151,9 +176,8 @@ def build_judge_prompt(
     freeform: FreeFormTrajectory,
     trajectory: Trajectory,
     tool_mapping: dict[str, Any] | None = None,
-    parameter_audit: dict[str, Any] | None = None,
-    observation_audit: dict[str, Any] | None = None,
-    trajectory_consistency: dict[str, Any] | None = None,
+    parameter_audits: list[ToolParameterAudit] | None = None,
+    parameter_summary: ParameterReadinessSummary | None = None,
 ) -> str:
     """组装裁判 prompt（不含 groundtruth）。"""
     mapping_summary = ""
@@ -176,11 +200,10 @@ def build_judge_prompt(
         f"自由轨迹摘要:\n{_format_freeform_brief(freeform)}\n\n"
         f"规范化轨迹摘要:\n{_format_trajectory_brief(trajectory)}\n\n"
         f"tool mapping 摘要: {mapping_summary or '（无）'}\n\n"
-        f"参数合同审计: {_parameter_audit_summary(parameter_audit)}\n\n"
-        f"严格 Observation 审计: {_observation_audit_summary(observation_audit)}\n\n"
-        f"轨迹–图片一致性: {json.dumps(trajectory_consistency, ensure_ascii=False) if trajectory_consistency else '（无）'}\n\n"
+        "参数审计摘要:\n"
+        f"{_format_parameter_audit_brief(parameter_audits, parameter_summary)}\n\n"
         f"已附上 {len(trajectory.image_paths)} 张选中图。"
-        "请输出各维度分数、dimension_reasons、hard_gates、notes。"
+        "请输出各维度分数、dimension_reasons（弱维必详述）、hard_gates、非空 notes。"
     )
 
 
@@ -191,10 +214,9 @@ def call_confidence_judge(
     freeform: FreeFormTrajectory,
     trajectory: Trajectory,
     tool_mapping: dict[str, Any] | None = None,
-    parameter_audit: dict[str, Any] | None = None,
-    observation_audit: dict[str, Any] | None = None,
-    trajectory_consistency: dict[str, Any] | None = None,
-    judge: JudgeFn | None = None,
+    parameter_audits: list[ToolParameterAudit] | None = None,
+    parameter_summary: ParameterReadinessSummary | None = None,
+    judge: Optional[JudgeFn] = None,
 ) -> ConfidenceJudgeDraft:
     """调用 VLM 裁判；可注入 judge 回调（测试用）。"""
     images = [
@@ -208,9 +230,8 @@ def call_confidence_judge(
         freeform=freeform,
         trajectory=trajectory,
         tool_mapping=tool_mapping,
-        parameter_audit=parameter_audit,
-        observation_audit=observation_audit,
-        trajectory_consistency=trajectory_consistency,
+        parameter_audits=parameter_audits,
+        parameter_summary=parameter_summary,
     )
     if judge is not None:
         return judge(
@@ -221,9 +242,8 @@ def call_confidence_judge(
             freeform=freeform,
             trajectory=trajectory,
             tool_mapping=tool_mapping,
-            parameter_audit=parameter_audit,
-            observation_audit=observation_audit,
-            trajectory_consistency=trajectory_consistency,
+            parameter_audits=parameter_audits,
+            parameter_summary=parameter_summary,
         )
     return call_structured(
         prompt,

@@ -66,7 +66,6 @@ class Settings(BaseSettings):
     AUDIT_MIN_FRAME_QUALITY: float = 0.65
     AUDIT_MIN_CHAIN_SUPPORT: float = 0.5
     AUDIT_VISUAL_HASH_DISTANCE: int = 6
-    AUDIT_TRAJECTORY_IMAGE_CHECK: bool = True
 
     # 阶段4 置信度评分（权重运行时归一化）
     STAGE4_W_EVIDENCE_GROUNDING: float = 0.30
@@ -80,6 +79,18 @@ class Settings(BaseSettings):
     STAGE4_PRIORITY_HIGH_BELOW: float = 0.70
     STAGE4_PRIORITY_MEDIUM_BELOW: float = 0.93
     STAGE4_JUDGE_NEUTRAL_SCORE: float = 0.50
+    # 弱维度阈值：低于此分须在 notes / DimensionScore.reason 写明细
+    STAGE4_WEAK_DIMENSION_BELOW: float = 0.80
+    # tool_param_correctness：按最差一次调用 readiness 映射
+    STAGE4_PARAM_SCORE_READY: float = 1.0
+    STAGE4_PARAM_SCORE_CONTEXT_RESOLVABLE: float = 0.80
+    STAGE4_PARAM_SCORE_REPAIRABLE: float = 0.45
+    STAGE4_PARAM_SCORE_INVALID: float = 0.15
+    STAGE4_PARAM_SCORE_AUDIT_MISSING: float = 0.50
+
+
+    # 阶段3：每个 tool_call 用 LLM 对照 schema 从 Thought 编译 params（失败开放）
+    STAGE3_COMPILE_PARAMS: bool = True
 
     TOOL_CATALOG_PATH: str = "canonical_tool_catalog.json"
     TOOL_TREES_PATH: str = "tool_trees.json"
