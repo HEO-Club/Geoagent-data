@@ -32,6 +32,7 @@ from pipeline.stage3_normalize_format.trees import (
     save_forest,
     with_file_lock,
 )
+from pipeline.tool_catalog_v2_constants import LEGACY_V1_TOOL_NAMES, is_v2_forest
 
 MatcherFn = Callable[[str, ToolForest], str | None | MatchDecision]
 RESERVED_TERMINAL_TOOLS = {"final_answer", "submit_answer", "done"}
@@ -59,10 +60,19 @@ def _merge_catalog(runtime: ToolForest, catalog: ToolForest) -> ToolForest:
         variants = list(seed.variants)
         variant_operations = dict(seed.variant_operations)
         if existing is not None:
+            allowed_operations = {item.name for item in canonical.operations}
             for variant in existing.variants:
-                if variant not in variants:
+                mapped_operation = existing.variant_operations.get(variant.lower())
+                if (
+                    variant not in variants
+                    and (
+                        not is_v2_forest(catalog)
+                        or mapped_operation in allowed_operations
+                    )
+                ):
                     variants.append(variant)
-            variant_operations.update(existing.variant_operations)
+                    if mapped_operation:
+                        variant_operations[variant.lower()] = mapped_operation
         ordered.append(
             ToolTree(
                 canonical=canonical,
@@ -70,10 +80,14 @@ def _merge_catalog(runtime: ToolForest, catalog: ToolForest) -> ToolForest:
                 variant_operations=variant_operations,
             )
         )
+    using_v2 = is_v2_forest(catalog)
     ordered.extend(
         tree
         for tree in runtime.trees
         if tree.canonical.name.lower() not in catalog_names
+        and not (
+            using_v2 and tree.canonical.name.lower() in LEGACY_V1_TOOL_NAMES
+        )
     )
     return ToolForest(trees=ordered)
 
@@ -267,15 +281,16 @@ def llm_semantic_match_batch(
     ]
     prompt = (
         "你在维护地理定位 Agent 的执行器级 Canonical Tool 目录。\n"
-        "工具边界按真实执行器/API/数据库划分，不按自然语言动词或推理意图区分。\n"
-        "同一 OSM/Overpass、街景、卫星、天气、图像处理等执行器的不同用途应 map 到同一 canonical，"
-        "通过 operation 区分 query/filter/export/compare 等操作，并为 operation 写清用途。\n"
+        "工具边界严格服从现有目录：同一执行器内用 operation 区分；目录已明确拆开的执行阶段不得重新合并。"
+        "例如 OSM/Overpass 查询使用 osm_query，而对已有 OSM 结果做本地过滤/导出使用 osm_result_process；"
+        "卫星影像获取使用 satellite_imagery_query，跨时相或跨候选比较使用 satellite_imagery_compare；"
+        "搜索结果页检索使用 web_search，打开并读取网页使用 web_page_read。\n"
         "如果某一步没有访问外部数据或程序，只是直接看图、合并已有证据、比较、筛选、排除、排名、"
         "形成目标签名或总结，则 action=reasoning；只有置信度>=0.85 时才这样判断。\n"
         "仅当现有目录确实没有相同执行器时 action=create，并提供 proposed_definition："
         "name 必须小写下划线，description 说明能力，executor 说明底层执行器，usage 说明何时调用，"
         "operations 至少包含本次操作及解释。不要因输入字段不同就创建新工具。\n"
-        "现有 operation 的 input_schema 已说明每个输入字段的含义、别名、类型和必填关系；"
+        "现有 operation 的 input_schema 已说明每个输入字段的含义、别名、类型、必填关系和获取方式；"
         "归并时应选择能容纳原始参数语义的 operation，不得为了省事一律选择第一个 operation。\n"
         "每个 raw_tool 必须恰好返回一个 decision，并原样填写 raw_tool；confidence 范围0到1。\n"
         f"现有目录：{json.dumps(_catalog_payload(forest), ensure_ascii=False)}\n"

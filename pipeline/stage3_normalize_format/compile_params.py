@@ -155,6 +155,8 @@ def llm_compile_params(
         "已有 normalized_inputs 中的键不要覆盖、不要改掉。"
         "只填 schema 里有的字段；不确定就不要填。\n"
         "不得编造坐标、文件路径、Overpass QL 或来源中不存在的几何/数值。\n"
+        "execution 字段不得填写“步骤3检索到的结果/上一步提取帧”这类自然语言占位；"
+        "只能使用 available_context 中已有的 $step_…/$current_… 引用或来源里明确存在的真实 ID。\n"
         "枚举字段必须使用 schema 的 allowed_values。"
         "上下文引用只能使用 available_context 中已有的 $… 值。\n"
         "每个 step_index 返回一条 result。\n"
@@ -218,9 +220,7 @@ def _value_in_source_text(value: Any, source: str) -> bool:
             return True
         # 分词：每个长度>=2 的片段至少有一个命中（用于「风力发电机」→「风电」）
         tokens = [t for t in re.split(r"[\s,，、/;|]+", text) if len(t) >= 2]
-        if tokens and any(t.lower() in source.lower() for t in tokens):
-            return True
-        return False
+        return bool(tokens) and any(t.lower() in source.lower() for t in tokens)
     if isinstance(value, list):
         return all(_value_in_source_text(item, source) for item in value) if value else False
     if isinstance(value, dict):

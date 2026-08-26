@@ -22,6 +22,7 @@ from pipeline.schemas.clues import (
     WorkingScope,
 )
 from pipeline.schemas.confidence import (
+    ConfidenceDecision,
     ConfidenceJudgeDraft,
     ConfidenceReport,
     DimensionScore,
@@ -57,6 +58,7 @@ __all__ = [
     "ChatMessage",
     "ClueExtractionResult",
     "ClueRole",
+    "ConfidenceDecision",
     "ConfidenceJudgeDraft",
     "ConfidenceReport",
     "DatasetEntry",

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 
 from pipeline.config import get_settings
 from pipeline.schemas.audit import GeoTaskSpec
@@ -153,6 +153,49 @@ def evaluate_programmatic_gates(
     return unique_gates, format_score, reason
 
 
+def evaluate_observation_audit(
+    audit: dict[str, Any] | None,
+) -> tuple[list[HardGateHit], list[HardGateHit], bool]:
+    """Convert a strict direct-evidence audit into hard/soft Stage 4 flags."""
+
+    if not isinstance(audit, dict):
+        return [], [], False
+    passes = audit.get("passes")
+    items: list[dict[str, Any]] = []
+    if isinstance(passes, list) and passes:
+        final_pass = passes[-1]
+        if isinstance(final_pass, dict) and isinstance(final_pass.get("items"), list):
+            items = [item for item in final_pass["items"] if isinstance(item, dict)]
+    elif isinstance(audit.get("items"), list):
+        items = [item for item in audit["items"] if isinstance(item, dict)]
+    if not items:
+        return [], [], False
+
+    unsupported = []
+    repair = []
+    for item in items:
+        verdict = str(item.get("verdict") or "").strip().lower()
+        if verdict in {"unsupported", "fabricated", "reject", "hallucinated"}:
+            unsupported.append(item)
+        elif verdict not in {"supported", "pass", "accepted"}:
+            repair.append(item)
+    hard: list[HardGateHit] = []
+    soft: list[HardGateHit] = []
+    if unsupported:
+        evidence = "；".join(
+            str(item.get("reason") or item.get("call_id") or "无直接证据")
+            for item in unsupported[:3]
+        )
+        hard.append(HardGateHit(code="fabricated_observation", evidence=evidence))
+    if repair or audit.get("accepted") is False:
+        evidence = "；".join(
+            str(item.get("reason") or item.get("call_id") or "需修复")
+            for item in repair[:3]
+        ) or "Observation 严格审计尚未完全通过"
+        soft.append(HardGateHit(code="observation_needs_repair", evidence=evidence))
+    return hard, soft, True
+
+
 def _call_detail_line(audit: ToolParameterAudit) -> str:
     """单次非 ready / 需说明的调用明细。"""
     issue_bits: list[str] = []
@@ -219,7 +262,7 @@ def evaluate_parameter_readiness(
         "repairable": 0,
         "invalid": 0,
     }
-    worst: Optional[str] = None
+    worst: str | None = None
     detail_lines: list[str] = []
 
     for audit in calls:
@@ -267,16 +310,17 @@ def evaluate_parameter_readiness(
         reason_parts.append("全部 Tool 调用 ready")
 
     gates: list[HardGateHit] = []
-    if counts["invalid"] > 0:
-        invalid_lines = [
-            line for line in detail_lines if "readiness=invalid" in line
-        ]
-        evidence = (
-            f"{counts['invalid']} 次 invalid；"
-            + (" || ".join(invalid_lines[:3]) if invalid_lines else count_bits)
+    unexecutable = [
+        audit
+        for audit in calls
+        if audit.readiness == "invalid"
+        and any(
+            issue.code in {"unknown_canonical_tool", "unknown_operation"}
+            for issue in audit.issues
         )
-        gates.append(
-            HardGateHit(code="tool_params_invalid", evidence=evidence)
-        )
+    ]
+    if unexecutable:
+        evidence = " || ".join(_call_detail_line(audit) for audit in unexecutable[:3])
+        gates.append(HardGateHit(code="tool_params_unexecutable", evidence=evidence))
 
     return score, "；".join(reason_parts), gates, summary

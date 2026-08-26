@@ -1,6 +1,6 @@
 {
   "schema_version": "canonical_tool_catalog_v2_proposal",
-  "status": "proposal_only_not_wired",
+  "status": "production_wired",
   "stats": {
     "source_tools": 17,
     "proposed_tools": 31,
@@ -2784,7 +2784,7 @@
                 "minimum": null,
                 "maximum": null,
                 "example": [
-                  "输电塔"
+                  "桥梁"
                 ]
               },
               {
@@ -3824,7 +3824,6 @@
                 "context_default": "$previous_coordinates",
                 "aliases": [
                   "坐标",
-                  "电塔坐标",
                   "points"
                 ],
                 "allowed_values": [],
@@ -4705,7 +4704,7 @@
                 "aliases": [
                   "观察点",
                   "起点",
-                  "参照物1",
+                  "参照物",
                   "baseline",
                   "viewpoint"
                 ],
@@ -4728,7 +4727,6 @@
                   "目标",
                   "终点",
                   "目的",
-                  "参照物2",
                   "direction"
                 ],
                 "allowed_values": [],

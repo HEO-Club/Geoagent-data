@@ -92,7 +92,7 @@ class Settings(BaseSettings):
     # 阶段3：每个 tool_call 用 LLM 对照 schema 从 Thought 编译 params（失败开放）
     STAGE3_COMPILE_PARAMS: bool = True
 
-    TOOL_CATALOG_PATH: str = "canonical_tool_catalog.json"
+    TOOL_CATALOG_PATH: str = "canonical_tool_catalog_v2.json"
     TOOL_TREES_PATH: str = "tool_trees.json"
     INTERMEDIATE_DIR: str = "data/intermediate"
     SELECTED_DIR: str = "data/selected"

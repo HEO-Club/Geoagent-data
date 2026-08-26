@@ -11,6 +11,7 @@ import pytest
 from pipeline.schemas.audit import (
     AnswerStatus,
     AuditDecision,
+    GeoTaskSpec,
     ProcessInterval,
     ProcessRole,
     TaskStatus,
@@ -663,6 +664,23 @@ def test_run_audit_split_multi_task(
     sliced = audit.slice_transcript_for_task(_transcript(), result.tasks[1])
     assert len(sliced) == 1
     assert "第二张" in sliced[0].text
+
+
+def test_time_slice_excludes_segments_that_only_touch_task_boundary() -> None:
+    transcript = [
+        TranscriptSegment(start=30.0, end=60.0, text="前一题"),
+        TranscriptSegment(start=60.0, end=90.0, text="本题上半段"),
+        TranscriptSegment(start=90.0, end=120.0, text="本题下半段"),
+        TranscriptSegment(start=120.0, end=150.0, text="后一题"),
+    ]
+    task = GeoTaskSpec(
+        task_id="video__t03",
+        time_start=60.0,
+        time_end=120.0,
+        target_kind=TargetKind.still_image,
+    )
+    sliced = audit.slice_transcript_for_task(transcript, task)
+    assert [segment.text for segment in sliced] == ["本题上半段", "本题下半段"]
 
 
 def test_frame_verify_hint_is_principle_based() -> None:

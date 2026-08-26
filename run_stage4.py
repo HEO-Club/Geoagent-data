@@ -40,6 +40,11 @@ def main() -> None:
         default=None,
         help="stage3_parameter_audit.json（缺省则记参数中性分）",
     )
+    parser.add_argument(
+        "--observation-audit",
+        default=None,
+        help="可选 stage2_observation_audit.json（严格直接证据审计）",
+    )
     parser.add_argument("--out-report", default=None, help="stage4_confidence.json")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
@@ -72,6 +77,7 @@ def main() -> None:
         entry=entry,
         tool_mapping_path=args.tool_mapping,
         parameter_audit_path=parameter_audit_path,
+        observation_audit_path=args.observation_audit,
         out_report_path=args.out_report,
         out_jsonl_path=args.entry_jsonl,
     )
@@ -81,6 +87,8 @@ def main() -> None:
                 "task_id": report.task_id,
                 "quality_score": report.quality_score,
                 "base_score": report.base_score,
+                "audit_coverage": report.audit_coverage,
+                "decision": report.decision,
                 "review_priority": report.review_priority,
                 "hard_gates": [g.code for g in report.hard_gates],
                 "notes_preview": report.notes[:200],

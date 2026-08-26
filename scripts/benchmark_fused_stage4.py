@@ -13,6 +13,7 @@ from pipeline.schemas.audit import GeoTaskSpec, KeyframeAssessment, TargetKind
 from pipeline.schemas.confidence import ConfidenceJudgeDraft
 from pipeline.schemas.dataset import ChatMessage, DatasetEntry
 from pipeline.schemas.freeform import FreeFormTrajectory
+from pipeline.schemas.tools import ToolParameterAudit
 from pipeline.schemas.trajectory import Action, Trajectory, TrajectoryStep
 from pipeline.schemas.transcript import TranscriptSegment
 from pipeline.stage3_normalize_format.params import attach_operation_input_schemas
@@ -27,6 +28,7 @@ def _judge(**_kwargs) -> ConfidenceJudgeDraft:
         tool_param_correctness=0.95,
         logical_consistency=0.95,
         input_quality_alignment=0.95,
+        notes="离线固定裁判",
     )
 
 
@@ -57,7 +59,7 @@ def _case(case_id: str, image: Path):
                 {
                     "event_type": "tool_call",
                     "thought": "查询候选区域。",
-                    "tool": "map_query",
+                    "tool": "poi_search",
                     "params": {"area": "某市", "query": "目标"},
                     "observation": {"result": "找到某市某镇"},
                 },
@@ -81,9 +83,9 @@ def _case(case_id: str, image: Path):
                 event_type="tool_call",
                 thought="查询候选区域。",
                 action=Action(
-                    tool="map_query",
+                    tool="poi_search",
                     params={
-                        "operation": "browse",
+                        "operation": "poi_search",
                         "purpose": "查询候选区域。",
                         "inputs": {"area": "某市", "query": "目标"},
                     },
@@ -115,12 +117,14 @@ def _run_case(case_id: str, out: Path, forest) -> dict:
     image.write_bytes(b"jpg")
     task, freeform, trajectory, entry = _case(case_id, image)
     readiness = "repairable" if case_id == "repairable_params" else "ready"
-    parameter_audit = {
-        "calls": [
-            {
+    parameter_audits = [
+            ToolParameterAudit.model_validate({
                 "step_index": 1,
-                "tool": "map_query",
-                "operation": "browse",
+                "tool": "poi_search",
+                "raw_operation": "poi_search",
+                "operation": "poi_search",
+                "raw_inputs": {"area": "某市", "query": "目标"},
+                "normalized_inputs": {"area": "某市", "query": "目标"},
                 "valid": readiness == "ready",
                 "readiness": readiness,
                 "issues": (
@@ -135,9 +139,8 @@ def _run_case(case_id: str, out: Path, forest) -> dict:
                         }
                     ]
                 ),
-            }
-        ]
-    }
+            })
+    ]
     verdict = "reject" if case_id == "fabricated_observation" else "supported"
     observation_audit = {
         "accepted": verdict == "supported",
@@ -157,10 +160,9 @@ def _run_case(case_id: str, out: Path, forest) -> dict:
         freeform=freeform,
         trajectory=trajectory,
         entry=entry,
-        parameter_audit=parameter_audit,
+        parameter_audits=parameter_audits,
         observation_audit=observation_audit,
         trajectory_consistency={"conflict": False, "confidence": 1.0},
-        forest=forest,
         out_report_path=str(out / f"{case_id}.confidence.json"),
         out_jsonl_path=str(out / f"{case_id}.jsonl"),
         judge=_judge,
@@ -177,7 +179,11 @@ def _run_case(case_id: str, out: Path, forest) -> dict:
             "decision": fused.decision,
             "review_priority": fused.review_priority,
             "hard_gates": [item.code for item in fused.hard_gates],
-            "parameter_readiness_counts": fused.parameter_readiness_counts,
+            "parameter_readiness": (
+                fused.parameter_readiness.model_dump()
+                if fused.parameter_readiness is not None
+                else None
+            ),
         },
     }
 
@@ -186,7 +192,7 @@ def main() -> None:
     out = Path("data/runs/fused_stage4_benchmark")
     out.mkdir(parents=True, exist_ok=True)
     forest = attach_operation_input_schemas(
-        load_forest(Path("canonical_tool_catalog.json"))
+        load_forest(Path("canonical_tool_catalog_v2.json"))
     )
     case_ids = ["good", "repairable_params", "fabricated_observation"]
     rows = []

@@ -91,7 +91,7 @@ def _quality_task(video_id: str, trajectory: Trajectory) -> GeoTaskSpec:
     )
 
 
-def _parameter_audit(trajectory: Trajectory, forest) -> dict[str, Any]:
+def _parameter_audit(trajectory: Trajectory, forest):
     context = initial_parameter_context(trajectory.image_paths)
     calls = []
     for index, step in enumerate(trajectory.steps, start=1):
@@ -107,8 +107,8 @@ def _parameter_audit(trajectory: Trajectory, forest) -> dict[str, Any]:
             available_context=context,
         )
         update_parameter_context(context, audit)
-        calls.append(audit.model_dump())
-    return {"schema_version": "canonical_inputs_v1", "calls": calls}
+        calls.append(audit)
+    return calls
 
 
 def _offline_judge(**_kwargs):
@@ -135,9 +135,7 @@ def _run_one(
     transcript = _load_transcript(transcript_root, video_id)
     parameters = _parameter_audit(trajectory, forest)
     observations = _load_json(base / "stage2_observation_audit.json")
-    entry = format_dataset_entry(
-        trajectory, source_video=video_id, quality_score=None
-    )
+    entry = format_dataset_entry(trajectory, source_video=video_id)
     case_out = out / trajectory.id
     case_out.mkdir(parents=True, exist_ok=True)
     report = run_stage4(
@@ -146,9 +144,8 @@ def _run_one(
         freeform=freeform,
         trajectory=trajectory,
         entry=entry,
-        parameter_audit=parameters,
+        parameter_audits=parameters,
         observation_audit=observations,
-        forest=forest,
         out_report_path=str(case_out / "stage4_confidence.json"),
         out_jsonl_path=str(case_out / "sample.jsonl"),
         judge=None if real_judge else _offline_judge,
@@ -162,7 +159,11 @@ def _run_one(
         "review_priority": report.review_priority,
         "judge_call_failed": report.judge_call_failed,
         "hard_gates": [item.code for item in report.hard_gates],
-        "parameter_readiness_counts": report.parameter_readiness_counts,
+        "parameter_readiness": (
+            report.parameter_readiness.model_dump()
+            if report.parameter_readiness is not None
+            else None
+        ),
         "dimensions": {
             item.name: {"score": item.score, "reason": item.reason}
             for item in report.dimensions
@@ -188,7 +189,7 @@ def main() -> None:
 
     args.out.mkdir(parents=True, exist_ok=True)
     forest = attach_operation_input_schemas(
-        load_forest(Path("canonical_tool_catalog.json"))
+        load_forest(Path("canonical_tool_catalog_v2.json"))
     )
     paths = sorted(args.root.rglob("stage3_trajectory.json"))
     if args.ids:

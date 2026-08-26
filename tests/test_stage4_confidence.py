@@ -23,21 +23,79 @@ from pipeline.schemas.tools import (
 )
 from pipeline.schemas.trajectory import Action, Trajectory, TrajectoryStep
 from pipeline.schemas.transcript import TranscriptSegment
-from pipeline.stage4_confidence import merge_confidence, rewrite_entry_quality_score, run_stage4
+from pipeline.stage4_confidence import (
+    merge_confidence,
+    rewrite_entry_quality_score,
+    run_stage4,
+)
 from pipeline.stage4_confidence.rules import (
+    evaluate_observation_audit,
     evaluate_parameter_readiness,
     evaluate_programmatic_gates,
 )
 
 
-def _task(**kwargs: Any) -> GeoTaskSpec:
-    base = dict(
-        task_id="vid__t01",
-        time_start=0.0,
-        time_end=10.0,
-        target_kind=TargetKind.still_image,
-        image_paths=["img.jpg"],
+def test_anthropic_confidence_wrappers_are_normalized() -> None:
+    draft = ConfidenceJudgeDraft.model_validate(
+        {
+            "evidence_grounding": {"score": 0.9, "reason": "扎实"},
+            "final_answer_support": {"value": 0.8},
+            "tool_param_correctness": {"rating": 0.7},
+            "logical_consistency": {"confidence": 0.85},
+            "input_quality_alignment": 0.75,
+            "dimension_reasons": [
+                {"dimension": "evidence_grounding", "reason": "有引用"}
+            ],
+            "hard_gates": {
+                "gates": [
+                    {"type": "fabricated_observation", "reason": "无直接证据"}
+                ]
+            },
+            "notes": {"summary": "包装返回"},
+        }
     )
+    assert draft.evidence_grounding == pytest.approx(0.9)
+    assert draft.tool_param_correctness == pytest.approx(0.7)
+    assert draft.dimension_reasons["evidence_grounding"] == "有引用"
+    assert draft.hard_gates[0].code == "fabricated_observation"
+    assert "包装返回" in draft.notes
+
+
+def test_strict_observation_audit_routes_fake_and_repair() -> None:
+    hard, soft, observed = evaluate_observation_audit(
+        {
+            "accepted": False,
+            "passes": [
+                {
+                    "items": [
+                        {
+                            "call_id": "C1",
+                            "verdict": "fabricated",
+                            "reason": "字幕没有该坐标",
+                        },
+                        {
+                            "call_id": "C2",
+                            "verdict": "repair",
+                            "reason": "定性证据被写成精确距离",
+                        },
+                    ]
+                }
+            ],
+        }
+    )
+    assert observed is True
+    assert hard[0].code == "fabricated_observation"
+    assert soft[0].code == "observation_needs_repair"
+
+
+def _task(**kwargs: Any) -> GeoTaskSpec:
+    base = {
+        "task_id": "vid__t01",
+        "time_start": 0.0,
+        "time_end": 10.0,
+        "target_kind": TargetKind.still_image,
+        "image_paths": ["img.jpg"],
+    }
     base.update(kwargs)
     return GeoTaskSpec(**base)
 
@@ -376,8 +434,24 @@ def test_parameter_readiness_score_mapping(monkeypatch: pytest.MonkeyPatch) -> N
     )
     assert score_i == pytest.approx(0.15)
     assert sum_i.invalid == 1
-    assert any(g.code == "tool_params_invalid" for g in gates_i)
+    assert not gates_i
     assert "invalid" in reason_i
+
+    unexecutable = _audit(readiness="invalid", step_index=5)
+    unexecutable = unexecutable.model_copy(
+        update={
+            "issues": [
+                ParameterAuditIssue(
+                    code="unknown_operation",
+                    severity="error",
+                    field="operation",
+                    message="operation 不存在",
+                )
+            ]
+        }
+    )
+    _, _, gates_u, _ = evaluate_parameter_readiness([unexecutable])
+    assert any(g.code == "tool_params_unexecutable" for g in gates_u)
 
     score_m, reason_m, gates_m, sum_m = evaluate_parameter_readiness(
         None, audit_missing=True
@@ -388,7 +462,7 @@ def test_parameter_readiness_score_mapping(monkeypatch: pytest.MonkeyPatch) -> N
     assert "缺失" in reason_m
 
 
-def test_invalid_param_hard_gate_caps_score(
+def test_repairable_invalid_param_uses_soft_cap(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("STAGE4_HARD_GATE_CAP", "0.3")
@@ -413,7 +487,7 @@ def test_invalid_param_hard_gate_caps_score(
     audit_path.write_text(
         json.dumps(
             {
-                "schema_version": "canonical_inputs_v1",
+                "schema_version": "canonical_inputs_v2",
                 "calls": [
                     _audit(readiness="invalid", with_issue=True).model_dump()
                 ],
@@ -436,8 +510,10 @@ def test_invalid_param_hard_gate_caps_score(
         out_jsonl_path=str(tmp_path / "s.jsonl"),
         judge=fake_judge,
     )
-    assert any(g.code == "tool_params_invalid" for g in report.hard_gates)
-    assert report.quality_score == pytest.approx(0.3)
+    assert not report.hard_gates
+    assert report.quality_score == pytest.approx(0.75)
+    assert report.applied_soft_caps["parameter_inputs_invalid"] == pytest.approx(0.75)
+    assert report.decision == "needs_review"
     dim_map = {d.name: d for d in report.dimensions}
     assert dim_map["tool_param_correctness"].score == pytest.approx(0.15)
     assert "missing_field" in dim_map["tool_param_correctness"].reason

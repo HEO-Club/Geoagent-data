@@ -69,6 +69,10 @@ def update_parameter_context(
 
 
 def _type_matches(value: Any, expected: str, item_type: str | None) -> bool:
+    if isinstance(value, str) and value.strip().startswith("$"):
+        # Typed runtime references are resolved by the executor immediately before
+        # the call; their referenced value, not the placeholder string, is checked.
+        return True
     expected = expected.lower()
     if expected == "any":
         return True
@@ -207,6 +211,65 @@ def _validate_field(
             )
 
 
+def _looks_like_unresolved_reference(field: InputFieldSpec, value: Any) -> bool:
+    """Detect narrative step references that are not executable runtime IDs."""
+
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    if not text or text.startswith("$"):
+        return False
+    step_reference = bool(
+        re.search(
+            r"(?:步骤\s*\d+|上一步|前一步).*(?:结果|返回|检索|提取|帧|记录|会话)",
+            text,
+        )
+    )
+    derived_image = field.name in {"image", "images", "file", "video"} and bool(
+        re.search(r"(?:处理|裁剪|校正|增强|提取)后的?.*(?:图|帧|视频)", text)
+    )
+    candidate_reference = field.name in {"candidates", "source_result"} and bool(
+        re.search(r"(?:候选清单|候选列表|已有结果|剩余.*(?:列表|候选))", text)
+    )
+    return step_reference or derived_image or candidate_reference
+
+
+def _coerce_contract_value(field: InputFieldSpec, value: Any) -> Any:
+    """Normalize common grounded natural-language values into executor types."""
+
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    if field.name in {"heading", "bearing"}:
+        direction_map = {
+            "东北": 45.0,
+            "东南": 135.0,
+            "西南": 225.0,
+            "西北": 315.0,
+            "北": 0.0,
+            "东": 90.0,
+            "南": 180.0,
+            "西": 270.0,
+        }
+        for direction, degree in direction_map.items():
+            if direction in text:
+                return degree
+    if field.name == "adjustments" and text:
+        return {"instruction": text}
+    if field.name == "measurement":
+        aliases = {
+            "ratio": ("比例", "比值"),
+            "angle": ("角度", "夹角", "方位角"),
+            "area": ("面积",),
+            "color": ("颜色", "色彩"),
+            "distance": ("距离", "长度", "宽度", "高度"),
+        }
+        for canonical, terms in aliases.items():
+            if any(term in text for term in terms):
+                return canonical
+    return value
+
+
 def normalize_and_validate_tool_inputs(
     forest: ToolForest,
     *,
@@ -313,7 +376,7 @@ def normalize_and_validate_tool_inputs(
                 )
             )
             continue
-        normalized[field.name] = value
+        normalized[field.name] = _coerce_contract_value(field, value)
         if str(raw_name) != field.name:
             issues.append(
                 ParameterAuditIssue(
@@ -393,6 +456,32 @@ def normalize_and_validate_tool_inputs(
             add_missing(field)
         if field.name in normalized:
             _validate_field(field, normalized[field.name], issues)
+            if _looks_like_unresolved_reference(field, normalized[field.name]):
+                guidance = field.acquisition_hint or _default_acquisition_hint(
+                    field.name
+                )
+                issues.append(
+                    ParameterAuditIssue(
+                        code="input_unresolved_reference",
+                        severity="error",
+                        field=field.name,
+                        message=(
+                            f"{field.name}={normalized[field.name]!r} 只是自然语言步骤引用，"
+                            "不是可执行的运行时 ID"
+                        ),
+                        requirement_level="execution",
+                        repairable=True,
+                        guidance=guidance,
+                    )
+                )
+                repair_actions.append(
+                    ParameterRepairAction(
+                        field=field.name,
+                        requirement_level="execution",
+                        strategy="use_context",
+                        guidance=guidance,
+                    )
+                )
 
     for group in schema.required_any:
         if any(name in normalized for name in group):
@@ -476,14 +565,19 @@ def normalize_and_validate_tool_inputs(
         "unknown_canonical_tool",
         "unknown_operation",
         "input_alias_conflict",
-        "input_type_mismatch",
-        "input_value_not_allowed",
         "mutually_exclusive_inputs",
         "extra_inputs_not_allowed",
     }
     has_invalid = any(issue.code in invalid_codes for issue in issues)
     has_missing = any(
-        issue.code in {"required_input_missing", "required_input_group_missing"}
+        issue.code
+        in {
+            "required_input_missing",
+            "required_input_group_missing",
+            "input_unresolved_reference",
+            "input_type_mismatch",
+            "input_value_not_allowed",
+        }
         for issue in issues
     )
     if has_invalid:

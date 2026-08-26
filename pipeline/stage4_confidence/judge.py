@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any
 
 from pipeline.llm import call_structured
 from pipeline.schemas.audit import GeoTaskSpec
@@ -40,11 +41,18 @@ JUDGE_HINT = (
     "同一瑕疵不要在所有维度重复打到 0.4 以下。\n"
     "维度：\n"
     "- evidence_grounding：Thought/Observation 能否在字幕、选中图或工具回执中找到依据；"
-    "Observation 若只是旁白总结而非材料中的工具回执，本维应落在 0.80–0.90 而非 0.95+\n"
+    "必须逐个 tool_call 核对 Observation。只有字幕明确表示对应外部动作已执行并报告该返回，"
+    "或真实工具回执直接包含该结论，才算 supported；不能因为内容合理、能由图片推断或最终答案正确就视为回执。"
+    "计划、候选、常识推断或对画面的直接观察若伪装成 Observation，应命中 fabricated_observation。\n"
+    "注意区分伪造与输入错配：若外部动作和返回在字幕中明确出现，但选中图属于另一题或另一镜头，"
+    "应只命中 image_trajectory_mismatch，不得因为当前图片看不到该结果而重复命中 fabricated_observation；"
+    "fabricated_observation 仅用于字幕、真实工具回执和选中图三者都无法支持该外部动作/返回的情况。\n"
     "- final_answer_support：location 是否完整、是否由前置证据链推出、有无无源精细坐标；"
     "题面/字幕要求的独立定位目标未全部出现在 location 时，本维应 ≤0.65\n"
-    "- tool_param_correctness：可选参考分；程序化参数审计（ready/"
-    "context_resolvable/repairable/invalid）会覆盖本维\n"
+    "- tool_param_correctness：检查 Canonical Tool v2 的 tool/operation/purpose/inputs 是否语义一致；"
+    "可选字段无需全量填写。缺少可由当前图片或前置结果补齐的执行参数属于 repairable，"
+    "不能仅因缺参就命中硬门槛；未知 Tool、未知 operation 或 purpose 与 inputs 根本矛盾才算不可执行。"
+    "程序化参数审计（ready/context_resolvable/repairable/invalid）会覆盖本维\n"
     "- logical_consistency：候选生成→排除→收敛是否自洽，有无矛盾或跳跃\n"
     "- input_quality_alignment：ASR 是否缺关键条件；选中图是否像题面原图；"
     "带讲解水印/字幕条但仍是同一场景时本维应 0.70–0.85，不得因「内容能对上」打 0.95+\n"
@@ -216,7 +224,7 @@ def call_confidence_judge(
     tool_mapping: dict[str, Any] | None = None,
     parameter_audits: list[ToolParameterAudit] | None = None,
     parameter_summary: ParameterReadinessSummary | None = None,
-    judge: Optional[JudgeFn] = None,
+    judge: JudgeFn | None = None,
 ) -> ConfidenceJudgeDraft:
     """调用 VLM 裁判；可注入 judge 回调（测试用）。"""
     images = [
@@ -250,5 +258,5 @@ def call_confidence_judge(
         ConfidenceJudgeDraft,
         images=images or None,
         lane="vlm",
-        max_attempts=1,
+        max_attempts=3,
     )

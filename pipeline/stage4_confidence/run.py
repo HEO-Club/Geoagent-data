@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from pipeline.config import get_settings
 from pipeline.schemas.audit import GeoTaskSpec
@@ -26,11 +26,22 @@ from pipeline.schemas.trajectory import Trajectory
 from pipeline.schemas.transcript import TranscriptSegment
 from pipeline.stage4_confidence.judge import JudgeFn, call_confidence_judge
 from pipeline.stage4_confidence.rules import (
+    evaluate_observation_audit,
     evaluate_parameter_readiness,
     evaluate_programmatic_gates,
 )
 
 logger = logging.getLogger(__name__)
+
+SOFT_GATE_CAPS: dict[str, float] = {
+    "image_trajectory_mismatch": 0.75,
+    "task_needs_review": 0.80,
+    "observation_needs_repair": 0.82,
+    "parameter_inputs_invalid": 0.75,
+}
+ACCEPT_SCORE = 0.90
+PROVISIONAL_SCORE = 0.78
+ACCEPT_COVERAGE = 0.85
 
 
 def _dimension_weights() -> dict[str, float]:
@@ -131,11 +142,16 @@ def compose_evaluation_notes(
     judge_call_failed: bool,
     weak_below: float,
     image_selection_note: str = "",
+    audit_coverage: float = 0.0,
+    decision: str = "needs_review",
+    soft_flags: list[HardGateHit] | None = None,
+    applied_soft_caps: dict[str, float] | None = None,
 ) -> str:
     """组装每条样本必填的评价 notes（含弱维明细）。"""
     parts: list[str] = [
         (
             f"quality_score={quality_score:.3f} base_score={base_score:.3f} "
+            f"coverage={audit_coverage:.3f} decision={decision} "
             f"priority={review_priority}"
         )
     ]
@@ -148,6 +164,19 @@ def compose_evaluation_notes(
         parts.append("硬门槛: " + "; ".join(gate_bits))
     else:
         parts.append("硬门槛: 无")
+    if soft_flags:
+        parts.append(
+            "软审查项: "
+            + "; ".join(
+                f"{item.code}({item.evidence})" if item.evidence else item.code
+                for item in soft_flags
+            )
+        )
+    if applied_soft_caps:
+        parts.append(
+            "软上限: "
+            + "; ".join(f"{key}<={value:.2f}" for key, value in applied_soft_caps.items())
+        )
 
     if parameter_summary is not None:
         if parameter_summary.audit_missing:
@@ -205,8 +234,11 @@ def merge_confidence(
     param_reason: str = "",
     parameter_summary: ParameterReadinessSummary | None = None,
     image_selection_note: str = "",
+    audit_coverage: float = 0.0,
+    evidence_sources: list[str] | None = None,
+    soft_flags: list[HardGateHit] | None = None,
 ) -> ConfidenceReport:
-    """加权合成 base_score；硬门槛命中则压到 cap；notes 必填。"""
+    """Fuse VLM scores, programmatic gates, coverage and repair routing."""
     settings = get_settings()
     weights = _dimension_weights()
     neutral = float(settings.STAGE4_JUDGE_NEUTRAL_SCORE)
@@ -257,23 +289,66 @@ def merge_confidence(
     base = float(max(0.0, min(1.0, base)))
 
     model_gates = list(draft.hard_gates) if draft else []
-    gates: list[HardGateHit] = []
+    all_gates: list[HardGateHit] = []
     seen: set[str] = set()
     for g in [*programmatic_gates, *model_gates]:
         code = str(g.code).strip()
         if not code or code in seen:
             continue
         seen.add(code)
-        gates.append(HardGateHit(code=code, evidence=str(g.evidence or "").strip()))
+        all_gates.append(
+            HardGateHit(code=code, evidence=str(g.evidence or "").strip())
+        )
 
-    quality = min(base, cap) if gates else base
+    resolved_soft_flags = list(soft_flags or [])
+    blocking_gates: list[HardGateHit] = []
+    for gate in all_gates:
+        if gate.code in SOFT_GATE_CAPS:
+            resolved_soft_flags.append(gate)
+        else:
+            blocking_gates.append(gate)
+    deduped_soft: list[HardGateHit] = []
+    soft_seen: set[str] = set()
+    for flag in resolved_soft_flags:
+        if not flag.code or flag.code in soft_seen:
+            continue
+        soft_seen.add(flag.code)
+        deduped_soft.append(flag)
+
+    applied_soft_caps = {
+        flag.code: SOFT_GATE_CAPS[flag.code]
+        for flag in deduped_soft
+        if flag.code in SOFT_GATE_CAPS
+    }
+    if parameter_summary and parameter_summary.invalid:
+        applied_soft_caps["parameter_inputs_invalid"] = SOFT_GATE_CAPS[
+            "parameter_inputs_invalid"
+        ]
+
+    quality = min(base, cap) if blocking_gates else base
+    if applied_soft_caps:
+        quality = min(quality, *applied_soft_caps.values())
     quality = float(max(0.0, min(1.0, quality)))
-    priority = _review_priority(quality)
+
+    worst = parameter_summary.worst if parameter_summary else None
+    if blocking_gates:
+        decision = "reject"
+    elif deduped_soft or audit_coverage < ACCEPT_COVERAGE:
+        decision = "needs_review"
+    elif worst in {"repairable", "invalid"}:
+        decision = "parameter_repair"
+    elif quality >= ACCEPT_SCORE:
+        decision = "accept"
+    elif quality >= PROVISIONAL_SCORE:
+        decision = "provisional_pass"
+    else:
+        decision = "needs_review"
+    priority = "high" if decision == "reject" else _review_priority(quality)
 
     dimensions = _enrich_weak_dimension_reasons(
         dimensions,
         draft=draft,
-        programmatic_gates=programmatic_gates,
+        programmatic_gates=blocking_gates,
         model_gates=model_gates,
         judge_call_failed=judge_call_failed,
         weak_below=weak_below,
@@ -283,25 +358,34 @@ def merge_confidence(
         quality_score=quality,
         base_score=base,
         review_priority=priority,
-        hard_gates=gates,
+        hard_gates=blocking_gates,
         dimensions=dimensions,
         parameter_summary=parameter_summary,
         draft=draft,
         judge_call_failed=judge_call_failed,
         weak_below=weak_below,
         image_selection_note=image_selection_note,
+        audit_coverage=audit_coverage,
+        decision=decision,
+        soft_flags=deduped_soft,
+        applied_soft_caps=applied_soft_caps,
     )
 
     return ConfidenceReport(
         task_id=task_id,
         base_score=base,
         quality_score=quality,
+        audit_coverage=audit_coverage,
+        decision=decision,
         dimensions=dimensions,
-        hard_gates=gates,
+        hard_gates=blocking_gates,
         review_priority=priority,
         notes=notes,
         judge_call_failed=judge_call_failed,
         parameter_readiness=parameter_summary,
+        evidence_sources=list(evidence_sources or []),
+        soft_flags=deduped_soft,
+        applied_soft_caps=applied_soft_caps,
     )
 
 
@@ -336,6 +420,47 @@ def _load_tool_mapping(path: Path | None) -> dict[str, Any] | None:
         logger.warning("无法读取 tool mapping %s: %s", path, exc)
         return None
     return data if isinstance(data, dict) else None
+
+
+def _load_optional_audit(path: str | Path | None) -> dict[str, Any] | None:
+    if path is None:
+        return None
+    file_path = Path(path)
+    if not file_path.is_file():
+        return None
+    try:
+        value = json.loads(file_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("无法读取辅助审计 %s: %s", file_path, exc)
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _calculate_audit_coverage(
+    *,
+    transcript: list[TranscriptSegment],
+    trajectory: Trajectory,
+    tool_mapping: dict[str, Any] | None,
+    parameter_audit_present: bool,
+    observation_audit_present: bool,
+    judge_succeeded: bool,
+) -> tuple[float, list[str]]:
+    checks = [
+        ("timestamped_transcript", 0.15, bool(transcript and any(s.text.strip() for s in transcript))),
+        (
+            "selected_images",
+            0.15,
+            bool(trajectory.image_paths)
+            and all(Path(path).is_file() for path in trajectory.image_paths),
+        ),
+        ("tool_mapping", 0.10, tool_mapping is not None),
+        ("parameter_contract_audit", 0.20, parameter_audit_present),
+        ("strict_observation_audit", 0.10, observation_audit_present),
+        ("vlm_semantic_judge", 0.30, judge_succeeded),
+    ]
+    sources = [name for name, _, present in checks if present]
+    coverage = sum(weight for _, weight, present in checks if present)
+    return float(max(0.0, min(1.0, coverage))), sources
 
 
 def load_parameter_audits(
@@ -385,9 +510,12 @@ def run_stage4(
     tool_mapping_path: str | Path | None = None,
     parameter_audits: list[ToolParameterAudit] | None = None,
     parameter_audit_path: str | Path | None = None,
+    observation_audit: dict[str, Any] | None = None,
+    observation_audit_path: str | Path | None = None,
+    trajectory_consistency: dict[str, Any] | None = None,
     out_report_path: str | None = None,
     out_jsonl_path: str | None = None,
-    judge: Optional[JudgeFn] = None,
+    judge: JudgeFn | None = None,
 ) -> ConfidenceReport:
     """阶段4：多维置信度评分 → 报告落盘 + 回写 JSONL.quality_score。
 
@@ -409,7 +537,38 @@ def run_stage4(
     param_score, param_reason, param_gates, param_summary = (
         evaluate_parameter_readiness(audits, audit_missing=audit_missing)
     )
-    programmatic_gates = [*programmatic_gates, *param_gates]
+    resolved_observation_audit = observation_audit
+    if resolved_observation_audit is None:
+        resolved_observation_audit = _load_optional_audit(observation_audit_path)
+    observation_gates, observation_soft, observation_observed = (
+        evaluate_observation_audit(resolved_observation_audit)
+    )
+    programmatic_gates = [
+        *programmatic_gates,
+        *param_gates,
+        *observation_gates,
+    ]
+    soft_flags = list(observation_soft)
+
+    task_status = getattr(task, "status", "")
+    task_status_value = str(getattr(task_status, "value", task_status)).lower()
+    if task_status_value == "needs_review":
+        soft_flags.append(
+            HardGateHit(
+                code="task_needs_review",
+                evidence=str(getattr(task, "status_reason", "") or "Stage 1.5 标记需复核"),
+            )
+        )
+    if trajectory_consistency and bool(trajectory_consistency.get("conflict")):
+        soft_flags.append(
+            HardGateHit(
+                code="image_trajectory_mismatch",
+                evidence=str(
+                    trajectory_consistency.get("reason")
+                    or "轨迹依赖图与实际选中图不一致"
+                ),
+            )
+        )
 
     draft: ConfidenceJudgeDraft | None = None
     judge_failed = False
@@ -432,6 +591,15 @@ def run_stage4(
             type(exc).__name__,
         )
 
+    audit_coverage, evidence_sources = _calculate_audit_coverage(
+        transcript=transcript,
+        trajectory=trajectory,
+        tool_mapping=mapping,
+        parameter_audit_present=not audit_missing,
+        observation_audit_present=observation_observed,
+        judge_succeeded=not judge_failed,
+    )
+
     report = merge_confidence(
         task_id=task.task_id,
         format_score=format_score,
@@ -445,6 +613,9 @@ def run_stage4(
         image_selection_note=str(
             getattr(task, "image_selection_note", "") or ""
         ),
+        audit_coverage=audit_coverage,
+        evidence_sources=evidence_sources,
+        soft_flags=soft_flags,
     )
 
     settings = get_settings()

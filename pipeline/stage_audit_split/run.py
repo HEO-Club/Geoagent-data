@@ -1946,7 +1946,7 @@ def slice_transcript_for_task(
     sliced = [
         seg
         for seg in transcript
-        if seg.end >= task.time_start - 1e-6 and seg.start <= task.time_end + 1e-6
+        if seg.end > task.time_start + 1e-6 and seg.start < task.time_end - 1e-6
     ]
     return sliced if sliced else list(transcript)
 

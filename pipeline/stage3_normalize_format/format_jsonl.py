@@ -30,11 +30,13 @@ from pipeline.stage3_normalize_format.trees import (
     resolve_canonical_name,
     resolve_operation,
 )
+from pipeline.tool_catalog_v2 import render_tool_contract_guidance
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are a geolocation agent. Use internal Thought events for reasoning and call "
     "tools only when an external executor is needed. Tool calls follow "
-    "Thought/Action/Observation; the final answer uses final_answer."
+    "Thought/Action/Observation; the final answer uses final_answer. "
+    "Every non-terminal Action uses params.operation, params.purpose and params.inputs."
 )
 DEFAULT_USER_QUERY = "Locate the place shown in the image."
 
@@ -75,6 +77,20 @@ def _resolve_image_paths(
     if image_path and str(image_path).strip():
         return [str(image_path).strip()]
     return []
+
+
+def _freeform_call_parts(step: Any) -> tuple[str | None, str, dict[str, Any]]:
+    """Accept both legacy flat params and the v2 Stage 2 call contract."""
+
+    params = dict(step.params or {})
+    nested_inputs = params.get("inputs")
+    if isinstance(nested_inputs, dict):
+        operation = str(params.get("operation") or "").strip() or None
+        purpose = str(params.get("purpose") or step.thought).strip() or step.thought
+        return operation, purpose, dict(nested_inputs)
+    operation = str(params.pop("operation", "") or "").strip() or None
+    purpose = str(params.pop("purpose", "") or step.thought).strip() or step.thought
+    return operation, purpose, params
 
 
 def remap_trajectory(
@@ -138,7 +154,8 @@ def remap_trajectory(
             )
             continue
 
-        operation = resolve_operation(forest, step.tool)
+        requested_operation, purpose, raw_inputs = _freeform_call_parts(step)
+        operation = requested_operation or resolve_operation(forest, step.tool)
         if not operation and tree and tree.canonical.operations:
             operation = tree.canonical.operations[0].name
         context_snapshot = dict(available_context)
@@ -146,7 +163,7 @@ def remap_trajectory(
             forest,
             tool=canonical,
             operation=operation or "execute",
-            inputs=dict(step.params or {}),
+            inputs=raw_inputs,
             step_index=step_index,
             available_context=available_context,
         )
@@ -168,6 +185,7 @@ def remap_trajectory(
                 "canonical": canonical,
                 "audit": parameter_audit,
                 "compile_request": req,
+                "purpose": purpose,
             }
         )
         update_parameter_context(available_context, parameter_audit)
@@ -224,7 +242,7 @@ def remap_trajectory(
             parameter_audits.append(audit)
         normalized_params = {
             "operation": audit.operation,
-            "purpose": step.thought,
+            "purpose": draft["purpose"],
             "inputs": audit.normalized_inputs,
         }
         steps.append(
@@ -311,7 +329,12 @@ def _tool_mapping_audit(
         if step.event_type == "tool_call" and step.tool:
             tool_calls_after += 1
             canonical = resolve_canonical_name(forest, step.tool) or step.tool
-            operation = resolve_operation(forest, step.tool) or "execute"
+            requested_operation, _, _ = _freeform_call_parts(step)
+            operation = (
+                requested_operation
+                or resolve_operation(forest, step.tool)
+                or "execute"
+            )
             canonicals.add(canonical)
         mappings.append(
             {
@@ -368,6 +391,9 @@ def run_stage3(
         for step in freeform.steps
     ]
     forest = ensure_tool_trees(freeform, forest_path, matcher=matcher)
+    resolved_system_prompt = system_prompt or (
+        DEFAULT_SYSTEM_PROMPT + "\n\n" + render_tool_contract_guidance(forest)
+    )
     resolved_query = (
         user_query
         if user_query is not None
@@ -377,7 +403,7 @@ def run_stage3(
     traj = remap_trajectory(
         freeform,
         forest,
-        system_prompt=system_prompt or DEFAULT_SYSTEM_PROMPT,
+        system_prompt=resolved_system_prompt,
         user_query=resolved_query,
         image_paths=image_paths,
         image_path=image_path or None,
@@ -409,7 +435,7 @@ def run_stage3(
     parameter_audit_path.write_text(
         json.dumps(
             {
-                "schema_version": "canonical_inputs_v1",
+                "schema_version": "canonical_inputs_v2",
                 "calls": [item.model_dump() for item in parameter_audits],
                 "valid_calls": sum(item.valid for item in parameter_audits),
                 "total_calls": len(parameter_audits),

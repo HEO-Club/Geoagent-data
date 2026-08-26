@@ -192,6 +192,7 @@ def run_one_video(
                 out_path=str(freeform_path),
                 image_paths=task_images or None,
                 source_video=vid,
+                task=task,
             )
             manifest.stages[stage2_key] = "done"
             save_manifest(manifest)

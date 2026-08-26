@@ -5,17 +5,20 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
 from pipeline.config import get_settings
 from pipeline.llm import call_structured
 from pipeline.media.keyframes import extract_keyframes, video_duration_sec
+from pipeline.schemas.audit import GeoTaskSpec
 from pipeline.schemas.clues import WorkingScope
 from pipeline.schemas.freeform import FreeFormStep, FreeFormTrajectory
 from pipeline.schemas.transcript import TranscriptSegment
 from pipeline.stage2_freeform_tao.extract_scope import extract_working_scope
+from pipeline.stage3_normalize_format.trees import load_forest
+from pipeline.tool_catalog_v2 import render_tool_contract_guidance
 
 logger = logging.getLogger(__name__)
 
@@ -43,12 +46,19 @@ DEFAULT_SYSTEM_HINT = (
     "直接看图得出的天空、植被、朝向、建筑形态，基于已有结果进行比较、筛选、排名、总结、"
     "形成目标签名或时间一致性判断，都属于 reasoning，不得发明 inspect/filter/build/assess 类伪工具。"
     "只有 action 确实带来上下文中原本没有的新信息时才建立 tool_call；"
-    "其 thought 写清当前信息缺口与调用原因，tool 使用忠实描述真实执行器的自由名称，params 写实际输入，"
+    "其 thought 写清当前信息缺口与调用原因，tool 优先使用提供的 Canonical Tool 名称，"
+    "params 按 operation/purpose/inputs 固定合同填写，"
     "observation 只写该外部动作实际返回或明确报告的新结果。"
     "禁止使用或猜测 groundtruth / 官方真值坐标。"
     "Observation 只能复现讲解材料中明确展示、报告的真实工具执行结果；"
     "直接看输入图得到的画面事实应写入 reasoning，不得为了组成 tool_call 而包装成外部工具回执。"
     "只有材料明确说明某个外部动作已经执行并直接报告其返回内容时，才能生成对应 Observation；"
+    "必须忠实还原讲解者实际做过的动作，不能为了让推理链显得完整而补做反向搜图、Web检索、"
+    "卫星核验或数据库查询，也不能在已经得到结论后自行增加一轮验证工具。"
+    "材料中的「视频换了一个视角」「接着画面出现」「同一段视频继续拍到」只是既有材料的镜头切换，"
+    "不代表执行了 reverse_image_search、video_frame_extract 或外部媒体检索；"
+    "除非材料明确说执行了检索/打开/提取并报告结果，否则应写为 reasoning，或在输入确实含多图时直接综合观察。"
+    "检索 query 与 inputs 只能使用该步骤之前已经掌握的条件，禁止把尚未推出的最终地名塞进查询词再反向确认。"
     "计划查询、查询条件、待验证假设、候选值和常识推断都不是工具结果。"
     "必须保持证据的原始边界：不得把不同题目、不同镜头、不同时间段、不同辅助线或不同轮次搜索的"
     "动作与结果拼接成同一个 Observation；材料后续纠正前文时，以最终纠正结果为准。"
@@ -89,10 +99,10 @@ class _LLMFreeFormResult(BaseModel):
     """LLM 整条自由链。"""
 
     steps: list[_LLMFreeFormStep] = Field(default_factory=list)
-    notes: Optional[str] = None
+    notes: str | None = None
 
     @model_validator(mode="after")
-    def validate_final_answer(self) -> "_LLMFreeFormResult":
+    def validate_final_answer(self) -> _LLMFreeFormResult:
         """硬校验统一终端答案，避免模型只“准备总结”却不落答案。"""
         if not self.steps:
             raise ValueError("steps 不能为空，且末步必须输出 final_answer")
@@ -146,6 +156,37 @@ def _format_scope_block(working_scope: WorkingScope | None) -> str:
         return "Agent 已知工作范围：无外部工作范围。\n"
     return (
         f"Agent 已知工作范围（外部给定先验，禁止解释来源）：\n{working_scope.region}\n"
+    )
+
+
+def _format_tool_contract() -> str:
+    """加载生产 Tool v2；目录不可用时失败开放为最小合同。"""
+
+    path = Path(get_settings().TOOL_CATALOG_PATH)
+    try:
+        forest = load_forest(path)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        logger.warning("stage2 tool catalog unavailable %s: %s", path, exc)
+        return (
+            "Tool 合同：params.operation=具体操作，params.purpose=证据缺口，"
+            "params.inputs=真实执行输入；缺少输入时不得编造。"
+        )
+    return render_tool_contract_guidance(forest)
+
+
+def _format_task_block(task: GeoTaskSpec | None) -> str:
+    """Provide split-task identity without exposing Stage 1.5 final_location_text."""
+
+    if task is None:
+        return ""
+    brief = task.visual_evidence_brief.strip() or "（暂无视觉简报，以所附图片为准）"
+    return (
+        "当前只蒸馏这一道已拆分定位题；即使粗粒度字幕片段同时提到其他镜头/题目，"
+        "也必须忽略与下列视觉目标不一致的内容，final_answer 只能回答本题：\n"
+        f"task_id={task.task_id}\n"
+        f"task_time=[{task.time_start:.1f}, {task.time_end:.1f})\n"
+        f"target_kind={task.target_kind.value}\n"
+        f"visual_evidence_brief={brief}\n"
     )
 
 
@@ -221,6 +262,7 @@ def run_stage2(
     image_path: str | None = None,
     image_paths: list[str] | None = None,
     source_video: str | None = None,
+    task: GeoTaskSpec | None = None,
     max_attempts: int | None = None,
 ) -> FreeFormTrajectory:
     """蒸馏为地理图片定位 agent 自由 TAO（内容优先，无统一 tool schema）。
@@ -233,6 +275,7 @@ def run_stage2(
         image_paths: 任务关键帧（可多图）；编排器应传入审核切分结果。
         source_video: 写入产物的来源 id；默认视频 stem。
         max_attempts: 可选单次运行重试上限；默认沿用全局配置。
+        task: 可选 Stage 1.5 单题边界；只注入不含最终答案的安全字段。
 
     Returns:
         FreeFormTrajectory 软信封（含可选 working_scope）。
@@ -260,6 +303,8 @@ def run_stage2(
         f"{DEFAULT_SYSTEM_HINT}\n\n"
         f"视频 ID: {video_id}\n"
         f"{_format_scope_block(working_scope)}"
+        f"{_format_task_block(task)}"
+        f"{_format_tool_contract()}\n\n"
         "讲解内容参考（仅供蒸馏，禁止写入产物）：\n"
         f"{_format_transcript(transcript)}\n\n"
         "请输出 steps，每条显式包含 event_type。reasoning 事件只写 thought；"
@@ -268,7 +313,9 @@ def run_stage2(
         '{"event_type":"reasoning","thought":"根据已有日落时间可排除较早天黑的候选",'
         '"tool":null,"params":{},"observation":null}；'
         '{"event_type":"tool_call","thought":"仍缺少候选区的连续云量证据，因此查询历史天气档案",'
-        '"tool":"historical_weather_query","params":{"region":"候选区"},'
+        '"tool":"weather_archive_query","params":{"operation":"cloud_cover",'
+        '"purpose":"核验候选区在目标时段的连续云量",'
+        '"inputs":{"area":"候选区","time_range":"材料明确给出的目标时段"}},'
         '"observation":{"result":"明确查询结果"}}；'
         "无论前面有多少步，最后一步必须严格写成："
         '{"event_type":"final","thought":"基于已有证据提交最终地点","tool":"final_answer",'

@@ -1,6 +1,6 @@
-# Canonical Tool v2 细分提案
+# Canonical Tool v2 细分与生产接入
 
-状态：`proposal_only_not_wired`。本目录尚未替换生产 `canonical_tool_catalog.json`，也尚未接入 Stage 4；等待评审后再实施迁移。
+状态：`production_wired`。生产目录为 `canonical_tool_catalog_v2.json`，已接入 Stage 2 工具合同提示、Stage 3 语义映射与参数编译，并由融合 Stage 4 审核 Tool/operation/input_schema 的可执行性。旧 `canonical_tool_catalog.json` 仅保留为 v1 迁移来源。
 
 ## 设计原则
 
@@ -72,6 +72,6 @@ media_search         → media_search / video_frame_extract
 web_search           → web_search / web_page_read
 ```
 
-完整机器可读目录：`docs/tool_catalog_v2_proposed.json`。
+完整迁移说明：`docs/tool_catalog_v2_proposed.json`；生产 ToolForest：`canonical_tool_catalog_v2.json`。
 
 真实结果分析：`data/runs/tool_catalog_v2_observation_gate_analysis.json`。

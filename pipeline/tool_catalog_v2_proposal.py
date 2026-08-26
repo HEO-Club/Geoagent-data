@@ -1,4 +1,4 @@
-"""更细 Canonical Tool v2 提案；不接入生产目录。"""
+"""Canonical Tool v2 的迁移说明生成器；生产 ToolForest 由 tool_catalog_v2 构建。"""
 
 from __future__ import annotations
 
@@ -6,8 +6,6 @@ from pathlib import Path
 from typing import Any
 
 from pipeline.schemas.tools import ToolForest, ToolInputSchema, ToolOperation, ToolTree
-from pipeline.stage3_normalize_format.params import attach_operation_input_schemas
-from pipeline.stage3_normalize_format.trees import load_forest
 
 # 新工具按真实执行函数/会话边界拆分；同一数据库中仅目标对象不同不拆。
 TOOL_SPLITS: dict[str, dict[str, Any]] = {
@@ -75,6 +73,11 @@ def _compact_contract(schema: ToolInputSchema | None) -> dict[str, Any]:
 def build_tool_catalog_v2(
     catalog_path: str | Path = "canonical_tool_catalog.json",
 ) -> dict[str, Any]:
+    from pipeline.stage3_normalize_format.params import (
+        attach_operation_input_schemas,
+    )
+    from pipeline.stage3_normalize_format.trees import load_forest
+
     source = attach_operation_input_schemas(load_forest(Path(catalog_path)))
     tools = []
     migration = []
@@ -129,7 +132,7 @@ def build_tool_catalog_v2(
     duplicates = len(migration) - len(mapped)
     return {
         "schema_version": "canonical_tool_catalog_v2_proposal",
-        "status": "proposal_only_not_wired",
+        "status": "production_wired",
         "stats": {
             "source_tools": len(source.trees),
             "proposed_tools": len(tools),

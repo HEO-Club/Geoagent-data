@@ -7,10 +7,27 @@ from typing import Any
 
 import pytest
 
+from pipeline.schemas.audit import GeoTaskSpec, TargetKind
 from pipeline.schemas.clues import BoundKind, ClueExtractionResult, WorkingScope
 from pipeline.schemas.freeform import FreeFormTrajectory
 from pipeline.schemas.transcript import TranscriptSegment
 from pipeline.stage2_freeform_tao import run as stage2
+
+
+def test_task_block_focuses_one_split_without_final_answer_leak() -> None:
+    task = GeoTaskSpec(
+        task_id="video__t03",
+        time_start=60.0,
+        time_end=120.0,
+        target_kind=TargetKind.still_image,
+        visual_evidence_brief="云层上方可见高速公路与田间道路网",
+        final_location_text="不应泄露的最终地点",
+    )
+    block = stage2._format_task_block(task)
+    assert "当前只蒸馏这一道" in block
+    assert "task_time=[60.0, 120.0)" in block
+    assert "高速公路与田间道路网" in block
+    assert "不应泄露的最终地点" not in block
 
 
 def test_run_stage2_mock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
