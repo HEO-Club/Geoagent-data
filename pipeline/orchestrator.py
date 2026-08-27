@@ -193,6 +193,7 @@ def run_one_video(
                 image_paths=task_images or None,
                 source_video=vid,
                 task=task,
+                observation_context=transcript,
             )
             manifest.stages[stage2_key] = "done"
             save_manifest(manifest)
@@ -240,6 +241,9 @@ def run_one_video(
                 entry=entry,
                 tool_mapping_path=mapping_path,
                 parameter_audit_path=param_audit_path,
+                observation_audit_path=freeform_path.with_name("stage2_observation_audit.json"),
+                review_context_transcript=transcript,
+                source_video_path=video_path,
                 out_report_path=str(conf_path),
                 out_jsonl_path=str(shard_path),
                 judge=stage4_judge,

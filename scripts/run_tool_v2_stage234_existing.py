@@ -119,6 +119,7 @@ def _run_task(
         source_video=task.task_id,
         max_attempts=3,
         task=task,
+        observation_context=transcript,
     )
 
     trajectory_path = task_dir / "stage3_trajectory.json"
@@ -145,6 +146,9 @@ def _run_task(
         entry=entry,
         tool_mapping_path=mapping_path,
         parameter_audit_path=parameter_path,
+        observation_audit_path=freeform_path.with_name("stage2_observation_audit.json"),
+        review_context_transcript=transcript,
+        source_video_path=str(Path("data/raw_videos") / f"{video_id}.mp4"),
         out_report_path=str(report_path),
         out_jsonl_path=str(shard_path),
     )

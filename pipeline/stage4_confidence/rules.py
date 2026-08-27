@@ -10,6 +10,7 @@ from pipeline.schemas.confidence import HardGateHit, ParameterReadinessSummary
 from pipeline.schemas.tools import ToolParameterAudit
 from pipeline.schemas.trajectory import Trajectory
 from pipeline.schemas.transcript import TranscriptSegment
+from pipeline.stage2_freeform_tao.observation_review import observation_fingerprint
 
 Readiness = Literal["ready", "context_resolvable", "repairable", "invalid"]
 
@@ -155,11 +156,13 @@ def evaluate_programmatic_gates(
 
 def evaluate_observation_audit(
     audit: dict[str, Any] | None,
+    trajectory: Trajectory | None = None,
 ) -> tuple[list[HardGateHit], list[HardGateHit], bool]:
     """Convert a strict direct-evidence audit into hard/soft Stage 4 flags."""
 
     if not isinstance(audit, dict):
         return [], [], False
+    accepted = audit.get("accepted")
     passes = audit.get("passes")
     items: list[dict[str, Any]] = []
     if isinstance(passes, list) and passes:
@@ -168,6 +171,23 @@ def evaluate_observation_audit(
             items = [item for item in final_pass["items"] if isinstance(item, dict)]
     elif isinstance(audit.get("items"), list):
         items = [item for item in audit["items"] if isinstance(item, dict)]
+    if audit.get("policy") == "bounded_observation_regeneration_v1":
+        final_pass = passes[-1] if isinstance(passes, list) and passes else {}
+        if final_pass.get("status") != "complete":
+            return [], [HardGateHit(code="observation_review_unavailable", evidence="本轮Observation审核未完成；保留样本供后续审核")], False
+        if trajectory is not None:
+            current_calls = {index: step for index, step in enumerate(trajectory.steps, start=1) if step.event_type == "tool_call"}
+            # Stage 3 may demote a pseudo-tool to reasoning. Only the surviving,
+            # unchanged observations can inherit this generation's review.
+            items = [item for item in items if item.get("step_index") in current_calls]
+            if {item.get("step_index") for item in items} != set(current_calls) or any(
+                item.get("observation_sha256") != observation_fingerprint(current_calls[item["step_index"]].observation)
+                for item in items
+            ):
+                return [], [HardGateHit(code="observation_audit_stale", evidence="轨迹中的Observation与Stage 2最终审核版本不同，不能沿用通过结论")], False
+            if not current_calls:
+                return [], [], True
+            accepted = all(item.get("verdict") == "supported" for item in items)
     if not items:
         return [], [], False
 
@@ -187,7 +207,7 @@ def evaluate_observation_audit(
             for item in unsupported[:3]
         )
         hard.append(HardGateHit(code="fabricated_observation", evidence=evidence))
-    if repair or audit.get("accepted") is False:
+    if repair or accepted is False:
         evidence = "；".join(
             str(item.get("reason") or item.get("call_id") or "需修复")
             for item in repair[:3]

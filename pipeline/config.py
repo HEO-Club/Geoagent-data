@@ -54,6 +54,8 @@ class Settings(BaseSettings):
 
     MAX_CONCURRENT_VIDEOS: int = 1
     STAGE2_BEST_OF_K: int = 1
+    STAGE2_OBSERVATION_REVIEW: bool = True
+    STAGE2_MAX_GENERATIONS: int = 3
 
     # 阶段1.5 审核切分
     AUDIT_SPARSE_FRAME_COUNT: int = 8

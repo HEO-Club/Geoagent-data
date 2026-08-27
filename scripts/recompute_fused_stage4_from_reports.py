@@ -12,11 +12,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pipeline.schemas.audit import GeoTaskSpec
 from pipeline.schemas.confidence import ConfidenceJudgeDraft, ConfidenceReport
-from pipeline.schemas.dataset import DatasetEntry
 from pipeline.schemas.freeform import FreeFormTrajectory
 from pipeline.schemas.tools import ToolParameterAudit
 from pipeline.schemas.trajectory import Trajectory
 from pipeline.schemas.transcript import TranscriptSegment
+from pipeline.stage3_normalize_format.format_jsonl import format_dataset_entry
 from pipeline.stage4_confidence.run import run_stage4
 
 
@@ -42,6 +42,8 @@ def _component_maps(roots: list[Path]) -> dict[str, dict[str, Path]]:
 
 
 def _draft_from_report(report: ConfidenceReport) -> ConfidenceJudgeDraft:
+    if report.judge_call_failed:
+        raise ValueError("原审核失败，不能把中性分包装成成功 VLM 审核")
     dimensions = {item.name: item for item in report.dimensions}
     model_flags = [
         *report.hard_gates,
@@ -66,6 +68,12 @@ def _draft_from_report(report: ConfidenceReport) -> ConfidenceJudgeDraft:
     )
 
 
+def _replay_judge(report: ConfidenceReport):
+    def judge(**_kwargs):
+        return _draft_from_report(report)
+    return judge
+
+
 def _transcript(path: Path) -> list[TranscriptSegment]:
     value = json.loads(path.read_text(encoding="utf-8"))
     if isinstance(value, dict):
@@ -78,6 +86,7 @@ def main() -> None:
     parser.add_argument("--root", type=Path, action="append", required=True)
     parser.add_argument("--revalidation", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--context-root", type=Path, default=Path("data/transcripts"))
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
 
@@ -98,7 +107,6 @@ def main() -> None:
         previous = ConfidenceReport.model_validate_json(
             report_path.read_text(encoding="utf-8")
         )
-        draft = _draft_from_report(previous)
         task = GeoTaskSpec.model_validate_json(
             components["task"][task_id].read_text(encoding="utf-8")
         )
@@ -108,11 +116,13 @@ def main() -> None:
         trajectory = Trajectory.model_validate_json(
             trajectory_path.read_text(encoding="utf-8")
         )
-        entry = DatasetEntry(
-            id=trajectory.id,
-            source_video=freeform.source_video,
-            messages=[],
-        )
+        # Rebuild the exact conversation represented by the saved trajectory instead
+        # of writing an empty messages=[] entry during score recomputation.
+        entry = format_dataset_entry(trajectory, source_video=freeform.source_video)
+        video_id = task_id.split("__t", 1)[0]
+        context_path = args.context_root / f"{video_id}.json"
+        context = _transcript(context_path) if context_path.is_file() else None
+        video_path = Path("data/raw_videos") / f"{video_id}.mp4"
         task_dir = args.out / "intermediate" / task_id
         report = run_stage4(
             task=task,
@@ -121,10 +131,12 @@ def main() -> None:
             trajectory=trajectory,
             entry=entry,
             tool_mapping_path=components["mapping"][task_id],
-            parameter_audits=audits_by_task.get(task_id, []),
+            parameter_audits=audits_by_task.get(task_id),
+            review_context_transcript=context,
+            source_video_path=str(video_path) if video_path.is_file() else None,
             out_report_path=str(task_dir / "stage4_confidence.json"),
             out_jsonl_path=str(args.out / "output" / "shards" / f"{task_id}.jsonl"),
-            judge=lambda _draft=draft, **_kwargs: _draft,
+            judge=_replay_judge(previous),
         )
         final = trajectory.steps[-1]
         rows.append(
@@ -143,6 +155,10 @@ def main() -> None:
                 ),
                 "trajectory": str(trajectory_path),
                 "source_report": str(report_path),
+                "task_window": {"start": task.time_start, "end": task.time_end},
+                "judge_call_failed": report.judge_call_failed,
+                "review_markdown": str(task_dir / "stage4_confidence.review.md"),
+                "review_json": str(task_dir / "stage4_confidence.review.json"),
             }
         )
 
@@ -166,6 +182,18 @@ def main() -> None:
     summary_path.write_text(
         json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+    index = [
+        "# 逐题人工审核入口", "",
+        "本包复用已有 VLM 审核，仅本地重算参数评分并生成问题清单；没有新调用模型或真实地理工具。",
+        "评分建议不阻止样本保存；报告的模型判断需要人工核验。新 JSONL 保留完整 messages，旧输出目录不变。", "",
+        "| Task | 题目秒数 | 分数 | 质量建议 | 逐项问题、选帧与修改建议 |",
+        "|---|---|---:|---|---|",
+    ]
+    for row in rows:
+        window = row["task_window"]
+        link = str(Path(row["review_markdown"]).resolve()).replace("\\", "/")
+        index.append(f"| {row['task_id']} | {window['start']:.3f}–{window['end']:.3f} | {row['quality_score']:.4f} | {row['decision']} | [打开审核清单](<{link}>) |")
+    (args.out / "REVIEW_INDEX.md").write_text("\n".join(index) + "\n", encoding="utf-8")
     print(json.dumps({key: value for key, value in summary.items() if key != "items"}, ensure_ascii=False, indent=2))
     print(f"summary={summary_path}")
 

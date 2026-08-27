@@ -77,7 +77,10 @@ def main() -> None:
         entry=entry,
         tool_mapping_path=args.tool_mapping,
         parameter_audit_path=parameter_audit_path,
-        observation_audit_path=args.observation_audit,
+        observation_audit_path=(
+            args.observation_audit
+            or str(Path(args.freeform).with_name("stage2_observation_audit.json"))
+        ),
         out_report_path=args.out_report,
         out_jsonl_path=args.entry_jsonl,
     )

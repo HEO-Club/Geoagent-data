@@ -17,6 +17,12 @@ from pipeline.schemas.clues import WorkingScope
 from pipeline.schemas.freeform import FreeFormStep, FreeFormTrajectory
 from pipeline.schemas.transcript import TranscriptSegment
 from pipeline.stage2_freeform_tao.extract_scope import extract_working_scope
+from pipeline.stage2_freeform_tao.observation_review import (
+    ObservationReviewer,
+    observation_fingerprint,
+    retry_warning,
+    review_observations,
+)
 from pipeline.stage3_normalize_format.trees import load_forest
 from pipeline.tool_catalog_v2 import render_tool_contract_guidance
 
@@ -88,6 +94,7 @@ META_LEAK_TERMS = (
     "求助图",
     "字幕",
     "旁白",
+    "上一轮 Observation 纠错提醒",
 )
 
 
@@ -230,30 +237,6 @@ def trajectory_has_meta_leak(
     return any(term in blob for term in META_LEAK_TERMS)
 
 
-def _rewrite_agent_voice(
-    result: _LLMFreeFormResult,
-    *,
-    images: list[str] | None,
-    max_attempts: int | None = None,
-) -> _LLMFreeFormResult:
-    """命中元话语时做一次口吻重写。"""
-    prompt = (
-        f"{DEFAULT_SYSTEM_HINT}\n\n"
-        "下列轨迹含渠道元话语，请原样保留推理结构与 final_answer.location，"
-        "仅把 thought/params/observation 改写成地理定位 agent 口吻；"
-        "严格保留每条 event_type，禁止把 reasoning 改成 tool_call"
-        "（用「图中/待定位图/图1/图2」，删除求助者/网友等词）。\n"
-        f"{_steps_blob(result.steps)}\n"
-    )
-    return call_structured(
-        prompt,
-        _LLMFreeFormResult,
-        images=images or None,
-        lane="llm",
-        max_attempts=max_attempts,
-    )
-
-
 def run_stage2(
     video_path: str,
     transcript: list[TranscriptSegment],
@@ -264,6 +247,8 @@ def run_stage2(
     source_video: str | None = None,
     task: GeoTaskSpec | None = None,
     max_attempts: int | None = None,
+    observation_reviewer: ObservationReviewer | None = None,
+    observation_context: list[TranscriptSegment] | None = None,
 ) -> FreeFormTrajectory:
     """蒸馏为地理图片定位 agent 自由 TAO（内容优先，无统一 tool schema）。
 
@@ -274,8 +259,10 @@ def run_stage2(
         image_path: 兼容单图；与 ``image_paths`` 二选一优先后者。
         image_paths: 任务关键帧（可多图）；编排器应传入审核切分结果。
         source_video: 写入产物的来源 id；默认视频 stem。
-        max_attempts: 可选单次运行重试上限；默认沿用全局配置。
+        max_attempts: 可选 Stage 2 总生成尝试上限（含首次，最多3次）；每轮结构化调用不再内部重试。
         task: 可选 Stage 1.5 单题边界；只注入不含最终答案的安全字段。
+        observation_reviewer: 可注入批量 Observation 审核回调（测试用）。
+        observation_context: 全字幕；仅取本题相邻段帮助审核，不注入相邻题答案到生成提示。
 
     Returns:
         FreeFormTrajectory 软信封（含可选 working_scope）。
@@ -322,52 +309,95 @@ def run_stage2(
         '"params":{"location":"最终地点"},"observation":null}。'
         "若视频包含多道独立定位题，location 使用字符串数组并按讲解顺序列出全部最终地点。"
     )
-    result = call_structured(
-        prompt,
-        _LLMFreeFormResult,
-        images=images or None,
-        lane="llm",
-        max_attempts=max_attempts,
-    )
-    if trajectory_has_meta_leak(result.steps):
-        logger.info("stage2 meta leak detected; rewriting agent voice once")
-        result = _rewrite_agent_voice(
-            result,
-            images=images or None,
-            max_attempts=max_attempts,
-        )
-    traj = FreeFormTrajectory(
-        source_video=video_id,
-        steps=[
-            FreeFormStep(
-                event_type=(
-                    getattr(s, "event_type", None)
-                    or (
-                        "final"
-                        if getattr(s, "tool", None) == "final_answer"
-                        else "tool_call"
-                        if getattr(s, "tool", None)
-                        else "reasoning"
-                    )
-                ),
-                thought=s.thought,
-                tool=getattr(s, "tool", None),
-                params=dict(s.params or {}),
-                observation=s.observation,
-            )
-            for s in result.steps
-        ],
-        notes=result.notes,
-        working_scope=working_scope,
-    )
-
     dest = (
         Path(out_path)
         if out_path
         else (Path(settings.INTERMEDIATE_DIR) / video_id / "stage2_freeform_tao.json")
     )
     dest.parent.mkdir(parents=True, exist_ok=True)
+    limit = min(3, max(1, int(max_attempts if max_attempts is not None else settings.STAGE2_MAX_GENERATIONS)))
+    trace: dict[str, Any] = {
+        "policy": "bounded_observation_regeneration_v1", "source_video": video_id,
+        "generation_limit": limit, "generation_count": 0,
+        "generation_image_paths": images, "passes": [], "attempts": [],
+        "accepted": False, "continue_downstream": True,
+    }
+    warning = ""
+    traj: FreeFormTrajectory | None = None
+    selected_pass: dict[str, Any] | None = None
+    last_error: Exception | None = None
+    for generation in range(1, limit + 1):
+        trace["generation_count"] = generation
+        try:
+            raw = call_structured(prompt + warning, _LLMFreeFormResult,
+                                  images=images or None, lane="llm", max_attempts=1)
+            result = _LLMFreeFormResult.model_validate({
+                "steps": json.loads(_steps_blob(raw.steps)), "notes": raw.notes,
+            })
+            traj = FreeFormTrajectory(source_video=video_id,
+                steps=[FreeFormStep.model_validate(step.model_dump()) for step in result.steps],
+                notes=result.notes, working_scope=working_scope)
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            trace["attempts"].append({"generation": generation, "status": "generation_failed", "error_type": type(exc).__name__})
+            warning += "\n（上一轮结构化生成未成功，请严格返回完整事件轨迹及末步final_answer.location；不要把本提醒写入产物。）\n"
+            trace["stop_reason"] = "generation_failed_using_last_valid"
+            continue
+
+        # Save a valid candidate before review; neither review errors nor a third
+        # unresolved attempt may discard the usable Stage 2 artifact.
+        dest.write_text(traj.model_dump_json(indent=2), encoding="utf-8")
+        trace["attempts"].append({"generation": generation, "status": "generated", "trajectory": traj.model_dump(mode="json")})
+        style_warning = trajectory_has_meta_leak(traj.steps)
+        selected_pass = {"generation": generation, "items": [], "status": "not_run", "style_warning": style_warning}
+        trace["selected_generation"] = generation
+        failures = []
+        review_items = []
+        has_calls = any(step.event_type == "tool_call" for step in traj.steps)
+        if not has_calls:
+            selected_pass["status"] = "complete"
+        elif not settings.STAGE2_OBSERVATION_REVIEW:
+            selected_pass["status"] = "disabled"
+        elif not settings.ALLOW_REAL_API and observation_reviewer is None:
+            selected_pass["status"] = "api_not_allowed"
+        else:
+            try:
+                review = review_observations(traj, transcript=transcript, images=images,
+                    task=task, context_transcript=observation_context, reviewer=observation_reviewer)
+                review_items = review.items
+                selected_pass["items"] = [
+                    {**item.model_dump(), "call_id": f"step_{item.step_index}",
+                     "observation_sha256": observation_fingerprint(traj.steps[item.step_index - 1].observation)}
+                    for item in review.items
+                ]
+                selected_pass["status"] = "complete"
+                failures = [item for item in review.items if item.verdict == "fabricated"]
+            except Exception as exc:  # noqa: BLE001
+                selected_pass.update(status="audit_failed", error_type=type(exc).__name__)
+                logger.warning("stage2 observation review unavailable: %s", type(exc).__name__)
+        trace["passes"].append(selected_pass)
+        trace["accepted"] = selected_pass["status"] == "complete" and all(item.verdict == "supported" for item in review_items)
+        trace["stop_reason"] = (
+            "audit_failed" if selected_pass["status"] == "audit_failed" else
+            "passed" if trace["accepted"] and not style_warning else
+            "uncertain_or_unreviewed"
+        )
+        if selected_pass["status"] == "audit_failed":
+            break
+        if failures or style_warning:
+            trace["stop_reason"] = "generation_limit" if generation == limit else "retry_requested"
+            warning = retry_warning(failures, style_warning)
+            continue
+        break
+
+    if traj is None:
+        assert last_error is not None
+        raise last_error
+    trace["continued_with_issues"] = not trace["accepted"] or bool(selected_pass and selected_pass["style_warning"])
     dest.write_text(traj.model_dump_json(indent=2), encoding="utf-8")
+    dest.with_name("stage2_observation_audit.json").write_text(
+        json.dumps(trace, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     return traj
 
 

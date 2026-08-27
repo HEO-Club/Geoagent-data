@@ -25,6 +25,10 @@ from pipeline.schemas.tools import ToolParameterAudit
 from pipeline.schemas.trajectory import Trajectory
 from pipeline.schemas.transcript import TranscriptSegment
 from pipeline.stage4_confidence.judge import JudgeFn, call_confidence_judge
+from pipeline.stage4_confidence.review_cards import (
+    build_review_packet,
+    write_review_packet,
+)
 from pipeline.stage4_confidence.rules import (
     evaluate_observation_audit,
     evaluate_parameter_readiness,
@@ -513,6 +517,8 @@ def run_stage4(
     observation_audit: dict[str, Any] | None = None,
     observation_audit_path: str | Path | None = None,
     trajectory_consistency: dict[str, Any] | None = None,
+    review_context_transcript: list[TranscriptSegment] | None = None,
+    source_video_path: str | None = None,
     out_report_path: str | None = None,
     out_jsonl_path: str | None = None,
     judge: JudgeFn | None = None,
@@ -541,7 +547,7 @@ def run_stage4(
     if resolved_observation_audit is None:
         resolved_observation_audit = _load_optional_audit(observation_audit_path)
     observation_gates, observation_soft, observation_observed = (
-        evaluate_observation_audit(resolved_observation_audit)
+        evaluate_observation_audit(resolved_observation_audit, trajectory=trajectory)
     )
     programmatic_gates = [
         *programmatic_gates,
@@ -639,5 +645,21 @@ def run_stage4(
         else Path(settings.OUTPUT_DIR) / "shards" / f"{task.task_id}.jsonl"
     )
     rewrite_entry_quality_score(entry, report.quality_score, out_jsonl_path=shard)
+
+    # Human-review material is advisory only: no model call, no retry loop and
+    # no quality gate. A sidecar failure must not discard the completed sample.
+    try:
+        packet = build_review_packet(
+            report=report,
+            task=task,
+            trajectory=trajectory,
+            transcript=transcript,
+            parameter_audits=audits,
+            context_transcript=review_context_transcript,
+            source_video_path=source_video_path,
+        )
+        write_review_packet(packet, report_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("stage4 review sidecar failed for %s: %s", task.task_id, type(exc).__name__)
 
     return report
