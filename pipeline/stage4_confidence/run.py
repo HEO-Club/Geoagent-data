@@ -38,11 +38,16 @@ from pipeline.stage4_confidence.rules import (
 logger = logging.getLogger(__name__)
 
 SOFT_GATE_CAPS: dict[str, float] = {
-    "image_trajectory_mismatch": 0.75,
-    "task_needs_review": 0.80,
     "observation_needs_repair": 0.82,
     "parameter_inputs_invalid": 0.75,
 }
+# 选图质量只作标注/维度分，不进软审查或硬门槛（与 SPEC v3.4.11 一致）。
+SELECTION_QUALITY_GATE_CODES: frozenset[str] = frozenset(
+    {
+        "image_trajectory_mismatch",
+        "task_needs_review",
+    }
+)
 ACCEPT_SCORE = 0.90
 PROVISIONAL_SCORE = 0.78
 ACCEPT_COVERAGE = 0.85
@@ -307,6 +312,8 @@ def merge_confidence(
     resolved_soft_flags = list(soft_flags or [])
     blocking_gates: list[HardGateHit] = []
     for gate in all_gates:
+        if gate.code in SELECTION_QUALITY_GATE_CODES:
+            continue
         if gate.code in SOFT_GATE_CAPS:
             resolved_soft_flags.append(gate)
         else:
@@ -314,7 +321,11 @@ def merge_confidence(
     deduped_soft: list[HardGateHit] = []
     soft_seen: set[str] = set()
     for flag in resolved_soft_flags:
-        if not flag.code or flag.code in soft_seen:
+        if (
+            not flag.code
+            or flag.code in soft_seen
+            or flag.code in SELECTION_QUALITY_GATE_CODES
+        ):
             continue
         soft_seen.add(flag.code)
         deduped_soft.append(flag)
@@ -526,7 +537,9 @@ def run_stage4(
     """阶段4：多维置信度评分 → 报告落盘 + 回写 JSONL.quality_score。
 
     硬门槛只压分，不拦入库、不改轨迹。``tool_param_correctness`` 由参数审计程序化覆盖。
+    ``trajectory_consistency`` 保留兼容参数，选图质量不再进入软审查。
     """
+    _ = trajectory_consistency
     mapping = tool_mapping
     if mapping is None and tool_mapping_path is not None:
         mapping = _load_tool_mapping(Path(tool_mapping_path))
@@ -555,26 +568,6 @@ def run_stage4(
         *observation_gates,
     ]
     soft_flags = list(observation_soft)
-
-    task_status = getattr(task, "status", "")
-    task_status_value = str(getattr(task_status, "value", task_status)).lower()
-    if task_status_value == "needs_review":
-        soft_flags.append(
-            HardGateHit(
-                code="task_needs_review",
-                evidence=str(getattr(task, "status_reason", "") or "Stage 1.5 标记需复核"),
-            )
-        )
-    if trajectory_consistency and bool(trajectory_consistency.get("conflict")):
-        soft_flags.append(
-            HardGateHit(
-                code="image_trajectory_mismatch",
-                evidence=str(
-                    trajectory_consistency.get("reason")
-                    or "轨迹依赖图与实际选中图不一致"
-                ),
-            )
-        )
 
     draft: ConfidenceJudgeDraft | None = None
     judge_failed = False

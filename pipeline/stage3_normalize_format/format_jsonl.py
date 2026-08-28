@@ -344,9 +344,15 @@ def _tool_mapping_audit(
                 "normalized_event_type": step.event_type,
                 "canonical_tool": canonical,
                 "operation": operation,
+                "reclassified": bool(
+                    raw_tool
+                    and step.tool
+                    and str(raw_tool).strip().lower() != str(step.tool).strip().lower()
+                ),
             }
         )
 
+    reclassified_count = sum(1 for item in mappings if item.get("reclassified"))
     return {
         "total_events": len(freeform.steps),
         "reasoning_events": sum(
@@ -355,6 +361,7 @@ def _tool_mapping_audit(
         "tool_calls_before_stage3": tool_calls_before,
         "tool_calls_after_stage3": tool_calls_after,
         "pseudo_tools_demoted": demoted,
+        "tools_reclassified": reclassified_count,
         "unique_raw_tools": len(raw_tools),
         "unique_canonical_tools": len(canonicals),
         "canonical_compression_ratio": (

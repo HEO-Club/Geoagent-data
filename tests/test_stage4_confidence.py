@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from pipeline.config import clear_settings_cache
-from pipeline.schemas.audit import GeoTaskSpec, KeyframeAssessment, TargetKind
+from pipeline.schemas.audit import GeoTaskSpec, KeyframeAssessment, TargetKind, TaskStatus
 from pipeline.schemas.confidence import (
     ConfidenceJudgeDraft,
     HardGateHit,
@@ -28,6 +28,7 @@ from pipeline.stage4_confidence import (
     rewrite_entry_quality_score,
     run_stage4,
 )
+from pipeline.stage4_confidence.judge import JUDGE_HINT
 from pipeline.stage4_confidence.rules import (
     evaluate_observation_audit,
     evaluate_parameter_readiness,
@@ -277,6 +278,67 @@ def test_merge_confidence_appends_image_selection_note(
     assert "选图质量等级=needs_review" in report.notes
     assert "选中帧仍含讲解覆盖" in report.notes
     assert report.quality_score >= 0.8
+
+
+def test_selection_quality_not_soft_or_hard_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """选图 needs_review / 轨迹选图错配不得进入软审查或硬门槛。"""
+    monkeypatch.setenv("STAGE4_HARD_GATE_CAP", "0.3")
+    clear_settings_cache()
+
+    def fake_judge(**_k: Any) -> ConfidenceJudgeDraft:
+        return ConfidenceJudgeDraft(
+            evidence_grounding=0.95,
+            final_answer_support=0.95,
+            logical_consistency=0.95,
+            input_quality_alignment=0.72,
+            dimension_reasons={
+                "input_quality_alignment": "选中图带字幕水印，属包装帧"
+            },
+            hard_gates=[
+                HardGateHit(
+                    code="image_trajectory_mismatch",
+                    evidence="包装帧与轨迹所依原图不一致",
+                )
+            ],
+            notes="主链正确，选图有包装",
+        )
+
+    report = run_stage4(
+        task=_task(
+            status=TaskStatus.needs_review,
+            status_reason="选中帧仍含讲解覆盖、界面残留或质量低于阈值",
+            image_selection_note="选图质量等级=needs_review\n选中张数=1",
+        ),
+        transcript=[TranscriptSegment(start=0, end=1, text="旁白")],
+        freeform=_freeform(),
+        trajectory=_traj_ok(),
+        entry=_entry(),
+        trajectory_consistency={
+            "conflict": True,
+            "reason": "选中图是讲解包装帧",
+        },
+        out_report_path=str(tmp_path / "r.json"),
+        out_jsonl_path=str(tmp_path / "s.jsonl"),
+        judge=fake_judge,
+    )
+    soft_codes = {flag.code for flag in report.soft_flags}
+    hard_codes = {gate.code for gate in report.hard_gates}
+    assert "task_needs_review" not in soft_codes
+    assert "image_trajectory_mismatch" not in soft_codes
+    assert "image_trajectory_mismatch" not in hard_codes
+    assert "task_needs_review" not in report.applied_soft_caps
+    assert "image_trajectory_mismatch" not in report.applied_soft_caps
+    assert report.soft_flags == []
+    assert report.applied_soft_caps == {}
+    assert report.quality_score == pytest.approx(report.base_score)
+    assert "task_needs_review" not in report.notes
+    assert "image_trajectory_mismatch" not in report.notes
+    assert "选图质量等级=needs_review" in report.notes
+    assert "- image_trajectory_mismatch：" not in JUDGE_HINT
+    assert "禁止把 image_trajectory_mismatch" in JUDGE_HINT
+    assert "不得把选图质量记入 hard_gates" in JUDGE_HINT
 
 
 def test_review_priority_bands_after_strict_scale(

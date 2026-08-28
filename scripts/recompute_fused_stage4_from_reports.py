@@ -50,7 +50,7 @@ def _draft_from_report(report: ConfidenceReport) -> ConfidenceJudgeDraft:
         *[
             flag
             for flag in report.soft_flags
-            if flag.code not in {"task_needs_review", "parameter_inputs_invalid"}
+            if flag.code not in {"parameter_inputs_invalid"}
         ],
     ]
     return ConfidenceJudgeDraft(

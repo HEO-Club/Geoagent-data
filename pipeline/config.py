@@ -37,7 +37,7 @@ class Settings(BaseSettings):
 
     VLM_PROVIDER: str = "qwen"
     VLM_BASE_URL: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    VLM_MODEL: str = "qwen3.7-plus"
+    VLM_MODEL: str = "qwen3.8-flash"
 
     LLM_PROVIDER: str = "kimi"
     LLM_BASE_URL: str = "https://api.moonshot.cn/v1"
@@ -55,6 +55,7 @@ class Settings(BaseSettings):
     MAX_CONCURRENT_VIDEOS: int = 1
     STAGE2_BEST_OF_K: int = 1
     STAGE2_OBSERVATION_REVIEW: bool = True
+    STAGE2_ACTION_COVERAGE_REVIEW: bool = True
     STAGE2_MAX_GENERATIONS: int = 3
 
     # 阶段1.5 审核切分

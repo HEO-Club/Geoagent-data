@@ -304,6 +304,73 @@ def llm_semantic_match_batch(
     }
 
 
+RECLASSIFY_CONFIDENCE = 0.85
+
+
+def llm_reclassify_tool_calls(
+    steps: list[FreeFormStep], forest: ToolForest
+) -> list[MatchDecision]:
+    """按 Thought/Params/Observation 为已有 tool_call 重选目录内执行器。
+
+    失败开放：调用方在置信度不足或 canonical 不存在时保留原名。不得把步骤升格自 reasoning。
+    """
+    if not steps:
+        return []
+    indexed = [
+        {
+            "step_index": index,
+            "raw_tool": step.tool,
+            "thought": step.thought,
+            "params": step.params,
+            "observation": step.observation,
+        }
+        for index, step in enumerate(steps, start=1)
+    ]
+    prompt = (
+        "你在校正地理定位 Agent 轨迹中已有 tool_call 的执行器归属。\n"
+        "只允许 action=map 到现有目录中的执行器，或在当前工具名已正确时仍 action=map 并返回同一 canonical_name。\n"
+        "禁止 action=create；禁止把步骤降为 reasoning；禁止发明新工具名。\n"
+        "边界示例：网页关键词检索→web_search；打开并阅读网页→web_page_read；"
+        "调历史底图/遥感时相或在底图上查看水系→satellite_imagery_query 或 map_layer_query；"
+        "打开街景→streetview_query；在图上量宽/距→distance_bearing_calculator；"
+        "勿把后几类默认写成 web_search。\n"
+        "每个待审步骤必须恰好返回一个 decision：raw_tool 填原工具名，canonical_name 与 operation 必填，"
+        "confidence 为0到1；reason 简述依据。\n"
+        f"现有目录：{json.dumps(_catalog_payload(forest), ensure_ascii=False)}\n"
+        f"待重分类步骤：{json.dumps(indexed, ensure_ascii=False)}"
+    )
+    result = call_structured(prompt, _BatchMatchResult, lane="llm")
+    return list(result.decisions)
+
+
+def _apply_reclassification(step: FreeFormStep, decision: MatchDecision) -> bool:
+    """Rewrite step.tool/operation when reclassification is confident. Returns True if changed."""
+
+    if decision.action != "map" or decision.confidence < RECLASSIFY_CONFIDENCE:
+        return False
+    target = (decision.canonical_name or "").strip()
+    if not target:
+        return False
+    current = (step.tool or "").strip()
+    operation = (
+        decision.operation.strip().lower().replace("-", "_").replace(" ", "_")
+        or "execute"
+    )
+    changed = current.lower() != target.lower()
+    step.tool = target
+    params = dict(step.params or {})
+    if "inputs" in params and isinstance(params.get("inputs"), dict):
+        params["operation"] = operation
+        if decision.operation_description and not str(
+            params.get("purpose") or ""
+        ).strip():
+            params["purpose"] = decision.operation_description
+    else:
+        params["operation"] = operation
+    step.params = params
+    return changed
+
+
 def _legacy_decision(
     matcher: MatcherFn,
     raw: str,
@@ -460,6 +527,103 @@ def ensure_tool_trees(
                 ),
                 initial_operation=operation,
             )
+
+        # Second pass: reclassify surviving non-terminal tool_calls by semantics.
+        # Never invent calls from reasoning; failure-open keeps the original name.
+        reclassify_steps = [
+            step
+            for step in freeform.steps
+            if step.event_type == "tool_call"
+            and step.tool
+            and step.tool.strip().lower() not in RESERVED_TERMINAL_TOOLS
+        ]
+        if reclassify_steps and matcher is None:
+            try:
+                reclass_decisions = llm_reclassify_tool_calls(
+                    reclassify_steps, forest
+                )
+            except Exception:  # noqa: BLE001 — fail open
+                reclass_decisions = []
+            by_raw: dict[str, MatchDecision] = {}
+            for decision in reclass_decisions:
+                key = decision.raw_tool.strip().lower()
+                if key and key not in by_raw:
+                    by_raw[key] = decision
+            for step in reclassify_steps:
+                raw = (step.tool or "").strip()
+                decision = by_raw.get(raw.lower())
+                if decision is None:
+                    continue
+                target = (decision.canonical_name or "").strip()
+                tree = find_tree_for_name(forest, target) if target else None
+                if tree is None:
+                    continue
+                operation = (
+                    decision.operation.strip()
+                    .lower()
+                    .replace("-", "_")
+                    .replace(" ", "_")
+                    or "execute"
+                )
+                mapped_name = tree.canonical.name
+                forest = add_operation(
+                    forest,
+                    mapped_name,
+                    operation,
+                    decision.operation_description or "语义重分类后的 operation",
+                )
+                if raw.lower() != mapped_name.lower():
+                    forest = add_variant(
+                        forest, mapped_name, raw, operation=operation
+                    )
+                _apply_reclassification(step, decision)
+        elif reclassify_steps and matcher is not None:
+            for step in reclassify_steps:
+                raw = (step.tool or "").strip()
+                result = matcher(raw, forest)
+                if isinstance(result, MatchDecision):
+                    decision = result
+                elif isinstance(result, str) and result.strip():
+                    # String matcher only answers unknown-name mapping; skip known tools.
+                    if find_tree_for_name(forest, raw) is not None:
+                        continue
+                    decision = MatchDecision(
+                        raw_tool=raw,
+                        action="map",
+                        canonical_name=result.strip(),
+                        operation="execute",
+                        confidence=1.0,
+                        reason="legacy matcher reclassify",
+                    )
+                else:
+                    continue
+                target = (decision.canonical_name or "").strip()
+                tree = find_tree_for_name(forest, target) if target else None
+                if (
+                    decision.action != "map"
+                    or decision.confidence < RECLASSIFY_CONFIDENCE
+                    or tree is None
+                ):
+                    continue
+                operation = (
+                    decision.operation.strip()
+                    .lower()
+                    .replace("-", "_")
+                    .replace(" ", "_")
+                    or "execute"
+                )
+                mapped_name = tree.canonical.name
+                forest = add_operation(
+                    forest,
+                    mapped_name,
+                    operation,
+                    decision.operation_description or "语义重分类后的 operation",
+                )
+                if raw.lower() != mapped_name.lower():
+                    forest = add_variant(
+                        forest, mapped_name, raw, operation=operation
+                    )
+                _apply_reclassification(step, decision)
 
         save_forest(forest, path)
         return forest
