@@ -14,7 +14,11 @@ from pipeline.stage3_normalize_format.format_jsonl import run_stage3
 def main() -> None:
     parser = argparse.ArgumentParser(description="阶段3：自由 TAO → 标准 JSONL")
     parser.add_argument("--freeform", required=True, help="stage2_freeform_tao.json")
-    parser.add_argument("--trees", default=None, help="tool_trees.json 路径")
+    parser.add_argument(
+        "--trees",
+        default=None,
+        help="可选：覆盖 TOOL_CATALOG_PATH 的目录 JSON（测试/调试用）",
+    )
     parser.add_argument("--out-jsonl", default=None)
     parser.add_argument("--image", default="", help="可选单图（兼容）")
     parser.add_argument(

@@ -386,9 +386,12 @@ def run_stage3(
     param_compiler: ParamCompilerFn | None = None,
     compile_params: bool | None = None,
 ) -> DatasetEntry:
-    """阶段3 一站式：树维护 → 参数归一/审计 → DatasetEntry。"""
+    """阶段3 一站式：目录加载（内存）→ 参数归一/审计 → DatasetEntry。"""
     settings = get_settings()
-    forest_path = Path(trees_path) if trees_path else Path(settings.TOOL_TREES_PATH)
+    # Default: official catalog. Explicit trees_path is a test/CLI catalog override.
+    forest_path = (
+        Path(trees_path) if trees_path else Path(settings.TOOL_CATALOG_PATH)
+    )
     raw_events = [
         {
             "event_type": step.event_type,

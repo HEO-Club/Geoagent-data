@@ -325,9 +325,7 @@ def test_reasoning_events_do_not_create_fake_tools_and_keep_thought_chain(
     assert "Action:" not in entry.messages[2].content
     assert "Action:" not in entry.messages[3].content
     assert '"tool": "osm_query"' in entry.messages[4].content
-    runtime = trees.load_forest(tmp_path / "runtime_tools.json")
-    assert trees.find_tree_for_name(runtime, "custom_overpass_water_query")
-    assert trees.resolve_operation(runtime, "custom_overpass_water_query") == "query"
+    # Mapping is in-memory for this task only; no runtime dump to reload.
 
 
 def test_high_confidence_pseudo_tool_is_demoted_to_reasoning(

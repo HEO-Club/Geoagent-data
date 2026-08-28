@@ -96,6 +96,7 @@ class Settings(BaseSettings):
     STAGE3_COMPILE_PARAMS: bool = True
 
     TOOL_CATALOG_PATH: str = "canonical_tool_catalog_v2.json"
+    # Deprecated: Stage 3 no longer persists or merges a cross-video runtime dump.
     TOOL_TREES_PATH: str = "tool_trees.json"
     INTERMEDIATE_DIR: str = "data/intermediate"
     SELECTED_DIR: str = "data/selected"

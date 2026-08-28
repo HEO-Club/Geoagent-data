@@ -44,4 +44,4 @@ uv run pytest tests -q
 - 中间件：`data/intermediate/{id}/stage{1,2,3}_*.json`
 - 分片：`data/output/shards/{id}.jsonl`
 - 合并：`data/output/geolocate_agent.jsonl`
-- Tool 树：`tool_trees.json`
+- Tool 目录：`canonical_tool_catalog_v2.json`

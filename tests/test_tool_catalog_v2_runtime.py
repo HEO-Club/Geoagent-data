@@ -4,12 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pipeline.config import clear_settings_cache
+from pipeline.config import clear_settings_cache, get_settings
 from pipeline.schemas.freeform import FreeFormStep, FreeFormTrajectory
 from pipeline.stage3_normalize_format.format_jsonl import remap_trajectory
 from pipeline.stage3_normalize_format.map_tools import ensure_tool_trees
 from pipeline.stage3_normalize_format.params import normalize_and_validate_tool_inputs
-from pipeline.stage3_normalize_format.trees import load_forest, save_forest
 from pipeline.tool_catalog_v2 import (
     build_tool_forest_v2,
     render_tool_contract_guidance,
@@ -86,12 +85,10 @@ def test_stage3_accepts_v2_nested_params_and_preserves_purpose() -> None:
     assert audits[0].operation == "count"
 
 
-def test_v2_catalog_removes_legacy_runtime_roots(
+def test_v2_catalog_loads_without_legacy_roots(
     tmp_path: Path, monkeypatch,
 ) -> None:
-    runtime_path = tmp_path / "tool_trees.json"
-    source = load_forest(Path("canonical_tool_catalog.json"))
-    save_forest(source, runtime_path)
+    """Official v2 catalog is the only source; no runtime dump merge."""
     monkeypatch.setenv("TOOL_CATALOG_PATH", "canonical_tool_catalog_v2.json")
     clear_settings_cache()
     try:
@@ -107,7 +104,7 @@ def test_v2_catalog_removes_legacy_runtime_roots(
                 )
             ],
         )
-        merged = ensure_tool_trees(freeform, runtime_path)
+        merged = ensure_tool_trees(freeform, Path(get_settings().TOOL_CATALOG_PATH))
     finally:
         clear_settings_cache()
     names = {tree.canonical.name for tree in merged.trees}
