@@ -131,6 +131,20 @@ class MatchDecision(BaseModel):
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     proposed_definition: ToolDefinition | None = None
     reason: str = ""
+    not_catalog_reason: str = ""
+    create_kind: Literal["new_executor", "new_operation"] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_new_operation_action(cls, data: Any) -> Any:
+        """允许 LLM 把 new_operation 写成 action；内部仍走 create + create_kind。"""
+        if not isinstance(data, dict) or data.get("action") != "new_operation":
+            return data
+        coerced = dict(data)
+        coerced["action"] = "create"
+        if not coerced.get("create_kind"):
+            coerced["create_kind"] = "new_operation"
+        return coerced
 
 
 class ParameterAuditIssue(BaseModel):

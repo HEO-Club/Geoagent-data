@@ -734,6 +734,8 @@ def test_judge_prompt_has_score_anchors_and_params() -> None:
     assert "incomplete_final_targets" in JUDGE_HINT
     assert "notes 必填" in JUDGE_HINT
     assert "程序化参数审计" in JUDGE_HINT
+    assert "临时工具名" in JUDGE_HINT
+    assert "不是 Canonical Tool 合同" in JUDGE_HINT
     prompt = build_judge_prompt(
         task=_task(),
         transcript=[TranscriptSegment(start=0, end=1, text="旁白")],

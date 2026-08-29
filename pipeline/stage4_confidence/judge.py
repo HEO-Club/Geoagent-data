@@ -69,6 +69,8 @@ JUDGE_HINT = (
     "- answer_leaking_image：选中图含答案泄露（评估记录未覆盖时）\n"
     "- incomplete_final_targets：题面要求多个独立最终地点，location 明显少答\n"
     "禁止把 image_trajectory_mismatch / task_needs_review / 选图包装等选图质量问题写入 hard_gates。\n"
+    "临时工具名（mapping 中 temporary_tools / 非官方合同名）不是 Canonical Tool 合同，"
+    "可在 notes 中提及，但不要因此记硬门槛或软审查码。\n"
     "低置信问题不要记硬门槛。\n"
     "输出要求：\n"
     "- notes 必填：概括样本质量与主要问题，禁止空字符串。\n"

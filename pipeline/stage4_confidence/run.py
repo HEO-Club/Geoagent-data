@@ -155,6 +155,7 @@ def compose_evaluation_notes(
     decision: str = "needs_review",
     soft_flags: list[HardGateHit] | None = None,
     applied_soft_caps: dict[str, float] | None = None,
+    temporary_tools: list[dict[str, Any]] | None = None,
 ) -> str:
     """组装每条样本必填的评价 notes（含弱维明细）。"""
     parts: list[str] = [
@@ -224,6 +225,23 @@ def compose_evaluation_notes(
     if selection_note:
         parts.append(f"选图评价: {selection_note}")
 
+    temp_bits: list[str] = []
+    for item in temporary_tools or []:
+        if not isinstance(item, dict):
+            continue
+        raw_name = str(item.get("raw_tool") or "").strip()
+        temp_name = str(item.get("temporary_name") or "").strip()
+        reason = str(item.get("reason") or "").strip()
+        if not raw_name and not temp_name:
+            continue
+        arrow = f"{raw_name}→{temp_name}" if temp_name else raw_name
+        if reason:
+            temp_bits.append(f"{arrow}（{reason}）")
+        else:
+            temp_bits.append(arrow)
+    if temp_bits:
+        parts.append("临时工具: " + "; ".join(temp_bits))
+
     if draft and draft.notes.strip():
         parts.append(f"裁判notes: {draft.notes.strip()}")
 
@@ -246,6 +264,7 @@ def merge_confidence(
     audit_coverage: float = 0.0,
     evidence_sources: list[str] | None = None,
     soft_flags: list[HardGateHit] | None = None,
+    temporary_tools: list[dict[str, Any]] | None = None,
 ) -> ConfidenceReport:
     """Fuse VLM scores, programmatic gates, coverage and repair routing."""
     settings = get_settings()
@@ -384,6 +403,7 @@ def merge_confidence(
         decision=decision,
         soft_flags=deduped_soft,
         applied_soft_caps=applied_soft_caps,
+        temporary_tools=temporary_tools,
     )
 
     return ConfidenceReport(
@@ -435,6 +455,18 @@ def _load_tool_mapping(path: Path | None) -> dict[str, Any] | None:
         logger.warning("无法读取 tool mapping %s: %s", path, exc)
         return None
     return data if isinstance(data, dict) else None
+
+
+def _temporary_tools_from_mapping(
+    mapping: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """从 stage3_tool_mapping.json 读取临时工具列表。"""
+    if not mapping:
+        return []
+    items = mapping.get("temporary_tools")
+    if not isinstance(items, list):
+        return []
+    return [item for item in items if isinstance(item, dict)]
 
 
 def _load_optional_audit(path: str | Path | None) -> dict[str, Any] | None:
@@ -615,6 +647,7 @@ def run_stage4(
         audit_coverage=audit_coverage,
         evidence_sources=evidence_sources,
         soft_flags=soft_flags,
+        temporary_tools=_temporary_tools_from_mapping(mapping),
     )
 
     settings = get_settings()

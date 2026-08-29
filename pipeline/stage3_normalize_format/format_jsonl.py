@@ -19,7 +19,10 @@ from pipeline.stage3_normalize_format.compile_params import (
     build_compile_request,
     compile_params_batch,
 )
-from pipeline.stage3_normalize_format.map_tools import ensure_tool_trees
+from pipeline.stage3_normalize_format.map_tools import (
+    ToolResolutionRecord,
+    ensure_tool_trees,
+)
 from pipeline.stage3_normalize_format.params import (
     initial_parameter_context,
     normalize_and_validate_tool_inputs,
@@ -308,7 +311,13 @@ def _tool_mapping_audit(
     raw_events: list[dict[str, Any]],
     freeform: FreeFormTrajectory,
     forest: ToolForest,
+    records: list[ToolResolutionRecord] | None = None,
 ) -> dict[str, Any]:
+    by_raw: dict[str, ToolResolutionRecord] = {}
+    for record in records or []:
+        key = record.raw_tool.strip().lower()
+        if key and key not in by_raw:
+            by_raw[key] = record
     mappings: list[dict[str, Any]] = []
     raw_tools: set[str] = set()
     canonicals: set[str] = set()
@@ -326,6 +335,14 @@ def _tool_mapping_audit(
 
         canonical = None
         operation = None
+        disposition = "mapped"
+        temporary = False
+        record = by_raw.get(str(raw_tool).strip().lower()) if raw_tool else None
+        if raw_type == "tool_call" and step.event_type == "reasoning":
+            disposition = "demoted"
+        elif record is not None:
+            disposition = record.disposition
+            temporary = record.disposition == "temporary"
         if step.event_type == "tool_call" and step.tool:
             tool_calls_after += 1
             canonical = resolve_canonical_name(forest, step.tool) or step.tool
@@ -349,10 +366,36 @@ def _tool_mapping_audit(
                     and step.tool
                     and str(raw_tool).strip().lower() != str(step.tool).strip().lower()
                 ),
+                "disposition": disposition,
+                "temporary": temporary,
             }
         )
 
     reclassified_count = sum(1 for item in mappings if item.get("reclassified"))
+    temporary_tools = [
+        {
+            "raw_tool": record.raw_tool,
+            "temporary_name": record.temporary_name or record.canonical_name,
+            "reason": record.reason,
+        }
+        for record in (records or [])
+        if record.disposition == "temporary"
+    ]
+    proposed_tools = [
+        {
+            "kind": record.create_kind or "new_executor",
+            "raw_tool": record.raw_tool,
+            "canonical_name": record.canonical_name,
+            "reason": record.reason,
+            "definition": (
+                record.proposed_definition.model_dump(mode="json")
+                if record.proposed_definition is not None
+                else None
+            ),
+        }
+        for record in (records or [])
+        if record.disposition == "created_proposal"
+    ]
     return {
         "total_events": len(freeform.steps),
         "reasoning_events": sum(
@@ -367,8 +410,30 @@ def _tool_mapping_audit(
         "canonical_compression_ratio": (
             round(len(canonicals) / len(raw_tools), 4) if raw_tools else 0.0
         ),
+        "temporary_tools": temporary_tools,
+        "proposed_tools": proposed_tools,
         "mappings": mappings,
     }
+
+
+def _tool_proposals_payload(records: list[ToolResolutionRecord]) -> dict[str, Any]:
+    """仅含过程序门的合格定义；不合格不进此文件。"""
+    tools: list[dict[str, Any]] = []
+    for record in records:
+        if record.disposition != "created_proposal":
+            continue
+        if record.proposed_definition is None:
+            continue
+        tools.append(
+            {
+                "kind": record.create_kind or "new_executor",
+                "raw_tool": record.raw_tool,
+                "canonical_name": record.canonical_name,
+                "reason": record.reason,
+                "definition": record.proposed_definition.model_dump(mode="json"),
+            }
+        )
+    return {"schema_version": "stage3_tool_proposals_v1", "tools": tools}
 
 
 def run_stage3(
@@ -400,7 +465,13 @@ def run_stage3(
         }
         for step in freeform.steps
     ]
-    forest = ensure_tool_trees(freeform, forest_path, matcher=matcher)
+    resolution_records: list[ToolResolutionRecord] = []
+    forest = ensure_tool_trees(
+        freeform,
+        forest_path,
+        matcher=matcher,
+        resolution_records=resolution_records,
+    )
     resolved_system_prompt = system_prompt or (
         DEFAULT_SYSTEM_PROMPT + "\n\n" + render_tool_contract_guidance(forest)
     )
@@ -435,7 +506,18 @@ def run_stage3(
     audit_path = traj_path.with_name("stage3_tool_mapping.json")
     audit_path.write_text(
         json.dumps(
-            _tool_mapping_audit(raw_events, freeform, forest),
+            _tool_mapping_audit(
+                raw_events, freeform, forest, records=resolution_records
+            ),
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    proposals_path = traj_path.with_name("stage3_tool_proposals.json")
+    proposals_path.write_text(
+        json.dumps(
+            _tool_proposals_payload(resolution_records),
             ensure_ascii=False,
             indent=2,
         ),
