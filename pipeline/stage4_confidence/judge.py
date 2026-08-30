@@ -69,11 +69,15 @@ JUDGE_HINT = (
     "- answer_leaking_image：选中图含答案泄露（评估记录未覆盖时）\n"
     "- incomplete_final_targets：题面要求多个独立最终地点，location 明显少答\n"
     "禁止把 image_trajectory_mismatch / task_needs_review / 选图包装等选图质量问题写入 hard_gates。\n"
-    "临时工具名（mapping 中 temporary_tools / 非官方合同名）不是 Canonical Tool 合同，"
+    "临时工具名与临时操作（mapping 中 temporary_tools / temporary_operations）不是 Canonical Tool 合同，"
     "可在 notes 中提及，但不要因此记硬门槛或软审查码。\n"
     "低置信问题不要记硬门槛。\n"
     "输出要求：\n"
-    "- notes 必填：概括样本质量与主要问题，禁止空字符串。\n"
+    "- notes 必填，写给人工审核员看：用口语化中文，禁止空字符串，"
+    "禁止 quality_score= / decision= 这类机读行。\n"
+    "- notes 至少写清：这条题在定位什么、主链对不对、"
+    "要核对的具体步骤号或字幕原话或选中图现象、选图是不是干净原图。\n"
+    "- 禁止空套话：不能只写「样本质量极高 / 整体不错」却不给可核对事实。\n"
     "- 任一维度得分 < 0.80 时，dimension_reasons 必须写可核对证据"
     "（引用字幕/轨迹/选中图/参数审计中的具体事实），禁止只写「较差」。"
 )
@@ -217,7 +221,8 @@ def build_judge_prompt(
         "参数审计摘要:\n"
         f"{_format_parameter_audit_brief(parameter_audits, parameter_summary)}\n\n"
         f"已附上 {len(trajectory.image_paths)} 张选中图。"
-        "请输出各维度分数、dimension_reasons（弱维必详述）、hard_gates、非空 notes。"
+        "请输出各维度分数、dimension_reasons（弱维必详述）、hard_gates、"
+        "以及写给审核员的口语化非空 notes（含可核对事实，不要机读行）。"
     )
 
 

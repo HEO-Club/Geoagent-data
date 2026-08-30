@@ -52,6 +52,8 @@ def _report() -> ConfidenceReport:
 def test_unselected_leaking_frame_is_not_reported_as_input_leak(tmp_path: Path) -> None:
     candidate = KeyframeAssessment(timestamp=94, image_path=str(tmp_path / "candidate.jpg"), kind="teaching_ui", answer_leakage=True, selected=False, reason="候选带答案")
     packet = build_review_packet(report=_report(), task=_task(frame_assessments=[candidate]), trajectory=_trajectory(), transcript=[])
+    assert packet["evaluation_notes"] == _report().notes
+    assert "## 评价说明" in render_review_markdown(packet)
     assert not packet["selected_frames"]
     assert packet["unselected_candidates"][0]["timestamp"] == 94
     codes = [issue["code"] for issue in packet["issues"]]

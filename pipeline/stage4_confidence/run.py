@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -139,6 +140,226 @@ def _enrich_weak_dimension_reasons(
     return enriched
 
 
+_DECISION_HELP: dict[str, tuple[str, str]] = {
+    "accept": ("建议通过", "可以入库"),
+    "provisional_pass": ("暂可入库", "建议抽查后再当高质量样本用"),
+    "parameter_repair": ("参数待修", "样本仍保留，工具参数需要补"),
+    "needs_review": ("需要人工看一眼", "有软审查项、覆盖率不够，或分数未到通过线"),
+    "reject": ("质量建议不通过", "文件仍保留，不删除轨迹"),
+}
+
+_PRIORITY_HELP: dict[str, str] = {
+    "high": "优先看",
+    "medium": "抽查",
+    "low": "低优先",
+}
+
+_DIMENSION_HELP: dict[str, str] = {
+    "evidence_grounding": "证据是否对得上",
+    "final_answer_support": "最终地点是否推得出来",
+    "tool_param_correctness": "工具参数能不能执行",
+    "logical_consistency": "推理有没有跳步",
+    "input_quality_alignment": "选图和输入质量",
+    "sft_format_completeness": "训练格式",
+}
+
+_GATE_HELP: dict[str, str] = {
+    "fabricated_observation": "伪造回执",
+    "tool_params_unexecutable": "工具参数无法执行或和 purpose 矛盾",
+    "hallucinated_precision": "无源高精度数字",
+    "answer_leaking_image": "选中图含答案泄露",
+    "answer_leakage_selected": "选中帧被标了答案泄露",
+    "incomplete_final_targets": "最终地点少答了独立目标",
+    "empty_transcript": "字幕切片是空的",
+    "missing_final": "没有最终答案步",
+    "last_not_final": "最后一步不是 final",
+    "final_has_observation": "final 步不该有 Observation",
+    "final_bad_tool": "final 步工具名不对",
+    "empty_location": "最终地点是空的",
+    "reasoning_has_action": "reasoning 步不该带工具动作",
+    "observation_review_unavailable": "Observation 审核没做完",
+    "observation_audit_stale": "Observation 和审核版本对不上",
+    "observation_needs_repair": "Observation 需要人工修",
+    "parameter_inputs_invalid": "参数合同过不去",
+}
+
+_READINESS_HELP: dict[str, str] = {
+    "ready": "齐，可以直接执行",
+    "context_resolvable": "缺的能从当前图或上一步结果补",
+    "repairable": "能修，但现在不完整",
+    "invalid": "合同过不去",
+}
+
+_SELECTION_FRAME_RE = re.compile(
+    r"-\s*\[(?P<idx>\d+)\]\s*"
+    r"t=(?P<t>[-+]?\d+(?:\.\d+)?)s?\s+"
+    r"quality=(?P<quality>[-+]?\d+(?:\.\d+)?)\s+"
+    r"overlay=(?P<overlay>\w+)\s+"
+    r"clean=(?P<clean>\w+)\s+"
+    r"support=(?P<support>[-+]?\d+(?:\.\d+)?)\s+"
+    r"reason=(?P<reason>.*)$"
+)
+
+
+def _truthy_token(value: str) -> bool:
+    return value.strip().casefold() in {"1", "true", "yes", "y"}
+
+
+def _seconds_clock(seconds: float) -> str:
+    total = max(0.0, float(seconds))
+    minutes, rest = divmod(int(round(total * 1000)), 60000)
+    secs, millis = divmod(rest, 1000)
+    return f"{minutes:02d}:{secs:02d}.{millis:03d}"
+
+
+def _describe_decision(decision: str) -> tuple[str, str]:
+    return _DECISION_HELP.get(decision, (decision, "对照 JSON 里的 decision"))
+
+
+def _describe_priority(priority: ReviewPriority) -> str:
+    return _PRIORITY_HELP.get(priority, str(priority))
+
+
+def _describe_gate(item: HardGateHit) -> str:
+    meaning = _GATE_HELP.get(item.code, "见码名")
+    evidence = (item.evidence or "").strip()
+    if evidence:
+        return f"{meaning}（{item.code}）：{evidence}"
+    return f"{meaning}（{item.code}）"
+
+
+def _describe_readiness(code: str | None) -> str:
+    if not code:
+        return ""
+    return _READINESS_HELP.get(code, code)
+
+
+def _programmatic_overview(
+    *,
+    hard_gates: list[HardGateHit],
+    weak_dims: list[DimensionScore],
+    image_selection_note: str,
+    judge_call_failed: bool,
+) -> str:
+    if judge_call_failed:
+        return "语义裁判没跑成，下面分数里的语义维是中性分，不要当成已经证实的低质量。"
+    if hard_gates:
+        return "有硬门槛，先看下面点名的问题。"
+    if weak_dims:
+        return "主链能看，但有低于阈值的维度，对照下面明细核对。"
+    if "needs_review" in image_selection_note:
+        return "主链未见明显硬伤；选图标了待复核，对照选图段看。"
+    return "主链未见明显硬伤。"
+
+
+def _format_selection_note(raw: str) -> str:
+    """把 Stage 1.5 程序化选图串转成口语句；解析失败则原样附上。"""
+    text = raw.strip()
+    if not text:
+        return ""
+    grade = ""
+    count: str | None = None
+    reason = ""
+    frames: list[str] = []
+    recognized = False
+    leftover: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("选图质量等级="):
+            grade = stripped.split("=", 1)[1].strip()
+            recognized = True
+            continue
+        if stripped.startswith("选中张数="):
+            count = stripped.split("=", 1)[1].strip()
+            recognized = True
+            continue
+        if stripped.startswith("选图原因:") or stripped.startswith("选图原因："):
+            reason = stripped.split(":", 1)[1].strip()
+            recognized = True
+            continue
+        if stripped in {"选中帧: 无", "选中帧：无", "选中帧明细:"}:
+            recognized = True
+            continue
+        match = _SELECTION_FRAME_RE.match(stripped)
+        if match:
+            recognized = True
+            overlay = "有讲解覆盖" if _truthy_token(match.group("overlay")) else "没有讲解覆盖"
+            clean = (
+                "是干净原图"
+                if _truthy_token(match.group("clean"))
+                else "不是干净原图"
+            )
+            frame_reason = match.group("reason").strip() or "（无逐帧理由）"
+            frames.append(
+                f"- 第 {int(match.group('idx'))} 张，约 {_seconds_clock(float(match.group('t')))}，"
+                f"质量 {float(match.group('quality')):.2f}，{overlay}，{clean}，"
+                f"支撑分 {float(match.group('support')):.2f}。理由：{frame_reason}"
+            )
+            continue
+        leftover.append(stripped)
+
+    if not recognized:
+        return "选图：" + text
+
+    bits = ["选图："]
+    if grade:
+        bits[0] += f"质量等级 {grade}"
+    if count is not None:
+        joiner = "，" if grade else ""
+        bits[0] += f"{joiner}选中 {count} 张"
+    if reason:
+        bits[0] += f"。原因：{reason}"
+    elif bits[0] == "选图：":
+        bits[0] += "见下方明细"
+    if not frames and count == "0":
+        frames.append("- 没有选中帧。")
+    parts = [bits[0]]
+    parts.extend(frames)
+    if leftover:
+        parts.append("原始选图记录：" + "；".join(leftover))
+    return "\n".join(parts)
+
+
+def _collect_temporary_labels(
+    temporary_tools: list[dict[str, Any]] | None,
+) -> tuple[list[str], list[str]]:
+    tool_bits: list[str] = []
+    operation_bits: list[str] = []
+    for item in temporary_tools or []:
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("kind") or "new_executor").strip() or "new_executor"
+        reason = str(item.get("reason") or "").strip()
+        if kind == "new_operation":
+            parent = str(item.get("canonical_name") or "").strip()
+            op_name = str(
+                item.get("temporary_operation") or item.get("temporary_name") or ""
+            ).strip()
+            label = f"{parent}.{op_name}" if parent and op_name else (parent or op_name)
+            if not label:
+                continue
+            if reason:
+                operation_bits.append(f"{label}。原因：{reason}")
+            else:
+                operation_bits.append(label)
+            continue
+        raw_name = str(item.get("raw_tool") or "").strip()
+        temp_name = str(item.get("temporary_name") or "").strip()
+        if not raw_name and not temp_name:
+            continue
+        if raw_name and temp_name:
+            arrow = f"{raw_name} → {temp_name}"
+        else:
+            arrow = temp_name or raw_name
+        if reason:
+            tool_bits.append(f"{arrow}。原因：{reason}")
+        else:
+            tool_bits.append(arrow)
+    return tool_bits, operation_bits
+
+
 def compose_evaluation_notes(
     *,
     quality_score: float,
@@ -157,93 +378,114 @@ def compose_evaluation_notes(
     applied_soft_caps: dict[str, float] | None = None,
     temporary_tools: list[dict[str, Any]] | None = None,
 ) -> str:
-    """组装每条样本必填的评价 notes（含弱维明细）。"""
+    """组装给人看的评价 notes（中文核对清单，弱维必有明细）。"""
+    selection_note = (image_selection_note or "").strip()
+    weak_dims = [item for item in dimensions if item.score < weak_below]
+    draft_note = draft.notes.strip() if draft and draft.notes.strip() else ""
+
+    decision_label, decision_hint = _describe_decision(decision)
     parts: list[str] = [
         (
-            f"quality_score={quality_score:.3f} base_score={base_score:.3f} "
-            f"coverage={audit_coverage:.3f} decision={decision} "
-            f"priority={review_priority}"
+            f"先看结论：{decision_label}（{decision}）。"
+            f"综合分 {quality_score:.2f}（未压上限前 {base_score:.2f}），"
+            f"覆盖率 {audit_coverage:.2f}，复核优先级{_describe_priority(review_priority)}。"
+            f"{decision_hint}。"
         )
     ]
+    parts.append("")
+    parts.append(draft_note or _programmatic_overview(
+        hard_gates=hard_gates,
+        weak_dims=weak_dims,
+        image_selection_note=selection_note,
+        judge_call_failed=judge_call_failed,
+    ))
+
     if judge_call_failed:
-        parts.append("judge_call_failed")
+        parts.extend(
+            [
+                "",
+                "语义裁判没跑成（judge_call_failed）。"
+                "分数里的语义维是中性分，不要当成已经证实的低质量。",
+            ]
+        )
+
+    parts.append("")
     if hard_gates:
-        gate_bits = [
-            f"{g.code}({g.evidence})" if g.evidence else g.code for g in hard_gates
-        ]
-        parts.append("硬门槛: " + "; ".join(gate_bits))
+        parts.append("硬门槛：" + "；".join(_describe_gate(item) for item in hard_gates))
     else:
-        parts.append("硬门槛: 无")
+        parts.append(
+            "硬门槛：没有触发。没有发现伪造回执、无源高精度数字、答案图泄露这类硬伤。"
+        )
     if soft_flags:
         parts.append(
-            "软审查项: "
-            + "; ".join(
-                f"{item.code}({item.evidence})" if item.evidence else item.code
-                for item in soft_flags
-            )
+            "软审查：" + "；".join(_describe_gate(item) for item in soft_flags)
         )
     if applied_soft_caps:
-        parts.append(
-            "软上限: "
-            + "; ".join(f"{key}<={value:.2f}" for key, value in applied_soft_caps.items())
-        )
+        cap_bits = [
+            f"{_GATE_HELP.get(code, code)}（{code}）≤{value:.2f}"
+            for code, value in applied_soft_caps.items()
+        ]
+        parts.append("软上限把分数压到了：" + "；".join(cap_bits))
 
     if parameter_summary is not None:
+        parts.append("")
         if parameter_summary.audit_missing:
-            parts.append("参数质检: audit 缺失或损坏，参数分记中性")
+            parts.append("参数：审计文件缺失或损坏，参数分记中性，不要当低质量证据。")
         else:
+            worst = parameter_summary.worst
+            worst_text = (
+                f"最差一次是{_describe_readiness(worst)}（{worst}）"
+                if worst
+                else "没有最差档记录"
+            )
             parts.append(
-                "参数质检: "
-                f"total={parameter_summary.total_calls} "
-                f"ready={parameter_summary.ready} "
-                f"context_resolvable={parameter_summary.context_resolvable} "
-                f"repairable={parameter_summary.repairable} "
-                f"invalid={parameter_summary.invalid}"
-                + (
-                    f" worst={parameter_summary.worst}"
-                    if parameter_summary.worst
-                    else ""
-                )
+                f"参数：共 {parameter_summary.total_calls} 次工具调用，"
+                f"{parameter_summary.ready} 次齐（ready），"
+                f"{parameter_summary.context_resolvable} 次能从上下文补"
+                f"（context_resolvable），"
+                f"{parameter_summary.repairable} 次能修（repairable），"
+                f"{parameter_summary.invalid} 次合同过不去（invalid）。"
+                f"{worst_text}。"
             )
             for line in parameter_summary.detail_lines[:8]:
-                parts.append(f"参数问题: {line}")
-            if len(parameter_summary.detail_lines) > 8:
-                parts.append(
-                    f"参数问题: …另有 {len(parameter_summary.detail_lines) - 8} 次"
-                )
+                parts.append(f"- {line}")
+            extra = len(parameter_summary.detail_lines) - 8
+            if extra > 0:
+                parts.append(f"- …另有 {extra} 条参数问题，对照 parameter_readiness")
 
-    weak_dims = [d for d in dimensions if d.score < weak_below]
-    if weak_dims:
-        parts.append("弱维度明细:")
-        for d in weak_dims:
-            reason = (d.reason or "").strip() or "（无明细）"
-            parts.append(f"- {d.name}={d.score:.2f}: {reason}")
+    parts.append("")
+    parts.append(f"各维度（低于 {weak_below:.2f} 的要重点看）：")
+    if dimensions:
+        for item in dimensions:
+            label = _DIMENSION_HELP.get(item.name, item.name)
+            reason = (item.reason or "").strip()
+            if not reason:
+                if item.score < weak_below:
+                    reason = "（没有写出可核对细节，请对照 dimensions）"
+                else:
+                    reason = "未见需要单独说明的问题"
+            parts.append(
+                f"- {label}（{item.name}）{item.score:.2f}：{reason}"
+            )
     else:
-        parts.append("弱维度: 无")
+        parts.append("- （没有维度分，请对照 JSON）")
 
-    selection_note = (image_selection_note or "").strip()
     if selection_note:
-        parts.append(f"选图评价: {selection_note}")
+        parts.append("")
+        parts.append(_format_selection_note(selection_note))
 
-    temp_bits: list[str] = []
-    for item in temporary_tools or []:
-        if not isinstance(item, dict):
-            continue
-        raw_name = str(item.get("raw_tool") or "").strip()
-        temp_name = str(item.get("temporary_name") or "").strip()
-        reason = str(item.get("reason") or "").strip()
-        if not raw_name and not temp_name:
-            continue
-        arrow = f"{raw_name}→{temp_name}" if temp_name else raw_name
-        if reason:
-            temp_bits.append(f"{arrow}（{reason}）")
-        else:
-            temp_bits.append(arrow)
-    if temp_bits:
-        parts.append("临时工具: " + "; ".join(temp_bits))
+    tool_bits, operation_bits = _collect_temporary_labels(temporary_tools)
+    if tool_bits or operation_bits:
+        parts.append("")
+        parts.append("下面只是汇报，不加软上限，也不单独把 decision 压成 needs_review。")
+    if tool_bits:
+        parts.append("临时工具：" + "；".join(tool_bits))
+    if operation_bits:
+        parts.append("临时操作：" + "；".join(operation_bits))
 
-    if draft and draft.notes.strip():
-        parts.append(f"裁判notes: {draft.notes.strip()}")
+    if draft_note:
+        parts.append("")
+        parts.append("裁判补充：" + draft_note)
 
     text = "\n".join(parts).strip()
     return text or "评价说明已生成（无额外瑕疵）"
@@ -460,13 +702,25 @@ def _load_tool_mapping(path: Path | None) -> dict[str, Any] | None:
 def _temporary_tools_from_mapping(
     mapping: dict[str, Any] | None,
 ) -> list[dict[str, Any]]:
-    """从 stage3_tool_mapping.json 读取临时工具列表。"""
+    """从 mapping 读取临时 tool 与临时 operation，供 notes 按 kind 分行。"""
     if not mapping:
         return []
-    items = mapping.get("temporary_tools")
-    if not isinstance(items, list):
-        return []
-    return [item for item in items if isinstance(item, dict)]
+    merged: list[dict[str, Any]] = []
+    tools = mapping.get("temporary_tools")
+    if isinstance(tools, list):
+        for item in tools:
+            if isinstance(item, dict):
+                payload = dict(item)
+                payload.setdefault("kind", "new_executor")
+                merged.append(payload)
+    operations = mapping.get("temporary_operations")
+    if isinstance(operations, list):
+        for item in operations:
+            if isinstance(item, dict):
+                payload = dict(item)
+                payload["kind"] = "new_operation"
+                merged.append(payload)
+    return merged
 
 
 def _load_optional_audit(path: str | Path | None) -> dict[str, Any] | None:

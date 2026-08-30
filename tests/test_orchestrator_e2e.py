@@ -296,7 +296,8 @@ def test_run_one_video_needs_review_continues_downstream(
     assert (task_dir / "stage3_trajectory.json").is_file()
     assert (task_dir / "stage4_confidence.json").is_file()
     conf = json.loads((task_dir / "stage4_confidence.json").read_text(encoding="utf-8"))
-    assert "选图质量等级=needs_review" in conf["notes"]
+    assert "needs_review" in conf["notes"]
+    assert "选图" in conf["notes"]
     shard = tmp_path / "output" / "shards" / "review__t01.jsonl"
     assert shard.is_file()
 

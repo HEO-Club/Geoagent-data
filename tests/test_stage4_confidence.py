@@ -12,7 +12,9 @@ from pipeline.config import clear_settings_cache
 from pipeline.schemas.audit import GeoTaskSpec, KeyframeAssessment, TargetKind, TaskStatus
 from pipeline.schemas.confidence import (
     ConfidenceJudgeDraft,
+    DimensionScore,
     HardGateHit,
+    ParameterReadinessSummary,
 )
 from pipeline.schemas.dataset import ChatMessage, DatasetEntry
 from pipeline.schemas.freeform import FreeFormStep, FreeFormTrajectory
@@ -24,6 +26,7 @@ from pipeline.schemas.tools import (
 from pipeline.schemas.trajectory import Action, Trajectory, TrajectoryStep
 from pipeline.schemas.transcript import TranscriptSegment
 from pipeline.stage4_confidence import (
+    compose_evaluation_notes,
     merge_confidence,
     rewrite_entry_quality_score,
     run_stage4,
@@ -274,8 +277,8 @@ def test_merge_confidence_appends_image_selection_note(
             "选图原因: 选中帧仍含讲解覆盖"
         ),
     )
-    assert "选图评价:" in report.notes
-    assert "选图质量等级=needs_review" in report.notes
+    assert "选图" in report.notes
+    assert "needs_review" in report.notes
     assert "选中帧仍含讲解覆盖" in report.notes
     assert report.quality_score >= 0.8
 
@@ -335,7 +338,8 @@ def test_selection_quality_not_soft_or_hard_gate(
     assert report.quality_score == pytest.approx(report.base_score)
     assert "task_needs_review" not in report.notes
     assert "image_trajectory_mismatch" not in report.notes
-    assert "选图质量等级=needs_review" in report.notes
+    assert "needs_review" in report.notes
+    assert "选图" in report.notes
     assert "- image_trajectory_mismatch：" not in JUDGE_HINT
     assert "禁止把 image_trajectory_mismatch" in JUDGE_HINT
     assert "不得把选图质量记入 hard_gates" in JUDGE_HINT
@@ -580,7 +584,8 @@ def test_repairable_invalid_param_uses_soft_cap(
     assert dim_map["tool_param_correctness"].score == pytest.approx(0.15)
     assert "missing_field" in dim_map["tool_param_correctness"].reason
     assert report.notes.strip()
-    assert "参数质检" in report.notes
+    assert "参数" in report.notes
+    assert "合同过不去" in report.notes
     assert report.parameter_readiness is not None
     assert report.parameter_readiness.invalid == 1
 
@@ -733,6 +738,8 @@ def test_judge_prompt_has_score_anchors_and_params() -> None:
     assert "默认从 0.75 起评" in JUDGE_HINT
     assert "incomplete_final_targets" in JUDGE_HINT
     assert "notes 必填" in JUDGE_HINT
+    assert "口语化中文" in JUDGE_HINT
+    assert "禁止空套话" in JUDGE_HINT
     assert "程序化参数审计" in JUDGE_HINT
     assert "临时工具名" in JUDGE_HINT
     assert "不是 Canonical Tool 合同" in JUDGE_HINT
@@ -749,3 +756,156 @@ def test_judge_prompt_has_score_anchors_and_params() -> None:
     assert "inputs=" in prompt
     assert "参数审计摘要" in prompt
     assert "readiness=repairable" in prompt
+
+
+def _dim(name: str, score: float, reason: str = "") -> DimensionScore:
+    return DimensionScore(name=name, score=score, weight=0.1, reason=reason)
+
+
+def test_compose_evaluation_notes_high_score_checklist() -> None:
+    notes = compose_evaluation_notes(
+        quality_score=0.95,
+        base_score=0.95,
+        review_priority="low",
+        hard_gates=[],
+        dimensions=[
+            _dim("evidence_grounding", 0.95, "字幕逐步对得上"),
+            _dim("final_answer_support", 0.95, "地点由前面推出"),
+            _dim("tool_param_correctness", 1.0, "全部 ready"),
+            _dim("logical_consistency", 0.95),
+            _dim("input_quality_alignment", 0.9, "选中图是题面原图"),
+            _dim("sft_format_completeness", 1.0, "格式契约通过"),
+        ],
+        parameter_summary=ParameterReadinessSummary(
+            total_calls=6,
+            ready=6,
+            context_resolvable=0,
+            repairable=0,
+            invalid=0,
+            worst="ready",
+        ),
+        draft=ConfidenceJudgeDraft(
+            evidence_grounding=0.95,
+            final_answer_support=0.95,
+            logical_consistency=0.95,
+            input_quality_alignment=0.9,
+            notes="这条题在找老照片拍摄地，主链和字幕对得上。",
+        ),
+        judge_call_failed=False,
+        weak_below=0.80,
+        audit_coverage=1.0,
+        decision="accept",
+    )
+    assert "先看结论" in notes
+    assert "建议通过" in notes
+    assert "(accept)" in notes or "（accept）" in notes
+    assert "硬门槛：没有触发" in notes
+    assert "6 次工具调用" in notes
+    assert "齐（ready）" in notes
+    assert "各维度" in notes
+    assert "evidence_grounding" in notes
+    assert "裁判补充" in notes
+    assert "quality_score=" not in notes
+
+
+def test_compose_evaluation_notes_hard_gate_and_weak_dim() -> None:
+    notes = compose_evaluation_notes(
+        quality_score=0.30,
+        base_score=0.70,
+        review_priority="high",
+        hard_gates=[
+            HardGateHit(code="fabricated_observation", evidence="第3步坐标字幕没有")
+        ],
+        dimensions=[
+            _dim("evidence_grounding", 0.40, "第3步 Observation 对不上字幕"),
+            _dim("final_answer_support", 0.70, "地点还对"),
+            _dim("tool_param_correctness", 1.0),
+            _dim("logical_consistency", 0.70),
+            _dim("input_quality_alignment", 0.85),
+            _dim("sft_format_completeness", 1.0),
+        ],
+        parameter_summary=None,
+        draft=None,
+        judge_call_failed=False,
+        weak_below=0.80,
+        decision="reject",
+    )
+    assert "质量建议不通过" in notes
+    assert "伪造回执" in notes
+    assert "fabricated_observation" in notes
+    assert "第3步坐标字幕没有" in notes
+    assert "没有写出可核对细节" in notes
+    assert "evidence_grounding" in notes
+
+
+def test_compose_evaluation_notes_selection_and_temporary() -> None:
+    notes = compose_evaluation_notes(
+        quality_score=0.88,
+        base_score=0.88,
+        review_priority="medium",
+        hard_gates=[],
+        dimensions=[_dim("input_quality_alignment", 0.72, "包装帧")],
+        parameter_summary=None,
+        draft=ConfidenceJudgeDraft(
+            evidence_grounding=0.9,
+            final_answer_support=0.9,
+            logical_consistency=0.9,
+            input_quality_alignment=0.72,
+            notes="选中图带字幕条，但仍是同一张街景。",
+        ),
+        judge_call_failed=False,
+        weak_below=0.80,
+        image_selection_note=(
+            "选图质量等级=needs_review\n选中张数=1\n"
+            "选图原因: 选中帧仍含讲解覆盖\n选中帧明细:\n"
+            "- [1] t=135.000s quality=0.60 overlay=True clean=False "
+            "support=0.80 reason=底部有讲解字幕"
+        ),
+        decision="provisional_pass",
+        temporary_tools=[
+            {
+                "kind": "new_executor",
+                "raw_tool": "crop_and_look",
+                "temporary_name": "tmp_crop",
+                "reason": "不入 tool 库",
+            },
+            {
+                "kind": "new_operation",
+                "canonical_name": "osm_query",
+                "temporary_operation": "filter_local",
+                "reason": "目录没有该 operation",
+            },
+        ],
+    )
+    assert "选图" in notes
+    assert "needs_review" in notes
+    assert "选中帧仍含讲解覆盖" in notes
+    assert "有讲解覆盖" in notes
+    assert "不是干净原图" in notes
+    assert "底部有讲解字幕" in notes
+    assert "临时工具" in notes
+    assert "crop_and_look" in notes
+    assert "tmp_crop" in notes
+    assert "不入 tool 库" in notes
+    assert "临时操作" in notes
+    assert "osm_query.filter_local" in notes
+    assert "只是汇报" in notes
+
+
+def test_compose_evaluation_notes_judge_failed_keeps_token() -> None:
+    notes = compose_evaluation_notes(
+        quality_score=0.55,
+        base_score=0.55,
+        review_priority="high",
+        hard_gates=[],
+        dimensions=[_dim("evidence_grounding", 0.50)],
+        parameter_summary=ParameterReadinessSummary(audit_missing=True),
+        draft=None,
+        judge_call_failed=True,
+        weak_below=0.80,
+        decision="needs_review",
+    )
+    assert "judge_call_failed" in notes
+    assert "语义裁判没跑成" in notes
+    assert "缺失或损坏" in notes
+    assert "需要人工看一眼" in notes

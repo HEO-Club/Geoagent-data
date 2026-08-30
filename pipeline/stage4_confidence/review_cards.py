@@ -140,6 +140,7 @@ def build_review_packet(
         "quality_score": report.quality_score, "audit_coverage": report.audit_coverage,
         "review_priority": report.review_priority, "quality_recommendation": report.decision,
         "notice": "分数是审核启发式，不是正确率；reject 是质量建议，文件仍保留。Tool 调用为蒸馏记录，不代表已执行真实地理工具。",
+        "evaluation_notes": report.notes,
         "selected_frames": selected, "unselected_candidates": candidates,
         "proposed_show_source_windows": [_window(p.start, p.end) for p in task.process_intervals if p.role.value == "show_source"],
         "window_notice": "出示窗来自 Stage 1.5 模型，供定位复核，不保证其中必有正确原图。",
@@ -157,7 +158,8 @@ def render_review_markdown(packet: dict[str, Any]) -> str:
              f"题目范围：**{packet['task_window']['timecode']}**；分数 {packet['quality_score']:.4f}；coverage {packet['audit_coverage']:.4f}；建议 {packet['quality_recommendation']}。", ""]
     if packet.get("source_video_path"):
         lines.extend([f"原视频：{_file_link(packet['source_video_path'])}", ""])
-    lines.extend(["## 选图与候选窗", ""])
+    notes = str(packet.get("evaluation_notes") or "").strip() or "（无评价说明）"
+    lines.extend(["## 评价说明", "", notes, "", "## 选图与候选窗", ""])
     if not packet["selected_frames"]:
         lines.append("Stage 3/SFT 未记录选中图；不要把以下候选图误认为已经输入模型。")
     for frame in packet["selected_frames"]:

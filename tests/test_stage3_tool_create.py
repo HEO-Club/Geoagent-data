@@ -149,6 +149,7 @@ def test_unknown_tool_maps_to_catalog_without_temporary(
     assert crop["disposition"] == "mapped"
     assert crop["temporary"] is False
     assert mapping["temporary_tools"] == []
+    assert mapping.get("temporary_operations") == []
     proposals = json.loads(
         (tmp_path / "stage3_tool_proposals.json").read_text(encoding="utf-8")
     )
@@ -222,7 +223,8 @@ def test_create_without_schema_is_temporary_and_notes_report(
     assert crop["temporary"] is True
     assert mapping["temporary_tools"]
     assert mapping["temporary_tools"][0]["raw_tool"] == "crop_and_look"
-    assert "缺 input_schema" in mapping["temporary_tools"][0]["reason"]
+    assert mapping["temporary_tools"][0]["reason"] == map_tools.TEMP_NEW_EXECUTOR_REASON
+    assert mapping.get("temporary_operations") == []
     proposals = json.loads(
         (tmp_path / "stage3_tool_proposals.json").read_text(encoding="utf-8")
     )
@@ -253,9 +255,9 @@ def test_create_without_schema_is_temporary_and_notes_report(
     with_temp = merge_confidence(**high, temporary_tools=temp_tools)
     assert without.decision == with_temp.decision
     assert without.quality_score == pytest.approx(with_temp.quality_score)
-    assert "临时工具:" in with_temp.notes
-    assert "crop_and_look→" in with_temp.notes
-    assert "缺 input_schema" in with_temp.notes
+    assert "临时工具" in with_temp.notes
+    assert "crop_and_look" in with_temp.notes
+    assert "不入 tool 库" in with_temp.notes
     assert "临时工具" not in without.notes
 
     def fake_judge(**_k: Any) -> ConfidenceJudgeDraft:
@@ -278,12 +280,12 @@ def test_create_without_schema_is_temporary_and_notes_report(
         out_jsonl_path=str(tmp_path / "out.jsonl"),
         judge=fake_judge,
     )
-    assert "临时工具:" in report.notes
+    assert "临时工具" in report.notes
     assert report.soft_flags == []
     assert "temporary" not in report.applied_soft_caps
 
 
-def test_create_with_complete_schema_writes_proposal_not_official_catalog(
+def test_create_with_complete_schema_is_temporary_not_proposal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("STAGE3_COMPILE_PARAMS", "false")
@@ -322,21 +324,39 @@ def test_create_with_complete_schema_writes_proposal_not_official_catalog(
     crop = next(
         item for item in mapping["mappings"] if item.get("raw_tool") == "crop_and_look"
     )
-    assert crop["disposition"] == "created_proposal"
-    assert mapping["temporary_tools"] == []
+    assert crop["disposition"] == "temporary"
+    assert crop["temporary"] is True
+    assert mapping["temporary_tools"]
+    assert mapping["temporary_tools"][0]["raw_tool"] == "crop_and_look"
+    assert mapping["temporary_tools"][0]["reason"] == map_tools.TEMP_NEW_EXECUTOR_REASON
+    assert mapping.get("temporary_operations") == []
     proposals = json.loads(
         (tmp_path / "stage3_tool_proposals.json").read_text(encoding="utf-8")
     )
-    assert len(proposals["tools"]) == 1
-    assert proposals["tools"][0]["canonical_name"] == "lidar_tile_query"
-    assert proposals["tools"][0]["kind"] == "new_executor"
-    fields = proposals["tools"][0]["definition"]["operations"][0]["input_schema"][
-        "fields"
-    ]
-    assert fields[0]["acquisition_hint"]
+    assert proposals["tools"] == []
     assert OFFICIAL_CATALOG.read_bytes() == before
     official_forest = trees.load_forest(OFFICIAL_CATALOG)
     assert trees.find_tree_for_name(official_forest, "lidar_tile_query") is None
+    report = merge_confidence(
+        task_id="proposal_ok",
+        format_score=1.0,
+        format_reason="ok",
+        programmatic_gates=[],
+        draft=ConfidenceJudgeDraft(
+            evidence_grounding=0.95,
+            final_answer_support=0.95,
+            logical_consistency=0.95,
+            input_quality_alignment=0.95,
+            notes="主链正确",
+        ),
+        judge_call_failed=False,
+        param_score=1.0,
+        param_reason="全部 ready",
+        audit_coverage=1.0,
+        temporary_tools=mapping["temporary_tools"],
+    )
+    assert "临时工具" in report.notes
+    assert "crop_and_look" in report.notes
 
 
 def test_high_confidence_reasoning_still_demoted(
@@ -415,3 +435,209 @@ def test_reclassify_still_rejects_create(
     forest = map_tools.ensure_tool_trees(freeform, catalog_path, matcher=matcher)
     assert freeform.steps[0].tool == "web_search"
     assert trees.find_tree_for_name(forest, "lidar_tile_query") is None
+
+
+def _filter_freeform(source_video: str) -> FreeFormTrajectory:
+    return FreeFormTrajectory(
+        source_video=source_video,
+        steps=[
+            FreeFormStep(
+                event_type="tool_call",
+                thought="对已有 OSM 结果做本地过滤",
+                tool="extra_filter",
+                params={"source": "prev", "tag": "highway"},
+                observation={"kept": 3},
+            ),
+            FreeFormStep(
+                event_type="final",
+                thought="提交",
+                tool="final_answer",
+                params={"location": "某市"},
+                observation=None,
+            ),
+        ],
+    )
+
+
+def test_new_operation_missing_is_temporary_operation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("STAGE3_COMPILE_PARAMS", "false")
+    monkeypatch.setenv("TOOL_CATALOG_PATH", str(OFFICIAL_CATALOG))
+    clear_settings_cache()
+    catalog_path = _write_v2_catalog(tmp_path / "catalog.json")
+    before = OFFICIAL_CATALOG.read_bytes()
+
+    def matcher(name: str, _forest: object) -> MatchDecision | None:
+        if name == "extra_filter":
+            return MatchDecision(
+                raw_tool=name,
+                action="create",
+                create_kind="new_operation",
+                canonical_name="osm_query",
+                operation="filter_local",
+                confidence=0.96,
+                proposed_definition=ToolDefinition(
+                    name="osm_query",
+                    description="查询 OSM",
+                    executor="overpass",
+                    usage="查询要素",
+                    operations=[
+                        ToolOperation(
+                            name="filter_local",
+                            description="本地过滤",
+                            input_schema=ToolInputSchema(
+                                description="过滤",
+                                fields=[
+                                    InputFieldSpec(
+                                        name="source_result",
+                                        type="string",
+                                        requirement_level="execution",
+                                        description="前置查询结果",
+                                        acquisition_hint="引用上一轮 osm_query 返回",
+                                    )
+                                ],
+                            ),
+                        )
+                    ],
+                ),
+                reason="已有执行器缺过滤 operation",
+            )
+        return None
+
+    run_stage3(
+        _filter_freeform("temp_op_ok"),
+        trees_path=catalog_path,
+        out_trajectory_path=str(tmp_path / "stage3_trajectory.json"),
+        out_jsonl_path=str(tmp_path / "shard.jsonl"),
+        image_paths=["scene.jpg"],
+        matcher=matcher,
+        compile_params=False,
+    )
+    mapping = json.loads(
+        (tmp_path / "stage3_tool_mapping.json").read_text(encoding="utf-8")
+    )
+    extra = next(
+        item for item in mapping["mappings"] if item.get("raw_tool") == "extra_filter"
+    )
+    assert extra["disposition"] == "temporary"
+    assert extra["canonical_tool"] == "osm_query"
+    assert extra["operation"] == "filter_local"
+    assert mapping["temporary_tools"] == []
+    assert mapping["temporary_operations"]
+    assert mapping["temporary_operations"][0]["canonical_name"] == "osm_query"
+    assert mapping["temporary_operations"][0]["temporary_operation"] == "filter_local"
+    assert (
+        mapping["temporary_operations"][0]["reason"]
+        == map_tools.TEMP_NEW_OPERATION_REASON
+    )
+    proposals = json.loads(
+        (tmp_path / "stage3_tool_proposals.json").read_text(encoding="utf-8")
+    )
+    assert proposals["tools"] == []
+    assert OFFICIAL_CATALOG.read_bytes() == before
+    traj = json.loads(
+        (tmp_path / "stage3_trajectory.json").read_text(encoding="utf-8")
+    )
+    call = next(step for step in traj["steps"] if step.get("event_type") == "tool_call")
+    assert call["action"]["tool"] == "osm_query"
+    assert call["action"]["params"]["operation"] == "filter_local"
+    official = trees.load_forest(OFFICIAL_CATALOG)
+    osm = trees.find_tree_for_name(official, "osm_query")
+    assert osm is not None
+    assert "filter_local" not in {item.name for item in osm.canonical.operations}
+
+    def fake_judge(**_k: Any) -> ConfidenceJudgeDraft:
+        return ConfidenceJudgeDraft(
+            evidence_grounding=0.95,
+            final_answer_support=0.95,
+            logical_consistency=0.95,
+            input_quality_alignment=0.95,
+            notes="主链正确",
+        )
+
+    report = run_stage4(
+        task=_task(),
+        transcript=[TranscriptSegment(start=0, end=1, text="旁白")],
+        freeform=_freeform(),
+        trajectory=_traj_ok(),
+        entry=_entry(),
+        tool_mapping=mapping,
+        out_report_path=str(tmp_path / "stage4.json"),
+        out_jsonl_path=str(tmp_path / "out.jsonl"),
+        judge=fake_judge,
+    )
+    assert "临时操作" in report.notes
+    assert "osm_query.filter_local" in report.notes
+    assert "临时工具" not in report.notes
+    assert report.soft_flags == []
+    assert "temporary" not in report.applied_soft_caps
+
+
+def test_new_operation_existing_still_maps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("STAGE3_COMPILE_PARAMS", "false")
+    monkeypatch.setenv("TOOL_CATALOG_PATH", str(OFFICIAL_CATALOG))
+    clear_settings_cache()
+    catalog_path = _write_v2_catalog(tmp_path / "catalog.json")
+    before = OFFICIAL_CATALOG.read_bytes()
+
+    def matcher(name: str, _forest: object) -> MatchDecision | None:
+        if name == "extra_filter":
+            return MatchDecision(
+                raw_tool=name,
+                action="create",
+                create_kind="new_operation",
+                canonical_name="osm_query",
+                operation="query",
+                confidence=0.96,
+                reason="operation 已存在",
+            )
+        return None
+
+    run_stage3(
+        _filter_freeform("existing_op_ok"),
+        trees_path=catalog_path,
+        out_trajectory_path=str(tmp_path / "stage3_trajectory.json"),
+        out_jsonl_path=str(tmp_path / "shard.jsonl"),
+        image_paths=["scene.jpg"],
+        matcher=matcher,
+        compile_params=False,
+    )
+    mapping = json.loads(
+        (tmp_path / "stage3_tool_mapping.json").read_text(encoding="utf-8")
+    )
+    extra = next(
+        item for item in mapping["mappings"] if item.get("raw_tool") == "extra_filter"
+    )
+    assert extra["disposition"] == "mapped"
+    assert extra["canonical_tool"] == "osm_query"
+    assert extra["operation"] == "query"
+    assert mapping["temporary_tools"] == []
+    assert mapping.get("temporary_operations") == []
+    proposals = json.loads(
+        (tmp_path / "stage3_tool_proposals.json").read_text(encoding="utf-8")
+    )
+    assert proposals["tools"] == []
+    assert OFFICIAL_CATALOG.read_bytes() == before
+    report = merge_confidence(
+        task_id="existing_op_ok",
+        format_score=1.0,
+        format_reason="ok",
+        programmatic_gates=[],
+        draft=ConfidenceJudgeDraft(
+            evidence_grounding=0.95,
+            final_answer_support=0.95,
+            logical_consistency=0.95,
+            input_quality_alignment=0.95,
+            notes="主链正确",
+        ),
+        judge_call_failed=False,
+        param_score=1.0,
+        param_reason="全部 ready",
+        audit_coverage=1.0,
+        temporary_tools=[],
+    )
+    assert "临时工具" not in report.notes
+    assert "临时操作" not in report.notes

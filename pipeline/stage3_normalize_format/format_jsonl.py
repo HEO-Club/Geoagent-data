@@ -374,12 +374,26 @@ def _tool_mapping_audit(
     reclassified_count = sum(1 for item in mappings if item.get("reclassified"))
     temporary_tools = [
         {
+            "kind": "new_executor",
             "raw_tool": record.raw_tool,
             "temporary_name": record.temporary_name or record.canonical_name,
             "reason": record.reason,
         }
         for record in (records or [])
         if record.disposition == "temporary"
+        and record.create_kind != "new_operation"
+    ]
+    temporary_operations = [
+        {
+            "kind": "new_operation",
+            "raw_tool": record.raw_tool,
+            "canonical_name": record.canonical_name,
+            "temporary_operation": record.temporary_name,
+            "reason": record.reason,
+        }
+        for record in (records or [])
+        if record.disposition == "temporary"
+        and record.create_kind == "new_operation"
     ]
     proposed_tools = [
         {
@@ -411,13 +425,14 @@ def _tool_mapping_audit(
             round(len(canonicals) / len(raw_tools), 4) if raw_tools else 0.0
         ),
         "temporary_tools": temporary_tools,
+        "temporary_operations": temporary_operations,
         "proposed_tools": proposed_tools,
         "mappings": mappings,
     }
 
 
 def _tool_proposals_payload(records: list[ToolResolutionRecord]) -> dict[str, Any]:
-    """仅含过程序门的合格定义；不合格不进此文件。"""
+    """提案队列保留落盘格式；v3.4.14 起不再写入新 tool / 新 operation。"""
     tools: list[dict[str, Any]] = []
     for record in records:
         if record.disposition != "created_proposal":

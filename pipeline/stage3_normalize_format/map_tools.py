@@ -1,4 +1,4 @@
-"""自由 tool → 执行器级 canonical tool 归并 / 受控新建。"""
+"""自由 tool → 执行器级 canonical tool 归并 / 临时名（不入库）。"""
 
 from __future__ import annotations
 
@@ -37,6 +37,11 @@ MatcherFn = Callable[[str, ToolForest], str | None | MatchDecision]
 RESERVED_TERMINAL_TOOLS = {"final_answer", "submit_answer", "done"}
 REASONING_DEMOTION_CONFIDENCE = 0.85
 CREATE_CONFIDENCE = 0.85
+TEMP_NEW_EXECUTOR_REASON = "判定需要新建执行器，不入 tool 库，使用临时名"
+TEMP_NEW_OPERATION_REASON = "判定需要新 operation，不入 tool 库，使用临时操作"
+TEMP_NEW_OPERATION_MISSING_PARENT_REASON = (
+    "判定需要新 operation，但父执行器不在目录，不入 tool 库，使用临时名"
+)
 _SNAKE_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
@@ -216,6 +221,20 @@ def _strict_definition(
 
 def _normalize_operation_name(operation: str) -> str:
     return operation.strip().lower().replace("-", "_").replace(" ", "_") or "execute"
+
+
+def _known_operations(tree: ToolTree) -> set[str]:
+    return {item.name for item in tree.canonical.operations}
+
+
+def _bind_step_call(
+    step: FreeFormStep, *, canonical_name: str, operation: str
+) -> None:
+    """把步骤钉到目录内执行器，并写入临时或已有 operation。"""
+    step.tool = canonical_name
+    params = dict(step.params or {})
+    params["operation"] = operation
+    step.params = params
 
 
 def _occupied_catalog_keys(forest: ToolForest) -> set[str]:
@@ -518,13 +537,38 @@ def _demote_to_reasoning(step: FreeFormStep) -> None:
     step.observation = None
 
 
+def _apply_temporary_operation(
+    forest: ToolForest,
+    step: FreeFormStep,
+    *,
+    parent_name: str,
+    raw_tool: str,
+    operation: str,
+    records: list[ToolResolutionRecord],
+) -> ToolForest:
+    """父执行器上使用临时 operation，不 add_operation、不入库。"""
+    forest = add_variant(forest, parent_name, raw_tool, operation=operation)
+    _bind_step_call(step, canonical_name=parent_name, operation=operation)
+    records.append(
+        ToolResolutionRecord(
+            raw_tool=raw_tool,
+            disposition="temporary",
+            canonical_name=parent_name,
+            temporary_name=operation,
+            reason=TEMP_NEW_OPERATION_REASON,
+            create_kind="new_operation",
+        )
+    )
+    return forest
+
+
 def _apply_unknown_decision(
     forest: ToolForest,
     step: FreeFormStep,
     decision: MatchDecision,
     records: list[ToolResolutionRecord],
 ) -> ToolForest:
-    """对目录外 tool 名执行 map / 合格提案 / 临时名 / 降级。"""
+    """对目录外 tool 名执行 map / 临时 tool / 临时 operation / 降级。"""
     raw = (step.tool or "").strip()
     if (
         decision.action == "reasoning"
@@ -575,6 +619,7 @@ def _apply_unknown_decision(
                 canonical_name=temp_name,
                 temporary_name=temp_name,
                 reason=decision.reason or "map 目标不在目录，记为临时名",
+                create_kind="new_executor",
             )
         )
         return forest
@@ -584,22 +629,17 @@ def _apply_unknown_decision(
         parent_name = (decision.canonical_name or "").strip()
         parent = find_tree_for_name(forest, parent_name) if parent_name else None
         proposed_op = _pick_proposal_operation(decision, operation)
-        fail: str | None = None
-        if parent is None:
-            fail = "未过 create schema 门：new_operation 的 canonical 不在目录"
-        elif proposed_op is None:
-            fail = "未过 create schema 门：缺 input_schema"
-        else:
-            fail = _input_schema_gate_reason(proposed_op.input_schema)
-        if (
-            fail is None
-            and parent is not None
-            and proposed_op is not None
-            and proposed_op.name
-            in {item.name for item in parent.canonical.operations}
-        ):
+        op_name = (
+            _normalize_operation_name(proposed_op.name)
+            if proposed_op is not None and proposed_op.name
+            else operation
+        )
+        if parent is not None and op_name in _known_operations(parent):
             forest = add_variant(
-                forest, parent.canonical.name, raw, operation=proposed_op.name
+                forest, parent.canonical.name, raw, operation=op_name
+            )
+            _bind_step_call(
+                step, canonical_name=parent.canonical.name, operation=op_name
             )
             records.append(
                 ToolResolutionRecord(
@@ -610,44 +650,15 @@ def _apply_unknown_decision(
                 )
             )
             return forest
-        if fail is None and decision.confidence < CREATE_CONFIDENCE:
-            fail = (
-                "未过 create schema 门：create 置信度不足"
-                f"（{decision.confidence:.2f}）"
-            )
-        if fail is None and parent is not None and proposed_op is not None:
-            op_name = proposed_op.name or operation
-            forest = add_operation(
+        if parent is not None:
+            return _apply_temporary_operation(
                 forest,
-                parent.canonical.name,
-                op_name,
-                proposed_op.description or op_desc,
-                input_schema=proposed_op.input_schema,
+                step,
+                parent_name=parent.canonical.name,
+                raw_tool=raw,
+                operation=op_name,
+                records=records,
             )
-            forest = add_variant(
-                forest, parent.canonical.name, raw, operation=op_name
-            )
-            stub = ToolDefinition(
-                name=parent.canonical.name,
-                description=parent.canonical.description,
-                executor=parent.canonical.executor,
-                usage=parent.canonical.usage,
-                operations=[proposed_op],
-                params=list(parent.canonical.params),
-                observation_fields=list(parent.canonical.observation_fields),
-                is_terminal=False,
-            )
-            records.append(
-                ToolResolutionRecord(
-                    raw_tool=raw,
-                    disposition="created_proposal",
-                    canonical_name=parent.canonical.name,
-                    reason=decision.reason or "已有执行器新增 operation 提案",
-                    proposed_definition=stub,
-                    create_kind="new_operation",
-                )
-            )
-            return forest
         forest, temp_name = _apply_temporary_tree(
             forest,
             raw_tool=raw,
@@ -660,44 +671,13 @@ def _apply_unknown_decision(
                 disposition="temporary",
                 canonical_name=temp_name,
                 temporary_name=temp_name,
-                reason=fail or "未过 create schema 门：缺 input_schema",
+                reason=TEMP_NEW_OPERATION_MISSING_PARENT_REASON,
+                create_kind="new_executor",
             )
         )
         return forest
 
     if decision.action == "create":
-        definition = _strict_definition(
-            decision.proposed_definition,
-            raw_tool=raw,
-            operation=operation,
-            operation_description=op_desc,
-        )
-        fail = _validate_new_executor_proposal(definition, forest)
-        if fail is None and decision.confidence < CREATE_CONFIDENCE:
-            fail = (
-                "未过 create schema 门：create 置信度不足"
-                f"（{decision.confidence:.2f}）"
-            )
-        if fail is None:
-            forest = create_tree(
-                forest,
-                definition,
-                initial_variant=(
-                    raw if raw.lower() != definition.name.lower() else None
-                ),
-                initial_operation=operation,
-            )
-            records.append(
-                ToolResolutionRecord(
-                    raw_tool=raw,
-                    disposition="created_proposal",
-                    canonical_name=definition.name,
-                    reason=decision.reason or "合格新建执行器提案",
-                    proposed_definition=definition,
-                    create_kind="new_executor",
-                )
-            )
-            return forest
         forest, temp_name = _apply_temporary_tree(
             forest,
             raw_tool=raw,
@@ -710,7 +690,8 @@ def _apply_unknown_decision(
                 disposition="temporary",
                 canonical_name=temp_name,
                 temporary_name=temp_name,
-                reason=fail,
+                reason=TEMP_NEW_EXECUTOR_REASON,
+                create_kind="new_executor",
             )
         )
         return forest
@@ -728,6 +709,7 @@ def _apply_unknown_decision(
             canonical_name=temp_name,
             temporary_name=temp_name,
             reason=decision.reason or "未达 reasoning 降级阈值，使用临时名继续",
+            create_kind="new_executor",
         )
     )
     return forest
@@ -740,7 +722,7 @@ def ensure_tool_trees(
     matcher: MatcherFn | None = None,
     resolution_records: list[ToolResolutionRecord] | None = None,
 ) -> ToolForest:
-    """按执行器语义匹配、合格提案或临时名（仅本 task 内存，不改官方目录）。
+    """按执行器语义匹配、临时 tool / 临时 operation（仅本 task 内存，不改官方目录）。
 
     ``trees_path`` 保留签名兼容：可指向测试/CLI 用的目录 JSON 覆盖；
     默认流水线应传入官方 ``TOOL_CATALOG_PATH``，不再读写跨视频 dump。
@@ -839,12 +821,8 @@ def ensure_tool_trees(
                 or "execute"
             )
             mapped_name = tree.canonical.name
-            forest = add_operation(
-                forest,
-                mapped_name,
-                operation,
-                decision.operation_description or "语义重分类后的 operation",
-            )
+            if operation not in _known_operations(tree):
+                continue
             if raw.lower() != mapped_name.lower():
                 forest = add_variant(
                     forest, mapped_name, raw, operation=operation
@@ -886,12 +864,8 @@ def ensure_tool_trees(
                 or "execute"
             )
             mapped_name = tree.canonical.name
-            forest = add_operation(
-                forest,
-                mapped_name,
-                operation,
-                decision.operation_description or "语义重分类后的 operation",
-            )
+            if operation not in _known_operations(tree):
+                continue
             if raw.lower() != mapped_name.lower():
                 forest = add_variant(
                     forest, mapped_name, raw, operation=operation
