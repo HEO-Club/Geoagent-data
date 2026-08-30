@@ -86,6 +86,7 @@ def test_orchestrator_stage_order() -> None:
         "stage_audit_split",
         "stage2",
         "stage3",
+        "stage4",
     )
     mod = importlib.import_module("pipeline.orchestrator")
     for name in (

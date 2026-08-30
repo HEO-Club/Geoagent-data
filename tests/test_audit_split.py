@@ -11,6 +11,7 @@ import pytest
 from pipeline.schemas.audit import (
     AnswerStatus,
     AuditDecision,
+    GeoTaskSpec,
     ProcessInterval,
     ProcessRole,
     TaskStatus,
@@ -198,7 +199,7 @@ def test_run_audit_split_reject(
 def test_force_reject_when_no_unresolved_target(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """has_unresolved_target=false 时即使 decision=accept 也强制 reject。"""
+    """has_unresolved_target=false 且无 tasks 时，即使 decision=accept 也强制 reject。"""
     video = tmp_path / "force.mp4"
     video.write_bytes(b"x")
     _isolate_data_dirs(tmp_path, monkeypatch)
@@ -206,21 +207,11 @@ def test_force_reject_when_no_unresolved_target(
     monkeypatch.setattr(audit, "video_duration_sec", lambda _p: 12.0)
     monkeypatch.setattr(audit, "extract_keyframes", _fake_extract_factory())
 
-    class _Task:
-        time_start = 0.0
-        time_end = 5.0
-        target_kind = TargetKind.video_derived
-        keyframe_timestamps = [1.0]
-        multi_target_images = False
-        segment_start_idx = 0
-        segment_end_idx = 0
-        task_summary = "误标"
-
     class _Draft:
         decision = AuditDecision.accept
         reason = "误把科普当定位"
         has_unresolved_target = False
-        tasks = [_Task()]
+        tasks = []
 
     monkeypatch.setattr(audit, "call_structured", _route_call(_Draft()))
 
@@ -229,6 +220,50 @@ def test_force_reject_when_no_unresolved_target(
     assert result.tasks == []
     assert result.has_unresolved_target is False
     assert "has_unresolved_target=false" in result.reason
+
+
+def test_accept_with_tasks_overrides_false_unresolved_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """decision=accept 且已给 tasks 时，不因 has_unresolved_target=false 整片拒识。"""
+    video = tmp_path / "coerce.mp4"
+    video.write_bytes(b"x")
+    _isolate_data_dirs(tmp_path, monkeypatch)
+
+    monkeypatch.setattr(audit, "video_duration_sec", lambda _p: 20.0)
+    monkeypatch.setattr(audit, "extract_keyframes", _fake_extract_factory())
+
+    draft = audit._LLMAuditDraft(
+        decision=AuditDecision.accept,
+        reason="有待定位原图",
+        has_unresolved_target=False,
+        tasks=[
+            audit._LLMGeoTaskDraft(
+                time_start=0.0,
+                time_end=8.0,
+                display_time_start=1.0,
+                display_time_end=4.0,
+                target_kind=TargetKind.still_image,
+                keyframe_timestamps=[2.0],
+                answer_status=AnswerStatus.resolved,
+                final_location_text="某地",
+            )
+        ],
+        split_confidence=0.9,
+    )
+    monkeypatch.setattr(
+        audit,
+        "call_structured",
+        _route_call(
+            draft,
+            frame_kind=audit.FrameKind.target_photo,
+            visual_evidence_brief="红瓦屋顶",
+        ),
+    )
+    result = audit.run_audit_split(str(video), _transcript())
+    assert result.decision == AuditDecision.accept
+    assert result.has_unresolved_target is True
+    assert len(result.tasks) == 1
 
 
 def test_still_image_clamps_to_single_frame(
@@ -631,6 +666,23 @@ def test_run_audit_split_multi_task(
     assert "第二张" in sliced[0].text
 
 
+def test_time_slice_excludes_segments_that_only_touch_task_boundary() -> None:
+    transcript = [
+        TranscriptSegment(start=30.0, end=60.0, text="前一题"),
+        TranscriptSegment(start=60.0, end=90.0, text="本题上半段"),
+        TranscriptSegment(start=90.0, end=120.0, text="本题下半段"),
+        TranscriptSegment(start=120.0, end=150.0, text="后一题"),
+    ]
+    task = GeoTaskSpec(
+        task_id="video__t03",
+        time_start=60.0,
+        time_end=120.0,
+        target_kind=TargetKind.still_image,
+    )
+    sliced = audit.slice_transcript_for_task(transcript, task)
+    assert [segment.text for segment in sliced] == ["本题上半段", "本题下半段"]
+
+
 def test_frame_verify_hint_is_principle_based() -> None:
     """验收提示用过程角色原则：实拍输入 vs 工具/核验，不靠品类清单。"""
     hint = audit.FRAME_VERIFY_HINT
@@ -663,6 +715,12 @@ def test_audit_system_hint_lists_all_localization_inputs() -> None:
     assert "整条答案链" in hint
     assert "预定" in hint
     assert "最小源输入" in hint
+    assert "后续人工解出" in hint
+    assert "reject 理由" in hint
+    assert "连续实拍" in hint or "连续现场" in hint
+    assert "video_derived" in hint
+    assert "题面明确" in hint
+    assert "已知线索" in hint
     assert "卫星" not in hint
     assert "谷歌" not in hint
 
@@ -1773,6 +1831,8 @@ def test_prefers_chain_support_over_clean_broll(
     assert item.status == TaskStatus.accepted
     assert item.visual_evidence_brief.startswith("红瓦屋顶")
     assert item.keyframe_timestamps == [5.0]
+    assert "选图质量等级=accepted" in item.image_selection_note
+    assert "选中张数=" in item.image_selection_note
     assert any(
         a.timestamp == 5.0 and a.selected and a.evidence_role == "problem_input"
         for a in item.frame_assessments
@@ -1835,7 +1895,9 @@ def test_low_chain_support_marks_needs_review(
     item = result.tasks[0]
     assert item.status == TaskStatus.needs_review
     assert "定位链视觉证据不对齐" in item.status_reason
-    assert item.image_paths  # 仍记录实选，但不进 Stage2
+    assert item.image_paths  # 仍记录实选；编排器不再因 needs_review 跳过下游
+    assert "选图质量等级=needs_review" in item.image_selection_note
+    assert "定位链视觉证据不对齐" in item.image_selection_note
     assert all(
         a.evidence_role != "unused_broll" or not a.selected
         for a in item.frame_assessments
@@ -2430,6 +2492,8 @@ def test_multi_show_source_one_selected_needs_review(
     assert item.status == TaskStatus.needs_review
     assert "多段不相邻出示窗" in item.status_reason
     assert item.expected_image_count == 1
+    assert "选图质量等级=needs_review" in item.image_selection_note
+    assert "多段不相邻出示窗" in item.image_selection_note
 
 
 def test_resolve_sample_windows_helpers() -> None:
@@ -2683,3 +2747,97 @@ def test_same_photo_reshow_merges(
     )
     assert len(selected) == 1
     assert selected[0].timestamp == 80.0
+
+
+def test_anthropic_enum_wrappers_are_unwrapped() -> None:
+    """relay 偶发的 {type}/{primary} 包装不得让正确帧验收整体失败。"""
+
+    frame = audit._LLMFrameVerdict.model_validate(
+        {
+            "kind": {"primary": "target_photo", "confidence": "high"},
+            "quality_score": 0.9,
+            "evidence_role": {"category": {"type": "problem_input"}},
+        }
+    )
+    assert frame.kind == audit.FrameKind.target_photo
+    assert frame.evidence_role == audit.EvidenceRole.problem_input
+
+    probabilistic = audit._LLMFrameVerdict.model_validate(
+        {
+            "kind": {"target_photo": 0.8, "teaching_ui": 0.1, "other": 0.1},
+            "evidence_role": {"problem_input": 0.9, "other": 0.1},
+        }
+    )
+    assert probabilistic.kind == audit.FrameKind.target_photo
+    assert probabilistic.evidence_role == audit.EvidenceRole.problem_input
+
+    recovered = audit._LLMFrameVerdict.model_validate(
+        {
+            "{": (
+                '"kind":"teaching_ui","quality_score":0.2,'
+                '"evidence_role":"process_tool","reason":"包装 JSON"}'
+            )
+        }
+    )
+    assert recovered.kind == audit.FrameKind.teaching_ui
+    assert recovered.evidence_role == audit.EvidenceRole.process_tool
+
+    interval = audit._LLMProcessInterval.model_validate(
+        {
+            "start_time": 1.0,
+            "end_time": 2.0,
+            "role": {"primary": "show_source"},
+        }
+    )
+    assert interval.role == ProcessRole.show_source
+
+    relation = audit._LLMPhotoRelationVerdict.model_validate(
+        {"relation": {"type": "same_photo"}}
+    )
+    assert relation.relation == audit.PhotoRelation.same_photo
+
+
+def test_compose_image_selection_note_for_accepted_and_review() -> None:
+    """accepted / needs_review 都必须写出非空选图评价。"""
+    from pipeline.schemas.audit import KeyframeAssessment
+
+    selected = KeyframeAssessment(
+        timestamp=12.5,
+        image_path="/tmp/a.jpg",
+        kind="target_photo",
+        quality_score=0.88,
+        tutorial_overlay=False,
+        clean_source=True,
+        evidence_role="problem_input",
+        chain_support_score=0.91,
+        selected=True,
+        reason="干净原图",
+    )
+    ok = audit.compose_image_selection_note(
+        status=TaskStatus.accepted,
+        status_reason="",
+        assessments=[selected],
+    )
+    assert "选图质量等级=accepted" in ok
+    assert "选中张数=1" in ok
+    assert "t=12.500s" in ok
+    assert "quality=0.88" in ok
+
+    review = audit.compose_image_selection_note(
+        status=TaskStatus.needs_review,
+        status_reason="选中帧仍含讲解覆盖、界面残留或质量低于阈值",
+        assessments=[
+            selected.model_copy(
+                update={
+                    "tutorial_overlay": True,
+                    "clean_source": False,
+                    "quality_score": 0.4,
+                    "reason": "字幕条",
+                }
+            )
+        ],
+    )
+    assert "选图质量等级=needs_review" in review
+    assert "选中帧仍含讲解覆盖" in review
+    assert "overlay=True" in review
+    assert "reason=字幕条" in review

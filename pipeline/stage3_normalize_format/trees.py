@@ -7,7 +7,13 @@ from pathlib import Path
 
 from filelock import FileLock
 
-from pipeline.schemas.tools import ToolDefinition, ToolForest, ToolOperation, ToolTree
+from pipeline.schemas.tools import (
+    ToolDefinition,
+    ToolForest,
+    ToolInputSchema,
+    ToolOperation,
+    ToolTree,
+)
 
 
 def _lock_path(path: Path) -> Path:
@@ -91,6 +97,7 @@ def add_operation(
     canonical_name: str,
     operation: str,
     description: str,
+    input_schema: ToolInputSchema | None = None,
 ) -> ToolForest:
     """给同一执行器补充一种受解释约束的操作，不创建新 tool。"""
     op = operation.strip().lower().replace("-", "_").replace(" ", "_")
@@ -110,6 +117,7 @@ def add_operation(
                             name=op,
                             description=description.strip()
                             or f"使用 {canonical_name} 执行 {op}",
+                            input_schema=input_schema,
                         )
                     ]
                 }

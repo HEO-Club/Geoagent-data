@@ -101,6 +101,7 @@ def test_remap_and_format(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
         trees_path=tmp_path / "tool_trees.json",
         image_paths=["scene.jpg", "scene2.jpg"],
         matcher=lambda _n, _f: None,
+        compile_params=False,
     )
     assert entry.source_video == "clip"
     roles = [m.role for m in entry.messages]
@@ -154,6 +155,7 @@ def test_run_stage3_injects_working_scope_into_user_query(
         trees_path=tmp_path / "tool_trees.json",
         image_paths=["scene.jpg"],
         matcher=lambda _n, _f: None,
+        compile_params=False,
     )
     user = entry.messages[1].content
     assert "Working scope: 河南许昌附近" in user
@@ -188,6 +190,7 @@ def test_run_stage3_explicit_user_query_overrides_scope(
         image_paths=["scene.jpg"],
         user_query="Custom query only.",
         matcher=lambda _n, _f: None,
+        compile_params=False,
     )
     assert entry.messages[1].content.startswith("Custom query only.")
     assert "Working scope:" not in entry.messages[1].content
@@ -237,6 +240,7 @@ def test_final_answer_is_reserved_terminal_and_keeps_location(
         system_prompt="system",
         user_query="query",
         image_paths=["scene.jpg"],
+        compile_params=False,
     )
     assert traj.image_paths == ["scene.jpg"]
     assert traj.steps[-1].action.tool == "final_answer"
@@ -306,6 +310,7 @@ def test_reasoning_events_do_not_create_fake_tools_and_keep_thought_chain(
         out_jsonl_path=str(tmp_path / "sample.jsonl"),
         image_paths=["scene.jpg"],
         matcher=matcher,
+        compile_params=False,
     )
     roles = [message.role for message in entry.messages]
     assert roles == [
@@ -320,9 +325,7 @@ def test_reasoning_events_do_not_create_fake_tools_and_keep_thought_chain(
     assert "Action:" not in entry.messages[2].content
     assert "Action:" not in entry.messages[3].content
     assert '"tool": "osm_query"' in entry.messages[4].content
-    runtime = trees.load_forest(tmp_path / "runtime_tools.json")
-    assert trees.find_tree_for_name(runtime, "custom_overpass_water_query")
-    assert trees.resolve_operation(runtime, "custom_overpass_water_query") == "query"
+    # Mapping is in-memory for this task only; no runtime dump to reload.
 
 
 def test_high_confidence_pseudo_tool_is_demoted_to_reasoning(

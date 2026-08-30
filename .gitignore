@@ -57,6 +57,11 @@ cache/
 logs/
 *.log
 
+# 已废弃：跨视频 runtime tool dump（流水线只读官方目录）
+tool_trees.json
+tool_trees.json.lock
+tool_trees.json.tmp
+
 # IDE 本地配置
 .vscode/
 .idea/

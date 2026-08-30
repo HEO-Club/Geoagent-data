@@ -5,25 +5,41 @@ from __future__ import annotations
 import json
 import uuid
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from pipeline.config import get_settings
 from pipeline.schemas.clues import WorkingScope
 from pipeline.schemas.dataset import ChatMessage, DatasetEntry
 from pipeline.schemas.freeform import FreeFormTrajectory
-from pipeline.schemas.tools import ToolForest
+from pipeline.schemas.tools import ToolForest, ToolParameterAudit
 from pipeline.schemas.trajectory import Action, Trajectory, TrajectoryStep
-from pipeline.stage3_normalize_format.map_tools import ensure_tool_trees
+from pipeline.stage3_normalize_format.compile_params import (
+    ParamCompilerFn,
+    apply_compile_and_revalidate,
+    build_compile_request,
+    compile_params_batch,
+)
+from pipeline.stage3_normalize_format.map_tools import (
+    ToolResolutionRecord,
+    ensure_tool_trees,
+)
+from pipeline.stage3_normalize_format.params import (
+    initial_parameter_context,
+    normalize_and_validate_tool_inputs,
+    update_parameter_context,
+)
 from pipeline.stage3_normalize_format.trees import (
     find_tree_for_name,
     resolve_canonical_name,
     resolve_operation,
 )
+from pipeline.tool_catalog_v2 import render_tool_contract_guidance
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are a geolocation agent. Use internal Thought events for reasoning and call "
     "tools only when an external executor is needed. Tool calls follow "
-    "Thought/Action/Observation; the final answer uses final_answer."
+    "Thought/Action/Observation; the final answer uses final_answer. "
+    "Every non-terminal Action uses params.operation, params.purpose and params.inputs."
 )
 DEFAULT_USER_QUERY = "Locate the place shown in the image."
 
@@ -40,10 +56,10 @@ def _json_dumps(obj: Any) -> str:
 
 
 def _normalize_observation(
-    observation: Optional[dict[str, Any]],
+    observation: dict[str, Any] | None,
     *,
     is_terminal: bool,
-) -> Optional[dict[str, Any]]:
+) -> dict[str, Any] | None:
     if is_terminal:
         return None
     if observation is None:
@@ -56,13 +72,28 @@ def _resolve_image_paths(
     image_paths: list[str] | None,
     image_path: str | None,
 ) -> list[str]:
+    """解析任务图路径；无图返回空列表，不伪造占位路径。"""
     if image_paths:
         cleaned = [p.strip() for p in image_paths if str(p).strip()]
         if cleaned:
             return cleaned
     if image_path and str(image_path).strip():
         return [str(image_path).strip()]
-    return ["unknown.jpg"]
+    return []
+
+
+def _freeform_call_parts(step: Any) -> tuple[str | None, str, dict[str, Any]]:
+    """Accept both legacy flat params and the v2 Stage 2 call contract."""
+
+    params = dict(step.params or {})
+    nested_inputs = params.get("inputs")
+    if isinstance(nested_inputs, dict):
+        operation = str(params.get("operation") or "").strip() or None
+        purpose = str(params.get("purpose") or step.thought).strip() or step.thought
+        return operation, purpose, dict(nested_inputs)
+    operation = str(params.pop("operation", "") or "").strip() or None
+    purpose = str(params.pop("purpose", "") or step.thought).strip() or step.thought
+    return operation, purpose, params
 
 
 def remap_trajectory(
@@ -74,18 +105,35 @@ def remap_trajectory(
     image_paths: list[str] | None = None,
     image_path: str | None = None,
     trajectory_id: str | None = None,
+    parameter_audits: list[ToolParameterAudit] | None = None,
+    param_compiler: ParamCompilerFn | None = None,
+    compile_params: bool | None = None,
 ) -> Trajectory:
-    """自由链 → 单 Agent 标准 Trajectory（canonical tools）。"""
-    steps: list[TrajectoryStep] = []
-    for step in freeform.steps:
+    """自由链 → 单 Agent 标准 Trajectory（canonical tools）。
+
+    规则别名作种子后，每个有 schema 的 tool_call 用 LLM 对照 Thought 编译 params。
+    """
+    settings = get_settings()
+    do_compile = (
+        settings.STAGE3_COMPILE_PARAMS if compile_params is None else compile_params
+    )
+
+    resolved_image_paths = _resolve_image_paths(
+        image_paths=image_paths, image_path=image_path
+    )
+    available_context = initial_parameter_context(resolved_image_paths)
+
+    # 第一轮：规则别名 + 上下文补全（种子）；每个有 schema 的 tool_call 再编译
+    drafts: list[dict[str, Any]] = []
+    compile_requests = []
+    for step_index, step in enumerate(freeform.steps, start=1):
         if step.event_type == "reasoning":
-            steps.append(
-                TrajectoryStep(
-                    event_type="reasoning",
-                    thought=step.thought,
-                    action=None,
-                    observation=None,
-                )
+            drafts.append(
+                {
+                    "kind": "reasoning",
+                    "step": step,
+                    "step_index": step_index,
+                }
             )
             continue
 
@@ -98,35 +146,124 @@ def remap_trajectory(
             bool(tree.canonical.is_terminal) if tree else False
         )
         if is_terminal:
-            normalized_params = dict(step.params or {})
-            event_type = "final"
-        else:
-            operation = resolve_operation(forest, step.tool)
-            if not operation and tree and tree.canonical.operations:
-                operation = tree.canonical.operations[0].name
-            normalized_params = {
-                "operation": operation or "execute",
-                "purpose": step.thought,
-                "inputs": dict(step.params or {}),
+            drafts.append(
+                {
+                    "kind": "final",
+                    "step": step,
+                    "step_index": step_index,
+                    "canonical": canonical,
+                    "normalized_params": dict(step.params or {}),
+                }
+            )
+            continue
+
+        requested_operation, purpose, raw_inputs = _freeform_call_parts(step)
+        operation = requested_operation or resolve_operation(forest, step.tool)
+        if not operation and tree and tree.canonical.operations:
+            operation = tree.canonical.operations[0].name
+        context_snapshot = dict(available_context)
+        parameter_audit = normalize_and_validate_tool_inputs(
+            forest,
+            tool=canonical,
+            operation=operation or "execute",
+            inputs=raw_inputs,
+            step_index=step_index,
+            available_context=available_context,
+        )
+        req = None
+        if do_compile:
+            req = build_compile_request(
+                forest=forest,
+                audit=parameter_audit,
+                thought=step.thought,
+                available_context=context_snapshot,
+            )
+            if req is not None:
+                compile_requests.append(req)
+        drafts.append(
+            {
+                "kind": "tool_call",
+                "step": step,
+                "step_index": step_index,
+                "canonical": canonical,
+                "audit": parameter_audit,
+                "compile_request": req,
+                "purpose": purpose,
             }
-            event_type = "tool_call"
+        )
+        update_parameter_context(available_context, parameter_audit)
+
+    fills: dict[int, Any] = {}
+    if compile_requests and do_compile:
+        # 生产：默认 LLM；测试：须注入 param_compiler（ALLOW_REAL_API=false 时不自动打网）
+        if param_compiler is not None:
+            fills = compile_params_batch(
+                compile_requests, compiler=param_compiler
+            )
+        elif settings.ALLOW_REAL_API:
+            fills = compile_params_batch(compile_requests, compiler=None)
+        # else: 测试环境未注入编译器 → 保留规则审计（失败开放）
+
+    # 第二轮：对有编译结果的步骤合并并重校验，组装 Trajectory
+    steps: list[TrajectoryStep] = []
+    for draft in drafts:
+        kind = draft["kind"]
+        step = draft["step"]
+        if kind == "reasoning":
+            steps.append(
+                TrajectoryStep(
+                    event_type="reasoning",
+                    thought=step.thought,
+                    action=None,
+                    observation=None,
+                )
+            )
+            continue
+        if kind == "final":
+            steps.append(
+                TrajectoryStep(
+                    event_type="final",
+                    thought=step.thought,
+                    action=Action(
+                        tool=draft["canonical"],
+                        params=draft["normalized_params"],
+                    ),
+                    observation=_normalize_observation(
+                        step.observation, is_terminal=True
+                    ),
+                )
+            )
+            continue
+
+        audit: ToolParameterAudit = draft["audit"]
+        req = draft.get("compile_request")
+        if req is not None and draft["step_index"] in fills:
+            audit = apply_compile_and_revalidate(
+                forest, req, fills[draft["step_index"]]
+            )
+        if parameter_audits is not None:
+            parameter_audits.append(audit)
+        normalized_params = {
+            "operation": audit.operation,
+            "purpose": draft["purpose"],
+            "inputs": audit.normalized_inputs,
+        }
         steps.append(
             TrajectoryStep(
-                event_type=event_type,
+                event_type="tool_call",
                 thought=step.thought,
-                action=Action(tool=canonical, params=normalized_params),
+                action=Action(tool=draft["canonical"], params=normalized_params),
                 observation=_normalize_observation(
-                    step.observation, is_terminal=is_terminal
+                    step.observation, is_terminal=False
                 ),
             )
         )
+
     return Trajectory(
         id=trajectory_id or str(uuid.uuid4()),
         system_prompt=system_prompt,
         user_query=user_query,
-        image_paths=_resolve_image_paths(
-            image_paths=image_paths, image_path=image_path
-        ),
+        image_paths=resolved_image_paths,
         steps=steps,
     )
 
@@ -141,13 +278,13 @@ def _format_assistant_content(step: TrajectoryStep) -> str:
 
 def trajectory_to_messages(traj: Trajectory) -> list[ChatMessage]:
     """将 Trajectory 展开为 chat messages（loss：仅 assistant）。"""
-    images_block = "\n".join(f"[Image: {p}]" for p in traj.image_paths)
+    user_content = traj.user_query
+    if traj.image_paths:
+        images_block = "\n".join(f"[Image: {p}]" for p in traj.image_paths)
+        user_content = f"{traj.user_query}\n{images_block}"
     messages: list[ChatMessage] = [
         ChatMessage(role="system", content=traj.system_prompt),
-        ChatMessage(
-            role="user",
-            content=f"{traj.user_query}\n{images_block}",
-        ),
+        ChatMessage(role="user", content=user_content),
     ]
     for step in traj.steps:
         messages.append(
@@ -161,7 +298,7 @@ def trajectory_to_messages(traj: Trajectory) -> list[ChatMessage]:
 
 
 def format_dataset_entry(traj: Trajectory, *, source_video: str) -> DatasetEntry:
-    """Trajectory → 单条 JSONL DatasetEntry。"""
+    """Trajectory → 单条 JSONL DatasetEntry。quality_score 由阶段4回写。"""
     return DatasetEntry(
         id=traj.id,
         source_video=source_video,
@@ -174,7 +311,13 @@ def _tool_mapping_audit(
     raw_events: list[dict[str, Any]],
     freeform: FreeFormTrajectory,
     forest: ToolForest,
+    records: list[ToolResolutionRecord] | None = None,
 ) -> dict[str, Any]:
+    by_raw: dict[str, ToolResolutionRecord] = {}
+    for record in records or []:
+        key = record.raw_tool.strip().lower()
+        if key and key not in by_raw:
+            by_raw[key] = record
     mappings: list[dict[str, Any]] = []
     raw_tools: set[str] = set()
     canonicals: set[str] = set()
@@ -192,10 +335,23 @@ def _tool_mapping_audit(
 
         canonical = None
         operation = None
+        disposition = "mapped"
+        temporary = False
+        record = by_raw.get(str(raw_tool).strip().lower()) if raw_tool else None
+        if raw_type == "tool_call" and step.event_type == "reasoning":
+            disposition = "demoted"
+        elif record is not None:
+            disposition = record.disposition
+            temporary = record.disposition == "temporary"
         if step.event_type == "tool_call" and step.tool:
             tool_calls_after += 1
             canonical = resolve_canonical_name(forest, step.tool) or step.tool
-            operation = resolve_operation(forest, step.tool) or "execute"
+            requested_operation, _, _ = _freeform_call_parts(step)
+            operation = (
+                requested_operation
+                or resolve_operation(forest, step.tool)
+                or "execute"
+            )
             canonicals.add(canonical)
         mappings.append(
             {
@@ -205,9 +361,55 @@ def _tool_mapping_audit(
                 "normalized_event_type": step.event_type,
                 "canonical_tool": canonical,
                 "operation": operation,
+                "reclassified": bool(
+                    raw_tool
+                    and step.tool
+                    and str(raw_tool).strip().lower() != str(step.tool).strip().lower()
+                ),
+                "disposition": disposition,
+                "temporary": temporary,
             }
         )
 
+    reclassified_count = sum(1 for item in mappings if item.get("reclassified"))
+    temporary_tools = [
+        {
+            "kind": "new_executor",
+            "raw_tool": record.raw_tool,
+            "temporary_name": record.temporary_name or record.canonical_name,
+            "reason": record.reason,
+        }
+        for record in (records or [])
+        if record.disposition == "temporary"
+        and record.create_kind != "new_operation"
+    ]
+    temporary_operations = [
+        {
+            "kind": "new_operation",
+            "raw_tool": record.raw_tool,
+            "canonical_name": record.canonical_name,
+            "temporary_operation": record.temporary_name,
+            "reason": record.reason,
+        }
+        for record in (records or [])
+        if record.disposition == "temporary"
+        and record.create_kind == "new_operation"
+    ]
+    proposed_tools = [
+        {
+            "kind": record.create_kind or "new_executor",
+            "raw_tool": record.raw_tool,
+            "canonical_name": record.canonical_name,
+            "reason": record.reason,
+            "definition": (
+                record.proposed_definition.model_dump(mode="json")
+                if record.proposed_definition is not None
+                else None
+            ),
+        }
+        for record in (records or [])
+        if record.disposition == "created_proposal"
+    ]
     return {
         "total_events": len(freeform.steps),
         "reasoning_events": sum(
@@ -216,13 +418,37 @@ def _tool_mapping_audit(
         "tool_calls_before_stage3": tool_calls_before,
         "tool_calls_after_stage3": tool_calls_after,
         "pseudo_tools_demoted": demoted,
+        "tools_reclassified": reclassified_count,
         "unique_raw_tools": len(raw_tools),
         "unique_canonical_tools": len(canonicals),
         "canonical_compression_ratio": (
             round(len(canonicals) / len(raw_tools), 4) if raw_tools else 0.0
         ),
+        "temporary_tools": temporary_tools,
+        "temporary_operations": temporary_operations,
+        "proposed_tools": proposed_tools,
         "mappings": mappings,
     }
+
+
+def _tool_proposals_payload(records: list[ToolResolutionRecord]) -> dict[str, Any]:
+    """提案队列保留落盘格式；v3.4.14 起不再写入新 tool / 新 operation。"""
+    tools: list[dict[str, Any]] = []
+    for record in records:
+        if record.disposition != "created_proposal":
+            continue
+        if record.proposed_definition is None:
+            continue
+        tools.append(
+            {
+                "kind": record.create_kind or "new_executor",
+                "raw_tool": record.raw_tool,
+                "canonical_name": record.canonical_name,
+                "reason": record.reason,
+                "definition": record.proposed_definition.model_dump(mode="json"),
+            }
+        )
+    return {"schema_version": "stage3_tool_proposals_v1", "tools": tools}
 
 
 def run_stage3(
@@ -237,10 +463,15 @@ def run_stage3(
     system_prompt: str | None = None,
     user_query: str | None = None,
     matcher=None,
+    param_compiler: ParamCompilerFn | None = None,
+    compile_params: bool | None = None,
 ) -> DatasetEntry:
-    """阶段3 一站式：树维护 → 重写 → DatasetEntry。"""
+    """阶段3 一站式：目录加载（内存）→ 参数归一/审计 → DatasetEntry。"""
     settings = get_settings()
-    forest_path = Path(trees_path) if trees_path else Path(settings.TOOL_TREES_PATH)
+    # Default: official catalog. Explicit trees_path is a test/CLI catalog override.
+    forest_path = (
+        Path(trees_path) if trees_path else Path(settings.TOOL_CATALOG_PATH)
+    )
     raw_events = [
         {
             "event_type": step.event_type,
@@ -249,20 +480,33 @@ def run_stage3(
         }
         for step in freeform.steps
     ]
-    forest = ensure_tool_trees(freeform, forest_path, matcher=matcher)
+    resolution_records: list[ToolResolutionRecord] = []
+    forest = ensure_tool_trees(
+        freeform,
+        forest_path,
+        matcher=matcher,
+        resolution_records=resolution_records,
+    )
+    resolved_system_prompt = system_prompt or (
+        DEFAULT_SYSTEM_PROMPT + "\n\n" + render_tool_contract_guidance(forest)
+    )
     resolved_query = (
         user_query
         if user_query is not None
         else build_user_query(freeform.working_scope)
     )
+    parameter_audits: list[ToolParameterAudit] = []
     traj = remap_trajectory(
         freeform,
         forest,
-        system_prompt=system_prompt or DEFAULT_SYSTEM_PROMPT,
+        system_prompt=resolved_system_prompt,
         user_query=resolved_query,
         image_paths=image_paths,
         image_path=image_path or None,
         trajectory_id=shard_id,
+        parameter_audits=parameter_audits,
+        param_compiler=param_compiler,
+        compile_params=compile_params,
     )
     entry = format_dataset_entry(traj, source_video=freeform.source_video)
 
@@ -277,7 +521,32 @@ def run_stage3(
     audit_path = traj_path.with_name("stage3_tool_mapping.json")
     audit_path.write_text(
         json.dumps(
-            _tool_mapping_audit(raw_events, freeform, forest),
+            _tool_mapping_audit(
+                raw_events, freeform, forest, records=resolution_records
+            ),
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    proposals_path = traj_path.with_name("stage3_tool_proposals.json")
+    proposals_path.write_text(
+        json.dumps(
+            _tool_proposals_payload(resolution_records),
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    parameter_audit_path = traj_path.with_name("stage3_parameter_audit.json")
+    parameter_audit_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "canonical_inputs_v2",
+                "calls": [item.model_dump() for item in parameter_audits],
+                "valid_calls": sum(item.valid for item in parameter_audits),
+                "total_calls": len(parameter_audits),
+            },
             ensure_ascii=False,
             indent=2,
         ),
