@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from tool.contract import Observation, RuntimeContext, not_implemented
+from tool.contract import Observation, RuntimeContext
+from tool.image_measure._measure import execute_measure
 
 
 def execute(
@@ -13,12 +14,6 @@ def execute(
     inputs: dict[str, Any],
     ctx: RuntimeContext | None = None,
 ) -> Observation:
-    """执行 image_measure.measure。尚未接入真实执行器。"""
+    """执行 image_measure.measure：像素量测，仅在 reference 可解析时换算实尺。"""
 
-    return not_implemented(
-        'image_measure',
-        'measure',
-        purpose=purpose,
-        inputs=inputs,
-        ctx=ctx,
-    )
+    return execute_measure(purpose=purpose, inputs=inputs, ctx=ctx)

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from tool.contract import Observation, RuntimeContext, not_implemented
+from tool.contract import Observation, RuntimeContext
+from tool.ocr_read._ocr import execute_recognize
 
 
 def execute(
@@ -13,12 +14,6 @@ def execute(
     inputs: dict[str, Any],
     ctx: RuntimeContext | None = None,
 ) -> Observation:
-    """执行 ocr_read.recognize。尚未接入真实执行器。"""
+    """执行 ocr_read.recognize：返回原始文字、框与分数，不改写证据。"""
 
-    return not_implemented(
-        'ocr_read',
-        'recognize',
-        purpose=purpose,
-        inputs=inputs,
-        ctx=ctx,
-    )
+    return execute_recognize(purpose=purpose, inputs=inputs, ctx=ctx)

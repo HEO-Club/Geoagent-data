@@ -38,7 +38,22 @@ def test_tool_package_matches_catalog_layout() -> None:
             assert (package_dir / f"{operation}.py").is_file(), (tool_name, operation)
 
 
-def test_catalog_operations_return_not_implemented_placeholder() -> None:
+IMPLEMENTED_OPERATIONS = {
+    ("image_edit", "crop"),
+    ("image_edit", "zoom"),
+    ("image_edit", "enhance"),
+    ("image_measure", "measure"),
+    ("image_compare", "compare"),
+    ("ocr_read", "recognize"),
+    ("ocr_read", "decode"),
+    ("reverse_image_search", "search"),
+    ("reverse_image_search", "search_crop"),
+    ("media_metadata_read", "exif"),
+    ("media_metadata_read", "file"),
+}
+
+
+def test_unimplemented_catalog_operations_return_placeholder() -> None:
     for tool_name, operations in _catalog_tools():
         for operation in operations:
             observation = execute(
@@ -49,7 +64,11 @@ def test_catalog_operations_return_not_implemented_placeholder() -> None:
             )
             assert isinstance(observation, Observation)
             assert observation.ok is False
-            assert observation.error_code == "not_implemented"
+            if (tool_name, operation) in IMPLEMENTED_OPERATIONS:
+                assert observation.error_code != "not_implemented"
+                assert observation.error_code == "missing_input"
+            else:
+                assert observation.error_code == "not_implemented"
 
 
 def test_unknown_tool_and_operation_are_structured_errors() -> None:

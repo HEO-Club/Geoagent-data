@@ -6,7 +6,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from tool.runtime.image_store import ImageStore
 
 
 @dataclass
@@ -19,6 +22,7 @@ class RuntimeContext:
     active_area: str | None = None
     active_session: str | None = None
     extras: dict[str, Any] = field(default_factory=dict)
+    image_store: ImageStore | None = None
 
 
 @dataclass

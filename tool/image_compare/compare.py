@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from tool.contract import Observation, RuntimeContext, not_implemented
+from tool.contract import Observation, RuntimeContext
+from tool.image_compare._compare import execute_compare
 
 
 def execute(
@@ -13,12 +14,6 @@ def execute(
     inputs: dict[str, Any],
     ctx: RuntimeContext | None = None,
 ) -> Observation:
-    """执行 image_compare.compare。尚未接入真实执行器。"""
+    """执行 image_compare.compare：特征/像素/直方图/几何比较，返回可核验证据。"""
 
-    return not_implemented(
-        'image_compare',
-        'compare',
-        purpose=purpose,
-        inputs=inputs,
-        ctx=ctx,
-    )
+    return execute_compare(purpose=purpose, inputs=inputs, ctx=ctx)

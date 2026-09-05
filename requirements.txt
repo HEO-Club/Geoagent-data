@@ -13,6 +13,8 @@ geopy
 pillow
 opencv-python
 imageio-ffmpeg
+rapidocr
+onnxruntime
 
 # 工程与测试
 tenacity

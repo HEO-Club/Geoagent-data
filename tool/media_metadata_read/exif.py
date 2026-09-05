@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from tool.contract import Observation, RuntimeContext, not_implemented
+from tool.contract import Observation, RuntimeContext
+from tool.media_metadata_read._metadata import execute_exif
 
 
 def execute(
@@ -13,12 +14,6 @@ def execute(
     inputs: dict[str, Any],
     ctx: RuntimeContext | None = None,
 ) -> Observation:
-    """执行 media_metadata_read.exif。尚未接入真实执行器。"""
+    """执行 media_metadata_read.exif：返回 EXIF/GPS 字段，缺失不回退。"""
 
-    return not_implemented(
-        'media_metadata_read',
-        'exif',
-        purpose=purpose,
-        inputs=inputs,
-        ctx=ctx,
-    )
+    return execute_exif(purpose=purpose, inputs=inputs, ctx=ctx)

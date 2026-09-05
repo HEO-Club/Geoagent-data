@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from tool.contract import Observation, RuntimeContext, not_implemented
+from tool.contract import Observation, RuntimeContext
+from tool.media_metadata_read._metadata import execute_file
 
 
 def execute(
@@ -13,12 +14,6 @@ def execute(
     inputs: dict[str, Any],
     ctx: RuntimeContext | None = None,
 ) -> Observation:
-    """执行 media_metadata_read.file。尚未接入真实执行器。"""
+    """执行 media_metadata_read.file：容器与文件系统元数据，不冒充拍摄时间。"""
 
-    return not_implemented(
-        'media_metadata_read',
-        'file',
-        purpose=purpose,
-        inputs=inputs,
-        ctx=ctx,
-    )
+    return execute_file(purpose=purpose, inputs=inputs, ctx=ctx)

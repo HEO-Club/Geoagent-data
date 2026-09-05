@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from tool.contract import Observation, RuntimeContext, not_implemented
+from tool.contract import Observation, RuntimeContext
+from tool.image_edit._transform import execute_zoom
 
 
 def execute(
@@ -13,12 +14,6 @@ def execute(
     inputs: dict[str, Any],
     ctx: RuntimeContext | None = None,
 ) -> Observation:
-    """执行 image_edit.zoom。尚未接入真实执行器。"""
+    """执行 image_edit.zoom：裁剪后 Lanczos 放大，不发明细节。"""
 
-    return not_implemented(
-        'image_edit',
-        'zoom',
-        purpose=purpose,
-        inputs=inputs,
-        ctx=ctx,
-    )
+    return execute_zoom(purpose=purpose, inputs=inputs, ctx=ctx)

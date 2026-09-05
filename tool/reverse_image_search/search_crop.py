@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from tool.contract import Observation, RuntimeContext, not_implemented
+from tool.contract import Observation, RuntimeContext
+from tool.reverse_image_search._search import execute_search_crop
 
 
 def execute(
@@ -13,12 +14,6 @@ def execute(
     inputs: dict[str, Any],
     ctx: RuntimeContext | None = None,
 ) -> Observation:
-    """执行 reverse_image_search.search_crop。尚未接入真实执行器。"""
+    """执行 reverse_image_search.search_crop：本地裁剪后再反向搜图。"""
 
-    return not_implemented(
-        'reverse_image_search',
-        'search_crop',
-        purpose=purpose,
-        inputs=inputs,
-        ctx=ctx,
-    )
+    return execute_search_crop(purpose=purpose, inputs=inputs, ctx=ctx)

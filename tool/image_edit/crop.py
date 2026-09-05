@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from tool.contract import Observation, RuntimeContext, not_implemented
+from tool.contract import Observation, RuntimeContext
+from tool.image_edit._transform import execute_crop
 
 
 def execute(
@@ -13,12 +14,6 @@ def execute(
     inputs: dict[str, Any],
     ctx: RuntimeContext | None = None,
 ) -> Observation:
-    """执行 image_edit.crop。尚未接入真实执行器。"""
+    """执行 image_edit.crop：按 region 裁剪并返回派生图 ID。"""
 
-    return not_implemented(
-        'image_edit',
-        'crop',
-        purpose=purpose,
-        inputs=inputs,
-        ctx=ctx,
-    )
+    return execute_crop(purpose=purpose, inputs=inputs, ctx=ctx)
