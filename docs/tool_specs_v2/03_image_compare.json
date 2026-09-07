@@ -1,0 +1,280 @@
+{
+  "schema_version": "geoagent_tool_implementation_spec_v1",
+  "ordinal": 3,
+  "research_date": "2026-08-31",
+  "research_status": "design_researched_not_runtime_verified",
+  "catalog_source": "canonical_tool_catalog_v2.json",
+  "canonical_tool": {
+    "canonical": {
+      "name": "image_compare",
+      "description": "对多张图片执行特征、像素或几何比较。",
+      "executor": "local_image_comparison",
+      "usage": "仅在需要访问该真实执行器并获得新证据时调用；先选择 operation，再按其 input_schema 填 inputs。缺少执行级参数时按 acquisition_hint 获取，不得编造坐标、文件、会话或前置结果。",
+      "operations": [
+        {
+          "name": "compare",
+          "description": "对两张或多张图片执行程序化视觉差异比较",
+          "aliases": [
+            "diff",
+            "match"
+          ],
+          "input_schema": {
+            "description": "对两张或多张真实图片执行程序化差异或特征比较。",
+            "fields": [
+              {
+                "name": "images",
+                "type": "array",
+                "required": true,
+                "requirement_level": "execution",
+                "description": "参与比较的图片路径或 ID，至少两张。",
+                "acquisition_hint": "从当前输入图或前置 crop/capture 返回值收集真实图片 ID，至少两张。",
+                "context_sources": [
+                  "current_images"
+                ],
+                "context_default": "$current_images",
+                "aliases": [
+                  "图片",
+                  "图像列表",
+                  "image_paths",
+                  "candidates"
+                ],
+                "allowed_values": [],
+                "item_type": "string",
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "method",
+                "type": "string",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "比较方法。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 method；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "方式",
+                  "比对方式"
+                ],
+                "allowed_values": [
+                  "feature",
+                  "pixel",
+                  "histogram",
+                  "geometry",
+                  "auto"
+                ],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "feature"
+              },
+              {
+                "name": "region",
+                "type": "string_or_array",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "图片中的目标区域，可用 [x1,y1,x2,y2]、命名区域或可复现的区域描述表示。",
+                "acquisition_hint": "在当前图片上明确裁剪框或可复现的目标区域描述。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "区域",
+                  "裁剪区域",
+                  "目标区域",
+                  "roi",
+                  "bbox",
+                  "crop_region"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "bridge_tower_top"
+              }
+            ],
+            "required_any": [],
+            "mutually_exclusive": [],
+            "allow_extra": true,
+            "examples": []
+          }
+        }
+      ],
+      "params": [
+        {
+          "name": "operation",
+          "type": "string",
+          "required": true,
+          "description": "本次调用执行的 operation",
+          "allowed_values": [
+            "compare"
+          ]
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "required": true,
+          "description": "本次调用要补齐的证据缺口，不得伪装成工具返回",
+          "allowed_values": []
+        },
+        {
+          "name": "inputs",
+          "type": "object",
+          "required": true,
+          "description": "严格按 operation.input_schema 传给执行器的真实输入",
+          "allowed_values": []
+        }
+      ],
+      "observation_fields": [
+        {
+          "name": "result",
+          "type": "object",
+          "nullable": true,
+          "description": "执行器实际返回；不得写入假设、计划或模型自行补全的数据"
+        }
+      ],
+      "is_terminal": false
+    },
+    "variants": [],
+    "variant_operations": {}
+  },
+  "parameter_guide": {
+    "compare": [
+      {
+        "name": "images",
+        "type": "array",
+        "required": true,
+        "requirement_level": "execution",
+        "purpose": "参与比较的图片路径或 ID，至少两张。",
+        "how_to_obtain": "从当前输入图或前置 crop/capture 返回值收集真实图片 ID，至少两张。",
+        "context_sources": [
+          "current_images"
+        ],
+        "context_default": "$current_images",
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "图片",
+          "图像列表",
+          "image_paths",
+          "candidates"
+        ],
+        "validation_note": "execution 级字段缺失时不得执行；按 how_to_obtain 先获取真实值。"
+      },
+      {
+        "name": "method",
+        "type": "string",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "比较方法。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 method；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [
+          "feature",
+          "pixel",
+          "histogram",
+          "geometry",
+          "auto"
+        ],
+        "minimum": null,
+        "maximum": null,
+        "example": "feature",
+        "aliases": [
+          "方式",
+          "比对方式"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "region",
+        "type": "string_or_array",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "图片中的目标区域，可用 [x1,y1,x2,y2]、命名区域或可复现的区域描述表示。",
+        "how_to_obtain": "在当前图片上明确裁剪框或可复现的目标区域描述。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "bridge_tower_top",
+        "aliases": [
+          "区域",
+          "裁剪区域",
+          "目标区域",
+          "roi",
+          "bbox",
+          "crop_region"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      }
+    ]
+  },
+  "implementation_research": {
+    "architecture": "local_cv_then_optional_embedding",
+    "backends": [
+      {
+        "name": "OpenCV feature matching",
+        "kind": "local_library",
+        "role": "特征点匹配、RANSAC 和单应性验证",
+        "official_url": "https://docs.opencv.org/4.x/d1/de0/tutorial_py_feature_homography.html",
+        "authentication": "无",
+        "license_note": "使用前核对软件与数据许可。"
+      }
+    ],
+    "execution_flow": [
+      "统一图像尺寸/颜色并限定区域",
+      "计算匹配、配准或差异",
+      "返回对应点、得分、叠加图与失败原因"
+    ],
+    "limitations": [
+      "相似不等于同一地点",
+      "跨季节/视角/遮挡需降低置信度",
+      "必须返回可检查的匹配证据而非只有结论"
+    ],
+    "mcp_strategy": "本地 CV executor；深度特征模型只能作为可替换 backend。"
+  },
+  "recommended_executor_contract": {
+    "required_result_fields": [
+      "status",
+      "provider_or_algorithm",
+      "request_parameters_used",
+      "retrieved_at",
+      "source_result_id_or_raw_ref",
+      "provenance",
+      "warnings"
+    ],
+    "status_values": [
+      "success",
+      "no_result",
+      "no_coverage",
+      "parameter_missing",
+      "unsupported",
+      "permission_denied",
+      "provider_error"
+    ],
+    "rules": [
+      "no_result 与 no_coverage、provider_error 必须分开",
+      "任何精确数值必须带单位、方法和源数据",
+      "调用失败不得生成看似成功的 Observation",
+      "密钥、令牌和内部文件系统路径不得进入训练样本"
+    ]
+  },
+  "new_tool_review_hint": {
+    "covered_execution_boundary": "local_image_comparison",
+    "do_not_create_when": [
+      "只是对象、地区、查询词或参数不同",
+      "现有 Tool 的某个 operation 与本次动作共享同一执行器",
+      "只是基于已有结果进行比较、筛选、总结或推理"
+    ],
+    "consider_new_only_when": [
+      "现有31类执行器及所有 operation 均不能执行该动作",
+      "存在独立、可实现、可测试的真实后端边界",
+      "多个独立样本反复出现相同能力缺口",
+      "能够提供完整 schema、许可评估、失败语义和测试证据"
+    ]
+  }
+}

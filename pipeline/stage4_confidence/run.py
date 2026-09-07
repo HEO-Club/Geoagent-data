@@ -935,6 +935,8 @@ def run_stage4(
             trajectory=trajectory,
             transcript=transcript,
             parameter_audits=audits,
+            tool_mapping=mapping,
+            observation_audit=resolved_observation_audit,
             context_transcript=review_context_transcript,
             source_video_path=source_video_path,
         )

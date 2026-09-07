@@ -1,0 +1,422 @@
+{
+  "schema_version": "geoagent_tool_implementation_spec_v1",
+  "ordinal": 16,
+  "research_date": "2026-08-31",
+  "research_status": "design_researched_not_runtime_verified",
+  "catalog_source": "canonical_tool_catalog_v2.json",
+  "canonical_tool": {
+    "canonical": {
+      "name": "osm_result_process",
+      "description": "筛选或导出已有 OSM 结果。",
+      "executor": "local_vector_result_processor",
+      "usage": "仅在需要访问该真实执行器并获得新证据时调用；先选择 operation，再按其 input_schema 填 inputs。缺少执行级参数时按 acquisition_hint 获取，不得编造坐标、文件、会话或前置结果。",
+      "operations": [
+        {
+          "name": "filter",
+          "description": "在 OSM 查询结果中按属性或几何条件筛选",
+          "aliases": [],
+          "input_schema": {
+            "description": "在已返回的 OSM 结果上继续按属性或几何关系筛选。",
+            "fields": [
+              {
+                "name": "source_result",
+                "type": "string_or_object",
+                "required": true,
+                "requirement_level": "execution",
+                "description": "前一步真实工具返回的结果 ID、数据集引用或已加载图层；不能用尚未执行的假想结果。",
+                "acquisition_hint": "引用产生该数据的前置 Tool 返回 ID；若尚未执行前置查询，先调用对应 query/retrieve。",
+                "context_sources": [
+                  "previous_tool_result"
+                ],
+                "context_default": "$previous_tool_result",
+                "aliases": [
+                  "结果",
+                  "已有结果",
+                  "输入结果",
+                  "数据源",
+                  "source",
+                  "result_id",
+                  "layer"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "osm_result_01"
+              },
+              {
+                "name": "filters",
+                "type": "object",
+                "required": true,
+                "requirement_level": "execution",
+                "description": "OSM 属性过滤条件。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 filters；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "筛选条件",
+                  "标签",
+                  "conditions"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "spatial_filter",
+                "type": "object",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "空间过滤条件，如距河流多少米或与道路相交。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 spatial_filter；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "空间条件",
+                  "geometry_filter"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              }
+            ],
+            "required_any": [],
+            "mutually_exclusive": [],
+            "allow_extra": true,
+            "examples": []
+          }
+        },
+        {
+          "name": "export",
+          "description": "把查询结果导出为 GeoJSON、矢量图层或其他格式",
+          "aliases": [],
+          "input_schema": {
+            "description": "把已有 OSM 结果导出为指定格式。",
+            "fields": [
+              {
+                "name": "source_result",
+                "type": "string_or_object",
+                "required": true,
+                "requirement_level": "execution",
+                "description": "前一步真实工具返回的结果 ID、数据集引用或已加载图层；不能用尚未执行的假想结果。",
+                "acquisition_hint": "引用产生该数据的前置 Tool 返回 ID；若尚未执行前置查询，先调用对应 query/retrieve。",
+                "context_sources": [
+                  "previous_tool_result"
+                ],
+                "context_default": "$previous_tool_result",
+                "aliases": [
+                  "结果",
+                  "已有结果",
+                  "输入结果",
+                  "数据源",
+                  "source",
+                  "result_id",
+                  "layer"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "osm_result_01"
+              },
+              {
+                "name": "format",
+                "type": "string",
+                "required": true,
+                "requirement_level": "execution",
+                "description": "导出格式。",
+                "acquisition_hint": "根据下游用途选择明确输出格式；无法判断时由调用计划显式指定。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "格式",
+                  "输出格式"
+                ],
+                "allowed_values": [
+                  "geojson",
+                  "json",
+                  "csv",
+                  "kml",
+                  "osm_xml"
+                ],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "include_geometry",
+                "type": "boolean",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "是否保留几何。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 include_geometry；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "包含几何",
+                  "geometry"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": true
+              }
+            ],
+            "required_any": [],
+            "mutually_exclusive": [],
+            "allow_extra": true,
+            "examples": []
+          }
+        }
+      ],
+      "params": [
+        {
+          "name": "operation",
+          "type": "string",
+          "required": true,
+          "description": "本次调用执行的 operation",
+          "allowed_values": [
+            "filter",
+            "export"
+          ]
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "required": true,
+          "description": "本次调用要补齐的证据缺口，不得伪装成工具返回",
+          "allowed_values": []
+        },
+        {
+          "name": "inputs",
+          "type": "object",
+          "required": true,
+          "description": "严格按 operation.input_schema 传给执行器的真实输入",
+          "allowed_values": []
+        }
+      ],
+      "observation_fields": [
+        {
+          "name": "result",
+          "type": "object",
+          "nullable": true,
+          "description": "执行器实际返回；不得写入假设、计划或模型自行补全的数据"
+        }
+      ],
+      "is_terminal": false
+    },
+    "variants": [],
+    "variant_operations": {}
+  },
+  "parameter_guide": {
+    "filter": [
+      {
+        "name": "source_result",
+        "type": "string_or_object",
+        "required": true,
+        "requirement_level": "execution",
+        "purpose": "前一步真实工具返回的结果 ID、数据集引用或已加载图层；不能用尚未执行的假想结果。",
+        "how_to_obtain": "引用产生该数据的前置 Tool 返回 ID；若尚未执行前置查询，先调用对应 query/retrieve。",
+        "context_sources": [
+          "previous_tool_result"
+        ],
+        "context_default": "$previous_tool_result",
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "osm_result_01",
+        "aliases": [
+          "结果",
+          "已有结果",
+          "输入结果",
+          "数据源",
+          "source",
+          "result_id",
+          "layer"
+        ],
+        "validation_note": "execution 级字段缺失时不得执行；按 how_to_obtain 先获取真实值。"
+      },
+      {
+        "name": "filters",
+        "type": "object",
+        "required": true,
+        "requirement_level": "execution",
+        "purpose": "OSM 属性过滤条件。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 filters；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "筛选条件",
+          "标签",
+          "conditions"
+        ],
+        "validation_note": "execution 级字段缺失时不得执行；按 how_to_obtain 先获取真实值。"
+      },
+      {
+        "name": "spatial_filter",
+        "type": "object",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "空间过滤条件，如距河流多少米或与道路相交。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 spatial_filter；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "空间条件",
+          "geometry_filter"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      }
+    ],
+    "export": [
+      {
+        "name": "source_result",
+        "type": "string_or_object",
+        "required": true,
+        "requirement_level": "execution",
+        "purpose": "前一步真实工具返回的结果 ID、数据集引用或已加载图层；不能用尚未执行的假想结果。",
+        "how_to_obtain": "引用产生该数据的前置 Tool 返回 ID；若尚未执行前置查询，先调用对应 query/retrieve。",
+        "context_sources": [
+          "previous_tool_result"
+        ],
+        "context_default": "$previous_tool_result",
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "osm_result_01",
+        "aliases": [
+          "结果",
+          "已有结果",
+          "输入结果",
+          "数据源",
+          "source",
+          "result_id",
+          "layer"
+        ],
+        "validation_note": "execution 级字段缺失时不得执行；按 how_to_obtain 先获取真实值。"
+      },
+      {
+        "name": "format",
+        "type": "string",
+        "required": true,
+        "requirement_level": "execution",
+        "purpose": "导出格式。",
+        "how_to_obtain": "根据下游用途选择明确输出格式；无法判断时由调用计划显式指定。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [
+          "geojson",
+          "json",
+          "csv",
+          "kml",
+          "osm_xml"
+        ],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "格式",
+          "输出格式"
+        ],
+        "validation_note": "execution 级字段缺失时不得执行；按 how_to_obtain 先获取真实值。"
+      },
+      {
+        "name": "include_geometry",
+        "type": "boolean",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "是否保留几何。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 include_geometry；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": true,
+        "aliases": [
+          "包含几何",
+          "geometry"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      }
+    ]
+  },
+  "implementation_research": {
+    "architecture": "local_geodata_processing",
+    "backends": [
+      {
+        "name": "GeoPandas",
+        "kind": "local_library",
+        "role": "过滤、去重和导出 GeoJSON/GPKG/Parquet",
+        "official_url": "https://docs.geopandas.org/en/latest/docs/user_guide/io.html",
+        "authentication": "无",
+        "license_note": "使用前核对软件与数据许可。"
+      }
+    ],
+    "execution_flow": [
+      "解析真实 source_result",
+      "执行属性或空间过滤",
+      "返回新结果 ID、保留/剔除数量与导出文件"
+    ],
+    "limitations": [
+      "不得把查询与后处理混为一个外部回执",
+      "缺少属性时应报无法筛选",
+      "必须保留源结果和过滤表达式"
+    ],
+    "mcp_strategy": "本地 executor，source_result 使用不可伪造的运行时句柄。"
+  },
+  "recommended_executor_contract": {
+    "required_result_fields": [
+      "status",
+      "provider_or_algorithm",
+      "request_parameters_used",
+      "retrieved_at",
+      "source_result_id_or_raw_ref",
+      "provenance",
+      "warnings"
+    ],
+    "status_values": [
+      "success",
+      "no_result",
+      "no_coverage",
+      "parameter_missing",
+      "unsupported",
+      "permission_denied",
+      "provider_error"
+    ],
+    "rules": [
+      "no_result 与 no_coverage、provider_error 必须分开",
+      "任何精确数值必须带单位、方法和源数据",
+      "调用失败不得生成看似成功的 Observation",
+      "密钥、令牌和内部文件系统路径不得进入训练样本"
+    ]
+  },
+  "new_tool_review_hint": {
+    "covered_execution_boundary": "local_vector_result_processor",
+    "do_not_create_when": [
+      "只是对象、地区、查询词或参数不同",
+      "现有 Tool 的某个 operation 与本次动作共享同一执行器",
+      "只是基于已有结果进行比较、筛选、总结或推理"
+    ],
+    "consider_new_only_when": [
+      "现有31类执行器及所有 operation 均不能执行该动作",
+      "存在独立、可实现、可测试的真实后端边界",
+      "多个独立样本反复出现相同能力缺口",
+      "能够提供完整 schema、许可评估、失败语义和测试证据"
+    ]
+  }
+}

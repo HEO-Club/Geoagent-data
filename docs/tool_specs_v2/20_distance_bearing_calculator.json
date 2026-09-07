@@ -1,0 +1,459 @@
+{
+  "schema_version": "geoagent_tool_implementation_spec_v1",
+  "ordinal": 20,
+  "research_date": "2026-08-31",
+  "research_status": "design_researched_not_runtime_verified",
+  "catalog_source": "canonical_tool_catalog_v2.json",
+  "canonical_tool": {
+    "canonical": {
+      "name": "distance_bearing_calculator",
+      "description": "计算距离或方位角。",
+      "executor": "geodesic_calculator",
+      "usage": "仅在需要访问该真实执行器并获得新证据时调用；先选择 operation，再按其 input_schema 填 inputs。缺少执行级参数时按 acquisition_hint 获取，不得编造坐标、文件、会话或前置结果。",
+      "operations": [
+        {
+          "name": "distance",
+          "description": "计算地点、要素或视点之间的距离",
+          "aliases": [],
+          "input_schema": {
+            "description": "计算两个或多个地理点/要素之间的距离。",
+            "fields": [
+              {
+                "name": "points",
+                "type": "array",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "至少两个坐标、地点或要素引用。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 points；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "点",
+                  "地点",
+                  "对象",
+                  "locations"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "features",
+                "type": "string_or_array",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "需要测量宽度或间距的地理要素。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 features；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "目标",
+                  "要素",
+                  "target"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "unit",
+                "type": "string",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "距离单位。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 unit；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "单位"
+                ],
+                "allowed_values": [
+                  "m",
+                  "km",
+                  "mile"
+                ],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "m"
+              },
+              {
+                "name": "mode",
+                "type": "string",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "直线、沿路或沿几何距离。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 mode；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "方式",
+                  "方法"
+                ],
+                "allowed_values": [
+                  "geodesic",
+                  "route",
+                  "geometry",
+                  "width"
+                ],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              }
+            ],
+            "required_any": [
+              [
+                "points",
+                "features"
+              ]
+            ],
+            "mutually_exclusive": [],
+            "allow_extra": true,
+            "examples": []
+          }
+        },
+        {
+          "name": "bearing",
+          "description": "计算方向、方位角或朝向",
+          "aliases": [],
+          "input_schema": {
+            "description": "计算起点到终点的方位角或方向。",
+            "fields": [
+              {
+                "name": "origin",
+                "type": "string_or_object",
+                "required": true,
+                "requirement_level": "execution",
+                "description": "起点或观察点。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 origin；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "起点",
+                  "观察点",
+                  "from"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "target",
+                "type": "string_or_object",
+                "required": true,
+                "requirement_level": "execution",
+                "description": "终点或目标点。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 target；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "终点",
+                  "目标点",
+                  "to"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "reference",
+                "type": "string",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "方位参考系。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 reference；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "参考系"
+                ],
+                "allowed_values": [
+                  "true_north",
+                  "magnetic_north",
+                  "image_axis"
+                ],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              }
+            ],
+            "required_any": [],
+            "mutually_exclusive": [],
+            "allow_extra": true,
+            "examples": []
+          }
+        }
+      ],
+      "params": [
+        {
+          "name": "operation",
+          "type": "string",
+          "required": true,
+          "description": "本次调用执行的 operation",
+          "allowed_values": [
+            "distance",
+            "bearing"
+          ]
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "required": true,
+          "description": "本次调用要补齐的证据缺口，不得伪装成工具返回",
+          "allowed_values": []
+        },
+        {
+          "name": "inputs",
+          "type": "object",
+          "required": true,
+          "description": "严格按 operation.input_schema 传给执行器的真实输入",
+          "allowed_values": []
+        }
+      ],
+      "observation_fields": [
+        {
+          "name": "result",
+          "type": "object",
+          "nullable": true,
+          "description": "执行器实际返回；不得写入假设、计划或模型自行补全的数据"
+        }
+      ],
+      "is_terminal": false
+    },
+    "variants": [
+      "distance_measurement_tool"
+    ],
+    "variant_operations": {
+      "distance_measurement_tool": "distance"
+    }
+  },
+  "parameter_guide": {
+    "distance": [
+      {
+        "name": "points",
+        "type": "array",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "至少两个坐标、地点或要素引用。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 points；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "点",
+          "地点",
+          "对象",
+          "locations"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "features",
+        "type": "string_or_array",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "需要测量宽度或间距的地理要素。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 features；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "目标",
+          "要素",
+          "target"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "unit",
+        "type": "string",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "距离单位。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 unit；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [
+          "m",
+          "km",
+          "mile"
+        ],
+        "minimum": null,
+        "maximum": null,
+        "example": "m",
+        "aliases": [
+          "单位"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "mode",
+        "type": "string",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "直线、沿路或沿几何距离。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 mode；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [
+          "geodesic",
+          "route",
+          "geometry",
+          "width"
+        ],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "方式",
+          "方法"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      }
+    ],
+    "bearing": [
+      {
+        "name": "origin",
+        "type": "string_or_object",
+        "required": true,
+        "requirement_level": "execution",
+        "purpose": "起点或观察点。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 origin；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "起点",
+          "观察点",
+          "from"
+        ],
+        "validation_note": "execution 级字段缺失时不得执行；按 how_to_obtain 先获取真实值。"
+      },
+      {
+        "name": "target",
+        "type": "string_or_object",
+        "required": true,
+        "requirement_level": "execution",
+        "purpose": "终点或目标点。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 target；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "终点",
+          "目标点",
+          "to"
+        ],
+        "validation_note": "execution 级字段缺失时不得执行；按 how_to_obtain 先获取真实值。"
+      },
+      {
+        "name": "reference",
+        "type": "string",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "方位参考系。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 reference；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [
+          "true_north",
+          "magnetic_north",
+          "image_axis"
+        ],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "参考系"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      }
+    ]
+  },
+  "implementation_research": {
+    "architecture": "local_geodesic_math",
+    "backends": [
+      {
+        "name": "pyproj.Geod",
+        "kind": "local_library",
+        "role": "椭球测地距离与正反方位角",
+        "official_url": "https://pyproj4.github.io/pyproj/stable/api/geod.html",
+        "authentication": "无",
+        "license_note": "使用前核对软件与数据许可。"
+      }
+    ],
+    "execution_flow": [
+      "验证点坐标与 CRS",
+      "按 mode 选择测地/投影/三维方法",
+      "返回数值、单位、方法和输入点"
+    ],
+    "limitations": [
+      "经纬度不能直接欧氏相减当米",
+      "道路距离应交给 route_query",
+      "上游坐标不实会产生精确但错误结果"
+    ],
+    "mcp_strategy": "纯本地确定性函数，适合直接内嵌流水线。"
+  },
+  "recommended_executor_contract": {
+    "required_result_fields": [
+      "status",
+      "provider_or_algorithm",
+      "request_parameters_used",
+      "retrieved_at",
+      "source_result_id_or_raw_ref",
+      "provenance",
+      "warnings"
+    ],
+    "status_values": [
+      "success",
+      "no_result",
+      "no_coverage",
+      "parameter_missing",
+      "unsupported",
+      "permission_denied",
+      "provider_error"
+    ],
+    "rules": [
+      "no_result 与 no_coverage、provider_error 必须分开",
+      "任何精确数值必须带单位、方法和源数据",
+      "调用失败不得生成看似成功的 Observation",
+      "密钥、令牌和内部文件系统路径不得进入训练样本"
+    ]
+  },
+  "new_tool_review_hint": {
+    "covered_execution_boundary": "geodesic_calculator",
+    "do_not_create_when": [
+      "只是对象、地区、查询词或参数不同",
+      "现有 Tool 的某个 operation 与本次动作共享同一执行器",
+      "只是基于已有结果进行比较、筛选、总结或推理"
+    ],
+    "consider_new_only_when": [
+      "现有31类执行器及所有 operation 均不能执行该动作",
+      "存在独立、可实现、可测试的真实后端边界",
+      "多个独立样本反复出现相同能力缺口",
+      "能够提供完整 schema、许可评估、失败语义和测试证据"
+    ]
+  }
+}

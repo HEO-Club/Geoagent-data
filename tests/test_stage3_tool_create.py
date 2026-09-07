@@ -150,6 +150,8 @@ def test_unknown_tool_maps_to_catalog_without_temporary(
     assert crop["temporary"] is False
     assert mapping["temporary_tools"] == []
     assert mapping.get("temporary_operations") == []
+    assert mapping["tool_routing"]["pool"] == "canonical_only"
+    assert mapping["tool_routing"]["requires_tool_review"] is False
     proposals = json.loads(
         (tmp_path / "stage3_tool_proposals.json").read_text(encoding="utf-8")
     )
@@ -197,6 +199,7 @@ def test_create_without_schema_is_temporary_and_notes_report(
                 confidence=0.95,
                 proposed_definition=_incomplete_definition(),
                 not_catalog_reason="不是 zoom_inspect / web_search",
+                catalog_candidates=["image_edit", "image_compare"],
                 reason="需要新执行器",
             )
         return None
@@ -225,6 +228,14 @@ def test_create_without_schema_is_temporary_and_notes_report(
     assert mapping["temporary_tools"][0]["raw_tool"] == "crop_and_look"
     assert mapping["temporary_tools"][0]["reason"] == map_tools.TEMP_NEW_EXECUTOR_REASON
     assert mapping.get("temporary_operations") == []
+    assert mapping["tool_routing"]["pool"] == "temporary_review"
+    assert mapping["tool_routing"]["requires_tool_review"] is True
+    assert mapping["tool_review_candidates"][0]["thought"]
+    review_candidates = json.loads(
+        (tmp_path / "stage3_tool_review_candidates.json").read_text(encoding="utf-8")
+    )
+    assert review_candidates["tool_routing"]["pool"] == "temporary_review"
+    assert review_candidates["candidates"][0]["raw_tool"] == "crop_and_look"
     proposals = json.loads(
         (tmp_path / "stage3_tool_proposals.json").read_text(encoding="utf-8")
     )
@@ -305,6 +316,7 @@ def test_create_with_complete_schema_is_temporary_not_proposal(
                 confidence=0.96,
                 proposed_definition=_complete_lidar_definition(),
                 not_catalog_reason="不是 satellite_imagery_query / map_layer_query",
+                catalog_candidates=["satellite_imagery_query", "map_layer_query"],
                 reason="独立点云切片执行器",
             )
         return None
@@ -394,6 +406,47 @@ def test_high_confidence_reasoning_still_demoted(
     assert freeform.steps[0].tool is None
     assert trees.find_tree_for_name(forest, "apply_time_consistency_filter") is None
     assert records[0].disposition == "demoted"
+
+
+def test_low_confidence_create_is_ambiguous_not_new_tool_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("STAGE3_COMPILE_PARAMS", "false")
+    monkeypatch.setenv("TOOL_CATALOG_PATH", str(OFFICIAL_CATALOG))
+    clear_settings_cache()
+    catalog_path = _write_v2_catalog(tmp_path / "catalog.json")
+
+    def matcher(name: str, _forest: object) -> MatchDecision | None:
+        if name != "crop_and_look":
+            return None
+        return MatchDecision(
+            raw_tool=name,
+            action="create",
+            create_kind="new_executor",
+            canonical_name="uncertain_helper",
+            operation="execute",
+            confidence=0.72,
+            not_catalog_reason="暂时无法归并",
+            catalog_candidates=["image_edit", "image_compare"],
+            reason="把握不足",
+        )
+
+    run_stage3(
+        _unknown_crop_freeform("ambiguous_temp"),
+        trees_path=catalog_path,
+        out_trajectory_path=str(tmp_path / "stage3_trajectory.json"),
+        out_jsonl_path=str(tmp_path / "shard.jsonl"),
+        image_paths=["scene.jpg"],
+        matcher=matcher,
+        compile_params=False,
+    )
+    mapping = json.loads(
+        (tmp_path / "stage3_tool_mapping.json").read_text(encoding="utf-8")
+    )
+    item = mapping["temporary_tools"][0]
+    assert item["review_kind"] == "ambiguous_unmapped"
+    assert item["reason"] == map_tools.TEMP_AMBIGUOUS_REASON
+    assert mapping["tool_routing"]["requires_tool_review"] is True
 
 
 def test_reclassify_still_rejects_create(
@@ -501,6 +554,8 @@ def test_new_operation_missing_is_temporary_operation(
                         )
                     ],
                 ),
+                not_catalog_reason="osm_query 只有 query/count，现有 operation 不执行本地结果过滤",
+                catalog_candidates=["osm_query", "osm_result_process"],
                 reason="已有执行器缺过滤 operation",
             )
         return None

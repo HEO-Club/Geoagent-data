@@ -1,0 +1,597 @@
+{
+  "schema_version": "geoagent_tool_implementation_spec_v1",
+  "ordinal": 7,
+  "research_date": "2026-08-31",
+  "research_status": "design_researched_not_runtime_verified",
+  "catalog_source": "canonical_tool_catalog_v2.json",
+  "canonical_tool": {
+    "canonical": {
+      "name": "web_search",
+      "description": "执行开放网页或指定站点搜索。",
+      "executor": "web_search_engine",
+      "usage": "仅在需要访问该真实执行器并获得新证据时调用；先选择 operation，再按其 input_schema 填 inputs。缺少执行级参数时按 acquisition_hint 获取，不得编造坐标、文件、会话或前置结果。",
+      "operations": [
+        {
+          "name": "keyword_search",
+          "description": "按关键词和可选站点范围检索网页",
+          "aliases": [
+            "search",
+            "query"
+          ],
+          "input_schema": {
+            "description": "在开放网页中按关键词检索。",
+            "fields": [
+              {
+                "name": "query",
+                "type": "string_or_array",
+                "required": true,
+                "requirement_level": "semantic",
+                "description": "提交给该服务的检索词、自然语言查询或明确对象描述。",
+                "acquisition_hint": "从本步 purpose/Thought 中提取明确检索对象和约束，不得只写“查询一下”。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "关键词",
+                  "检索词",
+                  "查询词",
+                  "检索对象",
+                  "对象",
+                  "目标",
+                  "特征组合",
+                  "筛选条件",
+                  "material",
+                  "keywords",
+                  "问题",
+                  "q",
+                  "search_query"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "铁路桥 石栏 历史照片"
+              },
+              {
+                "name": "domains",
+                "type": "array",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "可选域名白名单。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 domains；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "站点",
+                  "网站",
+                  "site",
+                  "domain"
+                ],
+                "allowed_values": [],
+                "item_type": "string",
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "language",
+                "type": "string",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "结果语言代码。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 language；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "语言",
+                  "lang"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "time_range",
+                "type": "string_or_object",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。",
+                "acquisition_hint": "从字幕、task 或已有结果提取真实时间范围；来源没有时不得猜测。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "时期",
+                  "时间",
+                  "年份",
+                  "年代",
+                  "年代范围",
+                  "日期",
+                  "影像时期",
+                  "影像年份",
+                  "date_range",
+                  "year"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "1980-1995"
+              },
+              {
+                "name": "top_k",
+                "type": "integer",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "最多返回结果数。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 top_k；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "结果数",
+                  "limit"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": 1.0,
+                "maximum": 100.0,
+                "example": null
+              }
+            ],
+            "required_any": [],
+            "mutually_exclusive": [],
+            "allow_extra": true,
+            "examples": []
+          }
+        },
+        {
+          "name": "site_search",
+          "description": "在指定站点或内容平台内部检索",
+          "aliases": [],
+          "input_schema": {
+            "description": "在指定网站或内容平台内部检索。",
+            "fields": [
+              {
+                "name": "query",
+                "type": "string_or_array",
+                "required": true,
+                "requirement_level": "semantic",
+                "description": "提交给该服务的检索词、自然语言查询或明确对象描述。",
+                "acquisition_hint": "从本步 purpose/Thought 中提取明确检索对象和约束，不得只写“查询一下”。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "关键词",
+                  "检索词",
+                  "查询词",
+                  "检索对象",
+                  "对象",
+                  "目标",
+                  "特征组合",
+                  "筛选条件",
+                  "material",
+                  "keywords",
+                  "问题",
+                  "q",
+                  "search_query"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "铁路桥 石栏 历史照片"
+              },
+              {
+                "name": "site",
+                "type": "string",
+                "required": true,
+                "requirement_level": "semantic",
+                "description": "限定检索的网站、域名或平台。",
+                "acquisition_hint": "从任务指定平台/域名中提取；未限定站点时应改用 keyword_search。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "站点",
+                  "网站",
+                  "平台",
+                  "domain"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "time_range",
+                "type": "string_or_object",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。",
+                "acquisition_hint": "从字幕、task 或已有结果提取真实时间范围；来源没有时不得猜测。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "时期",
+                  "时间",
+                  "年份",
+                  "年代",
+                  "年代范围",
+                  "日期",
+                  "影像时期",
+                  "影像年份",
+                  "date_range",
+                  "year"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "1980-1995"
+              },
+              {
+                "name": "top_k",
+                "type": "integer",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "最多返回结果数。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 top_k；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "结果数",
+                  "limit"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": 1.0,
+                "maximum": 100.0,
+                "example": null
+              }
+            ],
+            "required_any": [],
+            "mutually_exclusive": [],
+            "allow_extra": true,
+            "examples": []
+          }
+        }
+      ],
+      "params": [
+        {
+          "name": "operation",
+          "type": "string",
+          "required": true,
+          "description": "本次调用执行的 operation",
+          "allowed_values": [
+            "keyword_search",
+            "site_search"
+          ]
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "required": true,
+          "description": "本次调用要补齐的证据缺口，不得伪装成工具返回",
+          "allowed_values": []
+        },
+        {
+          "name": "inputs",
+          "type": "object",
+          "required": true,
+          "description": "严格按 operation.input_schema 传给执行器的真实输入",
+          "allowed_values": []
+        }
+      ],
+      "observation_fields": [
+        {
+          "name": "result",
+          "type": "object",
+          "nullable": true,
+          "description": "执行器实际返回；不得写入假设、计划或模型自行补全的数据"
+        }
+      ],
+      "is_terminal": false
+    },
+    "variants": [
+      "keyword_search",
+      "keyword_feature_search",
+      "cross_match_keywords_with_districts"
+    ],
+    "variant_operations": {
+      "keyword_search": "keyword_search",
+      "keyword_feature_search": "keyword_search",
+      "cross_match_keywords_with_districts": "keyword_search"
+    }
+  },
+  "parameter_guide": {
+    "keyword_search": [
+      {
+        "name": "query",
+        "type": "string_or_array",
+        "required": true,
+        "requirement_level": "semantic",
+        "purpose": "提交给该服务的检索词、自然语言查询或明确对象描述。",
+        "how_to_obtain": "从本步 purpose/Thought 中提取明确检索对象和约束，不得只写“查询一下”。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "铁路桥 石栏 历史照片",
+        "aliases": [
+          "关键词",
+          "检索词",
+          "查询词",
+          "检索对象",
+          "对象",
+          "目标",
+          "特征组合",
+          "筛选条件",
+          "material",
+          "keywords",
+          "问题",
+          "q",
+          "search_query"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "domains",
+        "type": "array",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "可选域名白名单。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 domains；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "站点",
+          "网站",
+          "site",
+          "domain"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "language",
+        "type": "string",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "结果语言代码。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 language；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "语言",
+          "lang"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "time_range",
+        "type": "string_or_object",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。",
+        "how_to_obtain": "从字幕、task 或已有结果提取真实时间范围；来源没有时不得猜测。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "1980-1995",
+        "aliases": [
+          "时期",
+          "时间",
+          "年份",
+          "年代",
+          "年代范围",
+          "日期",
+          "影像时期",
+          "影像年份",
+          "date_range",
+          "year"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "top_k",
+        "type": "integer",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "最多返回结果数。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 top_k；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": 1.0,
+        "maximum": 100.0,
+        "example": null,
+        "aliases": [
+          "结果数",
+          "limit"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      }
+    ],
+    "site_search": [
+      {
+        "name": "query",
+        "type": "string_or_array",
+        "required": true,
+        "requirement_level": "semantic",
+        "purpose": "提交给该服务的检索词、自然语言查询或明确对象描述。",
+        "how_to_obtain": "从本步 purpose/Thought 中提取明确检索对象和约束，不得只写“查询一下”。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "铁路桥 石栏 历史照片",
+        "aliases": [
+          "关键词",
+          "检索词",
+          "查询词",
+          "检索对象",
+          "对象",
+          "目标",
+          "特征组合",
+          "筛选条件",
+          "material",
+          "keywords",
+          "问题",
+          "q",
+          "search_query"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "site",
+        "type": "string",
+        "required": true,
+        "requirement_level": "semantic",
+        "purpose": "限定检索的网站、域名或平台。",
+        "how_to_obtain": "从任务指定平台/域名中提取；未限定站点时应改用 keyword_search。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "站点",
+          "网站",
+          "平台",
+          "domain"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "time_range",
+        "type": "string_or_object",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。",
+        "how_to_obtain": "从字幕、task 或已有结果提取真实时间范围；来源没有时不得猜测。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "1980-1995",
+        "aliases": [
+          "时期",
+          "时间",
+          "年份",
+          "年代",
+          "年代范围",
+          "日期",
+          "影像时期",
+          "影像年份",
+          "date_range",
+          "year"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "top_k",
+        "type": "integer",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "最多返回结果数。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 top_k；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": 1.0,
+        "maximum": 100.0,
+        "example": null,
+        "aliases": [
+          "结果数",
+          "limit"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      }
+    ]
+  },
+  "implementation_research": {
+    "architecture": "provider_api",
+    "backends": [
+      {
+        "name": "Brave Search API",
+        "kind": "external_api",
+        "role": "网页、图片和视频搜索",
+        "official_url": "https://brave.com/search/api/",
+        "authentication": "Brave Search API Key",
+        "license_note": "使用前核对软件与数据许可。"
+      },
+      {
+        "name": "Tavily Search",
+        "kind": "external_api_or_mcp",
+        "role": "Agent 搜索与结构化结果",
+        "official_url": "https://docs.tavily.com/documentation/mcp",
+        "authentication": "Tavily API Key",
+        "license_note": "使用前核对软件与数据许可。"
+      }
+    ],
+    "execution_flow": [
+      "规范化 query/domain/time_range",
+      "调用 provider 并记录实际支持的过滤项",
+      "返回标题、URL、摘要和 result_id"
+    ],
+    "limitations": [
+      "摘要不是正文证据",
+      "提供商不支持的筛选条件必须明示",
+      "搜索排序和索引覆盖会变化"
+    ],
+    "mcp_strategy": "可直接评估官方 Brave/Tavily MCP；统一输出仍由本项目 adapter 规范化。"
+  },
+  "recommended_executor_contract": {
+    "required_result_fields": [
+      "status",
+      "provider_or_algorithm",
+      "request_parameters_used",
+      "retrieved_at",
+      "source_result_id_or_raw_ref",
+      "provenance",
+      "warnings"
+    ],
+    "status_values": [
+      "success",
+      "no_result",
+      "no_coverage",
+      "parameter_missing",
+      "unsupported",
+      "permission_denied",
+      "provider_error"
+    ],
+    "rules": [
+      "no_result 与 no_coverage、provider_error 必须分开",
+      "任何精确数值必须带单位、方法和源数据",
+      "调用失败不得生成看似成功的 Observation",
+      "密钥、令牌和内部文件系统路径不得进入训练样本"
+    ]
+  },
+  "new_tool_review_hint": {
+    "covered_execution_boundary": "web_search_engine",
+    "do_not_create_when": [
+      "只是对象、地区、查询词或参数不同",
+      "现有 Tool 的某个 operation 与本次动作共享同一执行器",
+      "只是基于已有结果进行比较、筛选、总结或推理"
+    ],
+    "consider_new_only_when": [
+      "现有31类执行器及所有 operation 均不能执行该动作",
+      "存在独立、可实现、可测试的真实后端边界",
+      "多个独立样本反复出现相同能力缺口",
+      "能够提供完整 schema、许可评估、失败语义和测试证据"
+    ]
+  }
+}

@@ -375,9 +375,13 @@ def _tool_mapping_audit(
     temporary_tools = [
         {
             "kind": "new_executor",
+            "review_kind": record.review_kind or "ambiguous_unmapped",
             "raw_tool": record.raw_tool,
             "temporary_name": record.temporary_name or record.canonical_name,
             "reason": record.reason,
+            "model_confidence": record.confidence,
+            "not_catalog_reason": record.not_catalog_reason,
+            "catalog_candidates": record.catalog_candidates,
         }
         for record in (records or [])
         if record.disposition == "temporary"
@@ -386,10 +390,14 @@ def _tool_mapping_audit(
     temporary_operations = [
         {
             "kind": "new_operation",
+            "review_kind": record.review_kind or "ambiguous_operation",
             "raw_tool": record.raw_tool,
             "canonical_name": record.canonical_name,
             "temporary_operation": record.temporary_name,
             "reason": record.reason,
+            "model_confidence": record.confidence,
+            "not_catalog_reason": record.not_catalog_reason,
+            "catalog_candidates": record.catalog_candidates,
         }
         for record in (records or [])
         if record.disposition == "temporary"
@@ -410,6 +418,35 @@ def _tool_mapping_audit(
         for record in (records or [])
         if record.disposition == "created_proposal"
     ]
+    temporary_records = {
+        record.raw_tool.strip().lower(): record
+        for record in (records or [])
+        if record.disposition == "temporary" and record.raw_tool.strip()
+    }
+    review_candidates: list[dict[str, Any]] = []
+    for index, raw in enumerate(raw_events, start=1):
+        raw_tool = str(raw.get("tool") or "").strip()
+        record = temporary_records.get(raw_tool.lower())
+        if record is None:
+            continue
+        review_candidates.append(
+            {
+                "step_index": index,
+                "review_kind": record.review_kind or "ambiguous_unmapped",
+                "raw_tool": raw_tool,
+                "temporary_name": record.temporary_name or record.canonical_name,
+                "canonical_name": record.canonical_name,
+                "model_confidence": record.confidence,
+                "model_reason": record.reason,
+                "not_catalog_reason": record.not_catalog_reason,
+                "catalog_candidates": record.catalog_candidates,
+                "thought": raw.get("thought"),
+                "raw_params": raw.get("params"),
+                "observation": raw.get("observation"),
+            }
+        )
+
+    requires_tool_review = bool(temporary_tools or temporary_operations)
     return {
         "total_events": len(freeform.steps),
         "reasoning_events": sum(
@@ -426,6 +463,29 @@ def _tool_mapping_audit(
         ),
         "temporary_tools": temporary_tools,
         "temporary_operations": temporary_operations,
+        "tool_routing": {
+            "pool": "temporary_review" if requires_tool_review else "canonical_only",
+            "requires_tool_review": requires_tool_review,
+            "temporary_tool_count": len(temporary_tools),
+            "temporary_operation_count": len(temporary_operations),
+            "policy": (
+                "任何临时项只进入人工/Codex复核池；不得自动写入正式目录。"
+                if requires_tool_review
+                else "所有 Tool 均已归入当前正式目录。"
+            ),
+        },
+        "tool_review_candidates": review_candidates,
+        "tool_review_requirements": {
+            "automatic_catalog_write": False,
+            "minimum_model_confidence_for_candidate": 0.90,
+            "required_checks": [
+                "先逐一排除31类现有Canonical Tool及其operations",
+                "对象或参数不同不得作为新增Tool理由",
+                "必须存在独立执行器/API/数据库/本地程序边界",
+                "至少有两个以上不同样本出现同一能力缺口，单例默认不新增",
+                "人工或Codex完成schema、实现可行性、数据许可与测试后才可提PR",
+            ],
+        },
         "proposed_tools": proposed_tools,
         "mappings": mappings,
     }
@@ -476,7 +536,9 @@ def run_stage3(
         {
             "event_type": step.event_type,
             "tool": step.tool,
+            "thought": step.thought,
             "params": dict(step.params or {}),
+            "observation": step.observation,
         }
         for step in freeform.steps
     ]
@@ -518,12 +580,23 @@ def run_stage3(
     )
     traj_path.parent.mkdir(parents=True, exist_ok=True)
     traj_path.write_text(traj.model_dump_json(indent=2), encoding="utf-8")
+    mapping_payload = _tool_mapping_audit(
+        raw_events, freeform, forest, records=resolution_records
+    )
     audit_path = traj_path.with_name("stage3_tool_mapping.json")
     audit_path.write_text(
+        json.dumps(mapping_payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    review_candidates_path = traj_path.with_name("stage3_tool_review_candidates.json")
+    review_candidates_path.write_text(
         json.dumps(
-            _tool_mapping_audit(
-                raw_events, freeform, forest, records=resolution_records
-            ),
+            {
+                "schema_version": "stage3_tool_review_candidates_v1",
+                "tool_routing": mapping_payload["tool_routing"],
+                "review_requirements": mapping_payload["tool_review_requirements"],
+                "candidates": mapping_payload["tool_review_candidates"],
+            },
             ensure_ascii=False,
             indent=2,
         ),

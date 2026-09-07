@@ -1,0 +1,896 @@
+{
+  "schema_version": "geoagent_tool_implementation_spec_v1",
+  "ordinal": 15,
+  "research_date": "2026-08-31",
+  "research_status": "design_researched_not_runtime_verified",
+  "catalog_source": "canonical_tool_catalog_v2.json",
+  "canonical_tool": {
+    "canonical": {
+      "name": "osm_query",
+      "description": "在 OSM/Overpass 中查询或统计要素。",
+      "executor": "openstreetmap_overpass",
+      "usage": "仅在需要访问该真实执行器并获得新证据时调用；先选择 operation，再按其 input_schema 填 inputs。缺少执行级参数时按 acquisition_hint 获取，不得编造坐标、文件、会话或前置结果。",
+      "operations": [
+        {
+          "name": "query",
+          "description": "按区域、标签和空间关系查询 OSM 要素",
+          "aliases": [
+            "search",
+            "overpass"
+          ],
+          "input_schema": {
+            "description": "查询 OSM 要素。默认传 area/tags 等结构化约束，由执行器生成 Overpass QL；只有轨迹确实编写了代码时才传 overpass_ql。",
+            "fields": [
+              {
+                "name": "area",
+                "type": "location",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+                "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+                "context_sources": [
+                  "active_area"
+                ],
+                "context_default": "$active_area",
+                "aliases": [
+                  "区域",
+                  "地区",
+                  "地点",
+                  "候选区域",
+                  "检索范围",
+                  "搜索区域",
+                  "省域范围",
+                  "region",
+                  "target_area",
+                  "search_area",
+                  "sample_area",
+                  "location",
+                  "cities"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "郑州附近黄河沿线"
+              },
+              {
+                "name": "bbox",
+                "type": "array",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "WGS84 查询框 [west,south,east,north]。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 bbox；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "边界框",
+                  "bounds",
+                  "extent"
+                ],
+                "allowed_values": [],
+                "item_type": "number",
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "center",
+                "type": "string_or_object",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "中心坐标或地名，与 radius_m 配合。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 center；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "中心点",
+                  "中心"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "radius_m",
+                "type": "number",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "中心点查询半径（米）。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 radius_m；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "半径",
+                  "radius"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": 0.0,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "tags",
+                "type": "object",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "OSM 标签过滤，如 {\"bridge\":\"yes\"}。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 tags；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "标签",
+                  "osm_tags",
+                  "filters"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": {
+                  "bridge": "yes"
+                }
+              },
+              {
+                "name": "feature_types",
+                "type": "string_or_array",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "希望检索的自然语言要素类型；执行器负责映射为 OSM 标签。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 feature_types；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "特征",
+                  "目标类型",
+                  "要素类型",
+                  "categories"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": [
+                  "桥梁"
+                ]
+              },
+              {
+                "name": "element_types",
+                "type": "array",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "OSM 元素类型。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 element_types；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "元素类型",
+                  "types"
+                ],
+                "allowed_values": [],
+                "item_type": "string",
+                "minimum": null,
+                "maximum": null,
+                "example": [
+                  "node",
+                  "way",
+                  "relation"
+                ]
+              },
+              {
+                "name": "spatial_relation",
+                "type": "string",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "空间关系约束，如 within/near/intersects。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 spatial_relation；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "空间关系",
+                  "关系"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "return_geometry",
+                "type": "boolean",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "是否返回完整几何。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 return_geometry；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "返回几何",
+                  "geometry"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": true
+              },
+              {
+                "name": "limit",
+                "type": "integer",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "最多返回要素数。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 limit；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "结果数",
+                  "top_k"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": 1.0,
+                "maximum": 10000.0,
+                "example": null
+              },
+              {
+                "name": "overpass_ql",
+                "type": "string",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "可选的完整 Overpass QL；不是默认必填参数。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 overpass_ql；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "代码",
+                  "查询代码",
+                  "query_code",
+                  "raw_query"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              }
+            ],
+            "required_any": [
+              [
+                "area",
+                "bbox",
+                "center",
+                "overpass_ql"
+              ]
+            ],
+            "mutually_exclusive": [],
+            "allow_extra": true,
+            "examples": [
+              {
+                "area": "郑州市",
+                "tags": {
+                  "bridge": "yes"
+                },
+                "return_geometry": true
+              }
+            ]
+          }
+        },
+        {
+          "name": "count",
+          "description": "统计符合条件的 OSM 要素数量或分布",
+          "aliases": [],
+          "input_schema": {
+            "description": "统计已有结果或指定结构化查询范围内的 OSM 要素数量。",
+            "fields": [
+              {
+                "name": "source_result",
+                "type": "string_or_object",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "前一步真实工具返回的结果 ID、数据集引用或已加载图层；不能用尚未执行的假想结果。",
+                "acquisition_hint": "引用产生该数据的前置 Tool 返回 ID；若尚未执行前置查询，先调用对应 query/retrieve。",
+                "context_sources": [
+                  "previous_tool_result"
+                ],
+                "context_default": "$previous_tool_result",
+                "aliases": [
+                  "结果",
+                  "已有结果",
+                  "输入结果",
+                  "数据源",
+                  "source",
+                  "result_id",
+                  "layer"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "osm_result_01"
+              },
+              {
+                "name": "area",
+                "type": "location",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+                "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+                "context_sources": [
+                  "active_area"
+                ],
+                "context_default": "$active_area",
+                "aliases": [
+                  "区域",
+                  "地区",
+                  "地点",
+                  "候选区域",
+                  "检索范围",
+                  "搜索区域",
+                  "省域范围",
+                  "region",
+                  "target_area",
+                  "search_area",
+                  "sample_area",
+                  "location",
+                  "cities"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "郑州附近黄河沿线"
+              },
+              {
+                "name": "bbox",
+                "type": "array",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "WGS84 查询框。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 bbox；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "边界框",
+                  "bounds"
+                ],
+                "allowed_values": [],
+                "item_type": "number",
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "tags",
+                "type": "object",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "待统计的 OSM 标签。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 tags；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "标签",
+                  "特征",
+                  "filters"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "group_by",
+                "type": "string_or_array",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "可选分组字段。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 group_by；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "分组",
+                  "统计维度"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              }
+            ],
+            "required_any": [
+              [
+                "source_result",
+                "area",
+                "bbox"
+              ]
+            ],
+            "mutually_exclusive": [],
+            "allow_extra": true,
+            "examples": []
+          }
+        }
+      ],
+      "params": [
+        {
+          "name": "operation",
+          "type": "string",
+          "required": true,
+          "description": "本次调用执行的 operation",
+          "allowed_values": [
+            "query",
+            "count"
+          ]
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "required": true,
+          "description": "本次调用要补齐的证据缺口，不得伪装成工具返回",
+          "allowed_values": []
+        },
+        {
+          "name": "inputs",
+          "type": "object",
+          "required": true,
+          "description": "严格按 operation.input_schema 传给执行器的真实输入",
+          "allowed_values": []
+        }
+      ],
+      "observation_fields": [
+        {
+          "name": "result",
+          "type": "object",
+          "nullable": true,
+          "description": "执行器实际返回；不得写入假设、计划或模型自行补全的数据"
+        }
+      ],
+      "is_terminal": false
+    },
+    "variants": [
+      "query_osm_overpass",
+      "osm_overpass_query",
+      "vector_map_query"
+    ],
+    "variant_operations": {
+      "query_osm_overpass": "query",
+      "osm_overpass_query": "query",
+      "vector_map_query": "query"
+    }
+  },
+  "parameter_guide": {
+    "query": [
+      {
+        "name": "area",
+        "type": "location",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+        "how_to_obtain": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+        "context_sources": [
+          "active_area"
+        ],
+        "context_default": "$active_area",
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "郑州附近黄河沿线",
+        "aliases": [
+          "区域",
+          "地区",
+          "地点",
+          "候选区域",
+          "检索范围",
+          "搜索区域",
+          "省域范围",
+          "region",
+          "target_area",
+          "search_area",
+          "sample_area",
+          "location",
+          "cities"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "bbox",
+        "type": "array",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "WGS84 查询框 [west,south,east,north]。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 bbox；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "边界框",
+          "bounds",
+          "extent"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "center",
+        "type": "string_or_object",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "中心坐标或地名，与 radius_m 配合。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 center；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "中心点",
+          "中心"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "radius_m",
+        "type": "number",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "中心点查询半径（米）。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 radius_m；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": 0.0,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "半径",
+          "radius"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "tags",
+        "type": "object",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "OSM 标签过滤，如 {\"bridge\":\"yes\"}。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 tags；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": {
+          "bridge": "yes"
+        },
+        "aliases": [
+          "标签",
+          "osm_tags",
+          "filters"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "feature_types",
+        "type": "string_or_array",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "希望检索的自然语言要素类型；执行器负责映射为 OSM 标签。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 feature_types；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": [
+          "桥梁"
+        ],
+        "aliases": [
+          "特征",
+          "目标类型",
+          "要素类型",
+          "categories"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "element_types",
+        "type": "array",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "OSM 元素类型。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 element_types；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": [
+          "node",
+          "way",
+          "relation"
+        ],
+        "aliases": [
+          "元素类型",
+          "types"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "spatial_relation",
+        "type": "string",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "空间关系约束，如 within/near/intersects。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 spatial_relation；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "空间关系",
+          "关系"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "return_geometry",
+        "type": "boolean",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "是否返回完整几何。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 return_geometry；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": true,
+        "aliases": [
+          "返回几何",
+          "geometry"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "limit",
+        "type": "integer",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "最多返回要素数。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 limit；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": 1.0,
+        "maximum": 10000.0,
+        "example": null,
+        "aliases": [
+          "结果数",
+          "top_k"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "overpass_ql",
+        "type": "string",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "可选的完整 Overpass QL；不是默认必填参数。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 overpass_ql；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "代码",
+          "查询代码",
+          "query_code",
+          "raw_query"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      }
+    ],
+    "count": [
+      {
+        "name": "source_result",
+        "type": "string_or_object",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "前一步真实工具返回的结果 ID、数据集引用或已加载图层；不能用尚未执行的假想结果。",
+        "how_to_obtain": "引用产生该数据的前置 Tool 返回 ID；若尚未执行前置查询，先调用对应 query/retrieve。",
+        "context_sources": [
+          "previous_tool_result"
+        ],
+        "context_default": "$previous_tool_result",
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "osm_result_01",
+        "aliases": [
+          "结果",
+          "已有结果",
+          "输入结果",
+          "数据源",
+          "source",
+          "result_id",
+          "layer"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "area",
+        "type": "location",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+        "how_to_obtain": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+        "context_sources": [
+          "active_area"
+        ],
+        "context_default": "$active_area",
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "郑州附近黄河沿线",
+        "aliases": [
+          "区域",
+          "地区",
+          "地点",
+          "候选区域",
+          "检索范围",
+          "搜索区域",
+          "省域范围",
+          "region",
+          "target_area",
+          "search_area",
+          "sample_area",
+          "location",
+          "cities"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "bbox",
+        "type": "array",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "WGS84 查询框。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 bbox；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "边界框",
+          "bounds"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "tags",
+        "type": "object",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "待统计的 OSM 标签。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 tags；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "标签",
+          "特征",
+          "filters"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "group_by",
+        "type": "string_or_array",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "可选分组字段。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 group_by；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "分组",
+          "统计维度"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      }
+    ]
+  },
+  "implementation_research": {
+    "architecture": "structured_query_compiler_plus_overpass",
+    "backends": [
+      {
+        "name": "Overpass API",
+        "kind": "external_or_self_host_api",
+        "role": "按标签和空间关系查询 OSM",
+        "official_url": "https://dev.overpass-api.de/overpass-doc/en/",
+        "authentication": "无",
+        "license_note": "使用前核对软件与数据许可。"
+      },
+      {
+        "name": "Geofabrik extracts",
+        "kind": "offline_dataset",
+        "role": "区域 PBF/GPKG 离线数据",
+        "official_url": "https://download.geofabrik.de/asia/china.html",
+        "authentication": "无",
+        "license_note": "遵守 ODbL 与署名要求。"
+      }
+    ],
+    "execution_flow": [
+      "优先把 area/tags/feature_types 编译成只读 Overpass QL",
+      "限制范围、超时和结果数量",
+      "返回对象 ID、标签、几何、数据时间和原查询"
+    ],
+    "limitations": [
+      "图片不能直接作为 Overpass 查询参数",
+      "无结果不等于现实不存在",
+      "只有原链提供代码时才接受 overpass_ql"
+    ],
+    "mcp_strategy": "自建只读 MCP，禁止通用 Python/任意网络代码执行。"
+  },
+  "recommended_executor_contract": {
+    "required_result_fields": [
+      "status",
+      "provider_or_algorithm",
+      "request_parameters_used",
+      "retrieved_at",
+      "source_result_id_or_raw_ref",
+      "provenance",
+      "warnings"
+    ],
+    "status_values": [
+      "success",
+      "no_result",
+      "no_coverage",
+      "parameter_missing",
+      "unsupported",
+      "permission_denied",
+      "provider_error"
+    ],
+    "rules": [
+      "no_result 与 no_coverage、provider_error 必须分开",
+      "任何精确数值必须带单位、方法和源数据",
+      "调用失败不得生成看似成功的 Observation",
+      "密钥、令牌和内部文件系统路径不得进入训练样本"
+    ]
+  },
+  "new_tool_review_hint": {
+    "covered_execution_boundary": "openstreetmap_overpass",
+    "do_not_create_when": [
+      "只是对象、地区、查询词或参数不同",
+      "现有 Tool 的某个 operation 与本次动作共享同一执行器",
+      "只是基于已有结果进行比较、筛选、总结或推理"
+    ],
+    "consider_new_only_when": [
+      "现有31类执行器及所有 operation 均不能执行该动作",
+      "存在独立、可实现、可测试的真实后端边界",
+      "多个独立样本反复出现相同能力缺口",
+      "能够提供完整 schema、许可评估、失败语义和测试证据"
+    ]
+  }
+}

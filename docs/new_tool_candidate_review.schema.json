@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://geoagent.local/schemas/new_tool_candidate_review.schema.json",
+  "title": "GeoAgent 临时 Tool 严格复核记录",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "candidate_id",
+    "decision",
+    "existing_tools_checked",
+    "evidence_tasks",
+    "execution_boundary",
+    "implementation_research",
+    "test_plan",
+    "reviewer",
+    "reviewed_at"
+  ],
+  "properties": {
+    "candidate_id": {"type": "string", "minLength": 1},
+    "decision": {
+      "enum": [
+        "map_existing",
+        "use_existing_operation_with_repaired_inputs",
+        "rewrite_as_reasoning",
+        "candidate_new_operation",
+        "candidate_new_tool"
+      ]
+    },
+    "existing_tools_checked": {
+      "type": "array",
+      "minItems": 31,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["tool", "operations_checked", "why_not_match"],
+        "properties": {
+          "tool": {"type": "string", "minLength": 1},
+          "operations_checked": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+          "why_not_match": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "evidence_tasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["task_id", "step_index", "thought", "params", "observation"],
+        "properties": {
+          "task_id": {"type": "string", "minLength": 1},
+          "step_index": {"type": "integer", "minimum": 1},
+          "thought": {"type": "string"},
+          "params": {"type": "object"},
+          "observation": {}
+        }
+      }
+    },
+    "execution_boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["backend_type", "backend_name", "independent_from_existing", "evidence"],
+      "properties": {
+        "backend_type": {"enum": ["local_program", "database", "external_api", "mcp", "official_registry", "other"]},
+        "backend_name": {"type": "string", "minLength": 1},
+        "independent_from_existing": {"type": "boolean"},
+        "evidence": {"type": "string", "minLength": 1}
+      }
+    },
+    "proposed_tool": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["name", "description", "executor", "usage", "operations"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+        "description": {"type": "string", "minLength": 10},
+        "executor": {"type": "string", "minLength": 1},
+        "usage": {"type": "string", "minLength": 10},
+        "operations": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "description", "input_schema"],
+            "properties": {
+              "name": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+              "description": {"type": "string", "minLength": 5},
+              "input_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["description", "fields"],
+                "properties": {
+                  "description": {"type": "string", "minLength": 5},
+                  "fields": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": true,
+                      "required": ["name", "type", "requirement_level", "description", "acquisition_hint"],
+                      "properties": {
+                        "name": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+                        "type": {"type": "string", "minLength": 1},
+                        "requirement_level": {"enum": ["semantic", "execution", "optional"]},
+                        "description": {"type": "string", "minLength": 5},
+                        "acquisition_hint": {"type": "string", "minLength": 5}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "implementation_research": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["official_sources", "authentication", "data_license", "failure_semantics"],
+      "properties": {
+        "official_sources": {"type": "array", "minItems": 1, "items": {"type": "string", "format": "uri"}},
+        "authentication": {"type": "string", "minLength": 1},
+        "data_license": {"type": "string", "minLength": 1},
+        "cost_and_quota": {"type": "string"},
+        "failure_semantics": {"type": "array", "minItems": 4, "items": {"type": "string"}}
+      }
+    },
+    "test_plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["positive_cases", "near_neighbor_negative_cases", "missing_parameter_cases", "provider_failure_cases"],
+      "properties": {
+        "positive_cases": {"type": "array", "minItems": 2, "items": {"type": "string"}},
+        "near_neighbor_negative_cases": {"type": "array", "minItems": 2, "items": {"type": "string"}},
+        "missing_parameter_cases": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "provider_failure_cases": {"type": "array", "minItems": 1, "items": {"type": "string"}}
+      }
+    },
+    "reviewer": {"type": "string", "minLength": 1},
+    "reviewed_at": {"type": "string", "format": "date-time"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"decision": {"enum": ["candidate_new_tool", "candidate_new_operation"]}}},
+      "then": {
+        "properties": {
+          "evidence_tasks": {"minItems": 2},
+          "proposed_tool": {"type": "object"}
+        },
+        "required": ["proposed_tool"]
+      },
+      "else": {
+        "properties": {"proposed_tool": {"type": "null"}}
+      }
+    }
+  ]
+}

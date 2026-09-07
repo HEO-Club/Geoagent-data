@@ -37,10 +37,15 @@ MatcherFn = Callable[[str, ToolForest], str | None | MatchDecision]
 RESERVED_TERMINAL_TOOLS = {"final_answer", "submit_answer", "done"}
 REASONING_DEMOTION_CONFIDENCE = 0.85
 CREATE_CONFIDENCE = 0.85
+TEMP_CANDIDATE_CONFIDENCE = 0.90
 TEMP_NEW_EXECUTOR_REASON = "判定需要新建执行器，不入 tool 库，使用临时名"
 TEMP_NEW_OPERATION_REASON = "判定需要新 operation，不入 tool 库，使用临时操作"
 TEMP_NEW_OPERATION_MISSING_PARENT_REASON = (
     "判定需要新 operation，但父执行器不在目录，不入 tool 库，使用临时名"
+)
+TEMP_AMBIGUOUS_REASON = "目录匹配不明确，不能据此认定需要新工具，使用临时名待复核"
+TEMP_AMBIGUOUS_OPERATION_REASON = (
+    "operation 归属不明确，不能据此认定需要新增 operation，使用临时操作待复核"
 )
 _SNAKE_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 
@@ -55,6 +60,15 @@ class ToolResolutionRecord(BaseModel):
     reason: str = ""
     proposed_definition: ToolDefinition | None = None
     create_kind: Literal["new_executor", "new_operation"] | None = None
+    review_kind: Literal[
+        "candidate_new_executor",
+        "candidate_new_operation",
+        "ambiguous_unmapped",
+        "ambiguous_operation",
+    ] | None = None
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    not_catalog_reason: str = ""
+    catalog_candidates: list[str] = Field(default_factory=list)
 
 
 class _BatchMatchResult(BaseModel):
@@ -408,13 +422,13 @@ def llm_semantic_match_batch(
         "其余情况四选一，并填写 reason：\n"
         "1) action=map：必须是同一执行器，canonical_name 必须是目录内已有名；不得把不同执行器硬塞进已有名。"
         "不要因输入字段不同就拒绝 map。\n"
-        "2) action=create 且 create_kind=new_operation：已有执行器需要新的 operation；canonical_name 必须已在目录中；"
-        "proposed_definition.operations 给出该 operation 的完整 v2 input_schema"
-        "（fields 均含 type、requirement_level、description、acquisition_hint）。\n"
-        "3) action=create 且 create_kind=new_executor：目录中没有相同执行器。必须填写 not_catalog_reason，"
-        "点名为何不是目录中哪几个近邻执行器。proposed_definition 必须含小写下划线 name、description、"
-        "executor、usage、至少一个带完整 v2 input_schema 的 operation。外层调用仍是 operation/purpose/inputs。"
-        "禁止因字段不同就新建。\n"
+        "2) action=create 且 create_kind=new_operation：只有已有执行器确实缺少一种新的执行动作时使用；"
+        "canonical_name 必须已在目录中，not_catalog_reason 必须逐一说明为何已有 operations 都不能表达该动作。\n"
+        "3) action=create 且 create_kind=new_executor：只有目录中没有相同真实执行器时使用。"
+        "必须填写 not_catalog_reason，并在 catalog_candidates 列出至少两个最接近的现有 canonical，"
+        "逐一说明为什么不能归并。禁止因为对象、参数字段、查询条件或自然语言名称不同就判新执行器。\n"
+        "create/new_operation 只会触发人工 Tool 审核，不会生成或加入正式 Tool；"
+        "除非置信度>=0.90 且排除理由完整，否则应保持为待复核的模糊临时项。\n"
         "现有 operation 的 input_schema 已说明每个输入字段的含义、别名、类型、必填关系和获取方式；"
         "归并时应选择能容纳原始参数语义的 operation，不得为了省事一律选择第一个 operation。\n"
         "每个 raw_tool 必须恰好返回一个 decision，并原样填写 raw_tool；confidence 范围0到1。\n"
@@ -459,8 +473,8 @@ def llm_reclassify_tool_calls(
         "调历史底图/遥感时相或在底图上查看水系→satellite_imagery_query 或 map_layer_query；"
         "打开街景→streetview_query；在图上量宽/距→distance_bearing_calculator；"
         "勿把后几类默认写成 web_search。\n"
-        "每个待审步骤必须恰好返回一个 decision：raw_tool 填原工具名，canonical_name 与 operation 必填，"
-        "confidence 为0到1；reason 简述依据。\n"
+        "每个待审步骤必须恰好返回一个 decision：step_index 必须原样回填，raw_tool 填原工具名，"
+        "canonical_name 与 operation 必填，confidence 为0到1；reason 简述依据。\n"
         f"现有目录：{json.dumps(_catalog_payload(forest), ensure_ascii=False)}\n"
         f"待重分类步骤：{json.dumps(indexed, ensure_ascii=False)}"
     )
@@ -544,6 +558,8 @@ def _apply_temporary_operation(
     parent_name: str,
     raw_tool: str,
     operation: str,
+    decision: MatchDecision,
+    qualified_candidate: bool,
     records: list[ToolResolutionRecord],
 ) -> ToolForest:
     """父执行器上使用临时 operation，不 add_operation、不入库。"""
@@ -555,8 +571,20 @@ def _apply_temporary_operation(
             disposition="temporary",
             canonical_name=parent_name,
             temporary_name=operation,
-            reason=TEMP_NEW_OPERATION_REASON,
+            reason=(
+                TEMP_NEW_OPERATION_REASON
+                if qualified_candidate
+                else TEMP_AMBIGUOUS_OPERATION_REASON
+            ),
             create_kind="new_operation",
+            review_kind=(
+                "candidate_new_operation"
+                if qualified_candidate
+                else "ambiguous_operation"
+            ),
+            confidence=decision.confidence,
+            not_catalog_reason=decision.not_catalog_reason,
+            catalog_candidates=list(decision.catalog_candidates),
         )
     )
     return forest
@@ -620,6 +648,10 @@ def _apply_unknown_decision(
                 temporary_name=temp_name,
                 reason=decision.reason or "map 目标不在目录，记为临时名",
                 create_kind="new_executor",
+                review_kind="ambiguous_unmapped",
+                confidence=decision.confidence,
+                not_catalog_reason=decision.not_catalog_reason,
+                catalog_candidates=list(decision.catalog_candidates),
             )
         )
         return forest
@@ -651,12 +683,18 @@ def _apply_unknown_decision(
             )
             return forest
         if parent is not None:
+            qualified_candidate = (
+                decision.confidence >= TEMP_CANDIDATE_CONFIDENCE
+                and bool(decision.not_catalog_reason.strip())
+            )
             return _apply_temporary_operation(
                 forest,
                 step,
                 parent_name=parent.canonical.name,
                 raw_tool=raw,
                 operation=op_name,
+                decision=decision,
+                qualified_candidate=qualified_candidate,
                 records=records,
             )
         forest, temp_name = _apply_temporary_tree(
@@ -673,11 +711,20 @@ def _apply_unknown_decision(
                 temporary_name=temp_name,
                 reason=TEMP_NEW_OPERATION_MISSING_PARENT_REASON,
                 create_kind="new_executor",
+                review_kind="ambiguous_unmapped",
+                confidence=decision.confidence,
+                not_catalog_reason=decision.not_catalog_reason,
+                catalog_candidates=list(decision.catalog_candidates),
             )
         )
         return forest
 
     if decision.action == "create":
+        qualified_candidate = (
+            decision.confidence >= TEMP_CANDIDATE_CONFIDENCE
+            and bool(decision.not_catalog_reason.strip())
+            and len(decision.catalog_candidates) >= 2
+        )
         forest, temp_name = _apply_temporary_tree(
             forest,
             raw_tool=raw,
@@ -690,8 +737,20 @@ def _apply_unknown_decision(
                 disposition="temporary",
                 canonical_name=temp_name,
                 temporary_name=temp_name,
-                reason=TEMP_NEW_EXECUTOR_REASON,
+                reason=(
+                    TEMP_NEW_EXECUTOR_REASON
+                    if qualified_candidate
+                    else TEMP_AMBIGUOUS_REASON
+                ),
                 create_kind="new_executor",
+                review_kind=(
+                    "candidate_new_executor"
+                    if qualified_candidate
+                    else "ambiguous_unmapped"
+                ),
+                confidence=decision.confidence,
+                not_catalog_reason=decision.not_catalog_reason,
+                catalog_candidates=list(decision.catalog_candidates),
             )
         )
         return forest
@@ -710,6 +769,10 @@ def _apply_unknown_decision(
             temporary_name=temp_name,
             reason=decision.reason or "未达 reasoning 降级阈值，使用临时名继续",
             create_kind="new_executor",
+            review_kind="ambiguous_unmapped",
+            confidence=decision.confidence,
+            not_catalog_reason=decision.not_catalog_reason,
+            catalog_candidates=list(decision.catalog_candidates),
         )
     )
     return forest
@@ -794,14 +857,22 @@ def ensure_tool_trees(
             )
         except Exception:  # noqa: BLE001 — fail open
             reclass_decisions = []
+        by_step: dict[int, MatchDecision] = {}
         by_raw: dict[str, MatchDecision] = {}
+        raw_counts: dict[str, int] = {}
+        for step in reclassify_steps:
+            key = (step.tool or "").strip().lower()
+            if key:
+                raw_counts[key] = raw_counts.get(key, 0) + 1
         for decision in reclass_decisions:
             key = decision.raw_tool.strip().lower()
-            if key and key not in by_raw:
+            if decision.step_index is not None and decision.step_index not in by_step:
+                by_step[decision.step_index] = decision
+            if key and raw_counts.get(key, 0) == 1 and key not in by_raw:
                 by_raw[key] = decision
-        for step in reclassify_steps:
+        for step_index, step in enumerate(reclassify_steps, start=1):
             raw = (step.tool or "").strip()
-            decision = by_raw.get(raw.lower())
+            decision = by_step.get(step_index) or by_raw.get(raw.lower())
             if decision is None:
                 continue
             if (

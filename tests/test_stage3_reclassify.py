@@ -167,3 +167,70 @@ def test_reasoning_is_not_promoted_to_tool_call(
     )
     assert entry.id
     assert freeform.steps[0].event_type == "reasoning"
+
+
+def test_same_raw_tool_is_reclassified_per_step_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """同名自由 Tool 在不同步骤可对应不同执行器，不能按 raw_tool 一刀切。"""
+    monkeypatch.setenv("STAGE3_COMPILE_PARAMS", "false")
+    monkeypatch.setenv("TOOL_CATALOG_PATH", "canonical_tool_catalog_v2.json")
+    clear_settings_cache()
+    path = tmp_path / "tool_trees.json"
+    trees.save_forest(build_tool_forest_v2(), path)
+    freeform = FreeFormTrajectory(
+        source_video="same_raw",
+        steps=[
+            FreeFormStep(
+                event_type="tool_call",
+                thought="检索桥名网页资料",
+                tool="web_search",
+                params={"operation": "keyword_search", "inputs": {"query": "桥名"}},
+                observation={"result": "网页候选"},
+            ),
+            FreeFormStep(
+                event_type="tool_call",
+                thought="把卫星影像切换到2002年核对桥位",
+                tool="web_search",
+                params={"operation": "keyword_search", "inputs": {"query": "2002桥位"}},
+                observation={"result": "历史影像中的桥位"},
+            ),
+            FreeFormStep(
+                event_type="final",
+                thought="提交",
+                tool="final_answer",
+                params={"location": "某桥"},
+                observation=None,
+            ),
+        ],
+    )
+
+    monkeypatch.setattr(
+        map_tools,
+        "llm_reclassify_tool_calls",
+        lambda _steps, _forest: [
+            MatchDecision(
+                step_index=1,
+                raw_tool="web_search",
+                action="map",
+                canonical_name="web_search",
+                operation="keyword_search",
+                confidence=0.99,
+                reason="真实网页检索",
+            ),
+            MatchDecision(
+                step_index=2,
+                raw_tool="web_search",
+                action="map",
+                canonical_name="satellite_imagery_query",
+                operation="change_time",
+                confidence=0.99,
+                reason="历史卫星影像调时相",
+            ),
+        ],
+    )
+    map_tools.ensure_tool_trees(freeform, path)
+    assert freeform.steps[0].tool == "web_search"
+    assert freeform.steps[0].params["operation"] == "keyword_search"
+    assert freeform.steps[1].tool == "satellite_imagery_query"
+    assert freeform.steps[1].params["operation"] == "change_time"

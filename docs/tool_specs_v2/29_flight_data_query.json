@@ -1,0 +1,747 @@
+{
+  "schema_version": "geoagent_tool_implementation_spec_v1",
+  "ordinal": 29,
+  "research_date": "2026-08-31",
+  "research_status": "design_researched_not_runtime_verified",
+  "catalog_source": "canonical_tool_catalog_v2.json",
+  "canonical_tool": {
+    "canonical": {
+      "name": "flight_data_query",
+      "description": "查询航班档案、航迹和附近航空活动。",
+      "executor": "flight_tracking_or_archive_service",
+      "usage": "仅在需要访问该真实执行器并获得新证据时调用；先选择 operation，再按其 input_schema 填 inputs。缺少执行级参数时按 acquisition_hint 获取，不得编造坐标、文件、会话或前置结果。",
+      "operations": [
+        {
+          "name": "search",
+          "description": "按日期、区域、机场或航线查询航班记录",
+          "aliases": [
+            "execute",
+            "query",
+            "schedule"
+          ],
+          "input_schema": {
+            "description": "按日期、区域、机场或航线查询真实航班档案。",
+            "fields": [
+              {
+                "name": "area",
+                "type": "location",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+                "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+                "context_sources": [
+                  "active_area"
+                ],
+                "context_default": "$active_area",
+                "aliases": [
+                  "区域",
+                  "地区",
+                  "地点",
+                  "候选区域",
+                  "检索范围",
+                  "搜索区域",
+                  "省域范围",
+                  "region",
+                  "target_area",
+                  "search_area",
+                  "sample_area",
+                  "location",
+                  "cities"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "郑州附近黄河沿线"
+              },
+              {
+                "name": "date",
+                "type": "string_or_object",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "航班日期或日期范围。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 date；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "日期",
+                  "时间",
+                  "date_range"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "airports",
+                "type": "string_or_array",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "起降机场或候选机场。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 airports；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "机场",
+                  "机场列表"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "route",
+                "type": "string_or_object",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "航线或起终点。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 route；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "航线",
+                  "起终点"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "flight_number",
+                "type": "string",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "航班号。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 flight_number；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "航班",
+                  "航班号"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              }
+            ],
+            "required_any": [
+              [
+                "area",
+                "airports",
+                "route",
+                "flight_number"
+              ]
+            ],
+            "mutually_exclusive": [],
+            "allow_extra": true,
+            "examples": []
+          }
+        },
+        {
+          "name": "track",
+          "description": "查询指定航班或区域内航迹",
+          "aliases": [
+            "route_track"
+          ],
+          "input_schema": {
+            "description": "查询指定航班或区域内的真实航迹。",
+            "fields": [
+              {
+                "name": "area",
+                "type": "location",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+                "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+                "context_sources": [
+                  "active_area"
+                ],
+                "context_default": "$active_area",
+                "aliases": [
+                  "区域",
+                  "地区",
+                  "地点",
+                  "候选区域",
+                  "检索范围",
+                  "搜索区域",
+                  "省域范围",
+                  "region",
+                  "target_area",
+                  "search_area",
+                  "sample_area",
+                  "location",
+                  "cities"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "郑州附近黄河沿线"
+              },
+              {
+                "name": "date",
+                "type": "string_or_object",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "航迹日期或时间范围。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 date；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "日期",
+                  "时间",
+                  "date_range"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "flight_number",
+                "type": "string",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "指定航班号。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 flight_number；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "航班",
+                  "航班号"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "airports",
+                "type": "string_or_array",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "用于限定航迹的机场。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 airports；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "机场",
+                  "机场列表"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              }
+            ],
+            "required_any": [
+              [
+                "area",
+                "flight_number",
+                "airports"
+              ]
+            ],
+            "mutually_exclusive": [],
+            "allow_extra": true,
+            "examples": []
+          }
+        },
+        {
+          "name": "nearby_traffic",
+          "description": "统计指定时间和空间范围内的航空器活动",
+          "aliases": [
+            "density",
+            "traffic_density"
+          ],
+          "input_schema": {
+            "description": "统计指定时空范围内的航空器活动。",
+            "fields": [
+              {
+                "name": "area",
+                "type": "location",
+                "required": true,
+                "requirement_level": "semantic",
+                "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+                "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+                "context_sources": [
+                  "active_area"
+                ],
+                "context_default": "$active_area",
+                "aliases": [
+                  "区域",
+                  "地区",
+                  "地点",
+                  "候选区域",
+                  "检索范围",
+                  "搜索区域",
+                  "省域范围",
+                  "region",
+                  "target_area",
+                  "search_area",
+                  "sample_area",
+                  "location",
+                  "cities"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "郑州附近黄河沿线"
+              },
+              {
+                "name": "time_range",
+                "type": "string_or_object",
+                "required": true,
+                "requirement_level": "semantic",
+                "description": "统计时间范围。",
+                "acquisition_hint": "从字幕、task 或已有结果提取真实时间范围；来源没有时不得猜测。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "时间",
+                  "日期",
+                  "date_range"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "radius_km",
+                "type": "number",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "空间统计半径（公里）。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 radius_km；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "半径",
+                  "radius"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": 0.0,
+                "maximum": null,
+                "example": null
+              }
+            ],
+            "required_any": [],
+            "mutually_exclusive": [],
+            "allow_extra": true,
+            "examples": []
+          }
+        }
+      ],
+      "params": [
+        {
+          "name": "operation",
+          "type": "string",
+          "required": true,
+          "description": "本次调用执行的 operation",
+          "allowed_values": [
+            "search",
+            "track",
+            "nearby_traffic"
+          ]
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "required": true,
+          "description": "本次调用要补齐的证据缺口，不得伪装成工具返回",
+          "allowed_values": []
+        },
+        {
+          "name": "inputs",
+          "type": "object",
+          "required": true,
+          "description": "严格按 operation.input_schema 传给执行器的真实输入",
+          "allowed_values": []
+        }
+      ],
+      "observation_fields": [
+        {
+          "name": "result",
+          "type": "object",
+          "nullable": true,
+          "description": "执行器实际返回；不得写入假设、计划或模型自行补全的数据"
+        }
+      ],
+      "is_terminal": false
+    },
+    "variants": [
+      "historical_flight_search",
+      "flight_archive_query",
+      "aircraft_track_query"
+    ],
+    "variant_operations": {
+      "historical_flight_search": "search",
+      "flight_archive_query": "search",
+      "aircraft_track_query": "track"
+    }
+  },
+  "parameter_guide": {
+    "search": [
+      {
+        "name": "area",
+        "type": "location",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+        "how_to_obtain": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+        "context_sources": [
+          "active_area"
+        ],
+        "context_default": "$active_area",
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "郑州附近黄河沿线",
+        "aliases": [
+          "区域",
+          "地区",
+          "地点",
+          "候选区域",
+          "检索范围",
+          "搜索区域",
+          "省域范围",
+          "region",
+          "target_area",
+          "search_area",
+          "sample_area",
+          "location",
+          "cities"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "date",
+        "type": "string_or_object",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "航班日期或日期范围。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 date；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "日期",
+          "时间",
+          "date_range"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "airports",
+        "type": "string_or_array",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "起降机场或候选机场。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 airports；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "机场",
+          "机场列表"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "route",
+        "type": "string_or_object",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "航线或起终点。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 route；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "航线",
+          "起终点"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "flight_number",
+        "type": "string",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "航班号。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 flight_number；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "航班",
+          "航班号"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      }
+    ],
+    "track": [
+      {
+        "name": "area",
+        "type": "location",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+        "how_to_obtain": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+        "context_sources": [
+          "active_area"
+        ],
+        "context_default": "$active_area",
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "郑州附近黄河沿线",
+        "aliases": [
+          "区域",
+          "地区",
+          "地点",
+          "候选区域",
+          "检索范围",
+          "搜索区域",
+          "省域范围",
+          "region",
+          "target_area",
+          "search_area",
+          "sample_area",
+          "location",
+          "cities"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "date",
+        "type": "string_or_object",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "航迹日期或时间范围。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 date；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "日期",
+          "时间",
+          "date_range"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "flight_number",
+        "type": "string",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "指定航班号。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 flight_number；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "航班",
+          "航班号"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "airports",
+        "type": "string_or_array",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "用于限定航迹的机场。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 airports；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "机场",
+          "机场列表"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      }
+    ],
+    "nearby_traffic": [
+      {
+        "name": "area",
+        "type": "location",
+        "required": true,
+        "requirement_level": "semantic",
+        "purpose": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+        "how_to_obtain": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+        "context_sources": [
+          "active_area"
+        ],
+        "context_default": "$active_area",
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "郑州附近黄河沿线",
+        "aliases": [
+          "区域",
+          "地区",
+          "地点",
+          "候选区域",
+          "检索范围",
+          "搜索区域",
+          "省域范围",
+          "region",
+          "target_area",
+          "search_area",
+          "sample_area",
+          "location",
+          "cities"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "time_range",
+        "type": "string_or_object",
+        "required": true,
+        "requirement_level": "semantic",
+        "purpose": "统计时间范围。",
+        "how_to_obtain": "从字幕、task 或已有结果提取真实时间范围；来源没有时不得猜测。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "时间",
+          "日期",
+          "date_range"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "radius_km",
+        "type": "number",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "空间统计半径（公里）。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 radius_km；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": 0.0,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "半径",
+          "radius"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      }
+    ]
+  },
+  "implementation_research": {
+    "architecture": "adsb_api_with_optional_commercial_archive",
+    "backends": [
+      {
+        "name": "OpenSky Network",
+        "kind": "external_api",
+        "role": "状态向量、航班和航迹",
+        "official_url": "https://github.com/openskynetwork/opensky-api/blob/master/docs/free/rest.rst",
+        "authentication": "OpenSky OAuth2 client_id/client_secret",
+        "license_note": "使用前核对软件与数据许可。"
+      },
+      {
+        "name": "Flightradar24 API",
+        "kind": "commercial_api",
+        "role": "商业航班与历史位置",
+        "official_url": "https://fr24api.flightradar24.com/docs/faq",
+        "authentication": "订阅/API 凭证",
+        "license_note": "使用前核对软件与数据许可。"
+      }
+    ],
+    "execution_flow": [
+      "按 flight/date/area 选择 search/track/nearby",
+      "统一 UTC、坐标和高度字段",
+      "返回原始采样点、覆盖说明和最近距离所需数据"
+    ],
+    "limitations": [
+      "ADS-B 覆盖和采样不完整",
+      "计划航班不等于实际航迹",
+      "气压高度与几何高度不可混用"
+    ],
+    "mcp_strategy": "自建 API adapter；限制时间窗口、区域和隐私用途。"
+  },
+  "recommended_executor_contract": {
+    "required_result_fields": [
+      "status",
+      "provider_or_algorithm",
+      "request_parameters_used",
+      "retrieved_at",
+      "source_result_id_or_raw_ref",
+      "provenance",
+      "warnings"
+    ],
+    "status_values": [
+      "success",
+      "no_result",
+      "no_coverage",
+      "parameter_missing",
+      "unsupported",
+      "permission_denied",
+      "provider_error"
+    ],
+    "rules": [
+      "no_result 与 no_coverage、provider_error 必须分开",
+      "任何精确数值必须带单位、方法和源数据",
+      "调用失败不得生成看似成功的 Observation",
+      "密钥、令牌和内部文件系统路径不得进入训练样本"
+    ]
+  },
+  "new_tool_review_hint": {
+    "covered_execution_boundary": "flight_tracking_or_archive_service",
+    "do_not_create_when": [
+      "只是对象、地区、查询词或参数不同",
+      "现有 Tool 的某个 operation 与本次动作共享同一执行器",
+      "只是基于已有结果进行比较、筛选、总结或推理"
+    ],
+    "consider_new_only_when": [
+      "现有31类执行器及所有 operation 均不能执行该动作",
+      "存在独立、可实现、可测试的真实后端边界",
+      "多个独立样本反复出现相同能力缺口",
+      "能够提供完整 schema、许可评估、失败语义和测试证据"
+    ]
+  }
+}

@@ -1,0 +1,296 @@
+{
+  "schema_version": "geoagent_tool_implementation_spec_v1",
+  "ordinal": 22,
+  "research_date": "2026-08-31",
+  "research_status": "design_researched_not_runtime_verified",
+  "catalog_source": "canonical_tool_catalog_v2.json",
+  "canonical_tool": {
+    "canonical": {
+      "name": "terrain_analysis",
+      "description": "计算高程、坡度和地形剖面。",
+      "executor": "terrain_analysis_engine",
+      "usage": "仅在需要访问该真实执行器并获得新证据时调用；先选择 operation，再按其 input_schema 填 inputs。缺少执行级参数时按 acquisition_hint 获取，不得编造坐标、文件、会话或前置结果。",
+      "operations": [
+        {
+          "name": "terrain",
+          "description": "查询或计算高程、坡度和地形剖面",
+          "aliases": [],
+          "input_schema": {
+            "description": "查询或计算区域高程、坡度和地形剖面。",
+            "fields": [
+              {
+                "name": "area",
+                "type": "location",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+                "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+                "context_sources": [
+                  "active_area"
+                ],
+                "context_default": "$active_area",
+                "aliases": [
+                  "区域",
+                  "地区",
+                  "地点",
+                  "候选区域",
+                  "检索范围",
+                  "搜索区域",
+                  "省域范围",
+                  "region",
+                  "target_area",
+                  "search_area",
+                  "sample_area",
+                  "location",
+                  "cities"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "郑州附近黄河沿线"
+              },
+              {
+                "name": "path",
+                "type": "string_or_array",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "剖面线或路线。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 path；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "剖面线",
+                  "路线",
+                  "line"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "metrics",
+                "type": "string_or_array",
+                "required": true,
+                "requirement_level": "execution",
+                "description": "需要计算的地形量。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 metrics；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "指标",
+                  "计算项"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": [
+                  "elevation",
+                  "slope"
+                ]
+              }
+            ],
+            "required_any": [
+              [
+                "area",
+                "path"
+              ]
+            ],
+            "mutually_exclusive": [],
+            "allow_extra": true,
+            "examples": []
+          }
+        }
+      ],
+      "params": [
+        {
+          "name": "operation",
+          "type": "string",
+          "required": true,
+          "description": "本次调用执行的 operation",
+          "allowed_values": [
+            "terrain"
+          ]
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "required": true,
+          "description": "本次调用要补齐的证据缺口，不得伪装成工具返回",
+          "allowed_values": []
+        },
+        {
+          "name": "inputs",
+          "type": "object",
+          "required": true,
+          "description": "严格按 operation.input_schema 传给执行器的真实输入",
+          "allowed_values": []
+        }
+      ],
+      "observation_fields": [
+        {
+          "name": "result",
+          "type": "object",
+          "nullable": true,
+          "description": "执行器实际返回；不得写入假设、计划或模型自行补全的数据"
+        }
+      ],
+      "is_terminal": false
+    },
+    "variants": [],
+    "variant_operations": {}
+  },
+  "parameter_guide": {
+    "terrain": [
+      {
+        "name": "area",
+        "type": "location",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+        "how_to_obtain": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+        "context_sources": [
+          "active_area"
+        ],
+        "context_default": "$active_area",
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "郑州附近黄河沿线",
+        "aliases": [
+          "区域",
+          "地区",
+          "地点",
+          "候选区域",
+          "检索范围",
+          "搜索区域",
+          "省域范围",
+          "region",
+          "target_area",
+          "search_area",
+          "sample_area",
+          "location",
+          "cities"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "path",
+        "type": "string_or_array",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "剖面线或路线。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 path；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "剖面线",
+          "路线",
+          "line"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "metrics",
+        "type": "string_or_array",
+        "required": true,
+        "requirement_level": "execution",
+        "purpose": "需要计算的地形量。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 metrics；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": [
+          "elevation",
+          "slope"
+        ],
+        "aliases": [
+          "指标",
+          "计算项"
+        ],
+        "validation_note": "execution 级字段缺失时不得执行；按 how_to_obtain 先获取真实值。"
+      }
+    ]
+  },
+  "implementation_research": {
+    "architecture": "local_dem_processing",
+    "backends": [
+      {
+        "name": "GDAL DEM tools",
+        "kind": "local_cli_or_library",
+        "role": "坡度、坡向、阴影和地形指标",
+        "official_url": "https://gdal.org/en/stable/programs/gdaldem.html",
+        "authentication": "无",
+        "license_note": "使用前核对软件与数据许可。"
+      },
+      {
+        "name": "OpenTopography",
+        "kind": "external_data_api",
+        "role": "DEM 数据获取",
+        "official_url": "https://opentopography.org/developers",
+        "authentication": "OpenTopography API Key",
+        "license_note": "数据集、配额和商业使用条件按账户核对。"
+      }
+    ],
+    "execution_flow": [
+      "获取/解析真实 DEM",
+      "统一垂直/水平单位和 CRS",
+      "计算 metrics 或 path 剖面并返回数据版本"
+    ],
+    "limitations": [
+      "低分辨率 DEM 不支持精细局部结论",
+      "高程基准与单位差异需校正",
+      "地形分析不能自动包含城市障碍物"
+    ],
+    "mcp_strategy": "本地 GDAL worker；数据下载由独立受控 provider 完成。"
+  },
+  "recommended_executor_contract": {
+    "required_result_fields": [
+      "status",
+      "provider_or_algorithm",
+      "request_parameters_used",
+      "retrieved_at",
+      "source_result_id_or_raw_ref",
+      "provenance",
+      "warnings"
+    ],
+    "status_values": [
+      "success",
+      "no_result",
+      "no_coverage",
+      "parameter_missing",
+      "unsupported",
+      "permission_denied",
+      "provider_error"
+    ],
+    "rules": [
+      "no_result 与 no_coverage、provider_error 必须分开",
+      "任何精确数值必须带单位、方法和源数据",
+      "调用失败不得生成看似成功的 Observation",
+      "密钥、令牌和内部文件系统路径不得进入训练样本"
+    ]
+  },
+  "new_tool_review_hint": {
+    "covered_execution_boundary": "terrain_analysis_engine",
+    "do_not_create_when": [
+      "只是对象、地区、查询词或参数不同",
+      "现有 Tool 的某个 operation 与本次动作共享同一执行器",
+      "只是基于已有结果进行比较、筛选、总结或推理"
+    ],
+    "consider_new_only_when": [
+      "现有31类执行器及所有 operation 均不能执行该动作",
+      "存在独立、可实现、可测试的真实后端边界",
+      "多个独立样本反复出现相同能力缺口",
+      "能够提供完整 schema、许可评估、失败语义和测试证据"
+    ]
+  }
+}

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,40 @@ from pipeline.schemas.confidence import ConfidenceReport
 from pipeline.schemas.tools import ToolParameterAudit
 from pipeline.schemas.trajectory import Trajectory
 from pipeline.schemas.transcript import TranscriptSegment
+
+
+_ISSUE_CATEGORY_BY_CODE: dict[str, str] = {
+    "no_selected_image": "image_selection",
+    "stage2_no_image_input": "image_selection",
+    "selected_file_missing": "image_selection",
+    "selected_answer_leakage": "image_selection",
+    "selected_frame_packaging": "image_selection",
+    "low_selected_frame_quality": "image_selection",
+    "stage15_review_reason": "image_selection",
+    "image_trajectory_mismatch": "image_selection",
+    "answer_leaking_image": "image_selection",
+    "answer_leakage_selected": "image_selection",
+    "fabricated_observation": "observation_truthfulness",
+    "observation_needs_repair": "observation_truthfulness",
+    "observation_review_unavailable": "observation_truthfulness",
+    "observation_audit_stale": "observation_truthfulness",
+    "hallucinated_precision": "observation_truthfulness",
+    "tool_parameter_repair": "tool_parameters",
+    "tool_contract_unverified": "tool_parameters",
+    "tool_params_unexecutable": "tool_parameters",
+    "parameter_inputs_invalid": "tool_parameters",
+    "temporary_tool": "tool_catalog_coverage",
+    "temporary_operation": "tool_catalog_coverage",
+    "incomplete_final_targets": "final_answer",
+    "missing_final": "final_answer",
+    "last_not_final": "final_answer",
+    "final_bad_tool": "final_answer",
+    "empty_location": "final_answer",
+    "reasoning_has_action": "sft_structure",
+    "final_has_observation": "sft_structure",
+    "empty_transcript": "input_transcript",
+    "judge_unavailable": "audit_coverage",
+}
 
 
 def timecode(seconds: float | None) -> str:
@@ -53,6 +88,42 @@ def _step_indices(evidence: str, count: int) -> list[int]:
     return sorted(index for index in indices if 1 <= index <= count)
 
 
+def _issue_category(code: str) -> str:
+    return _ISSUE_CATEGORY_BY_CODE.get(code, "other")
+
+
+def _evidence_windows(
+    evidence: str, transcript: list[TranscriptSegment]
+) -> list[dict[str, Any]]:
+    """尽量把审核证据定位回字幕；无法可靠定位时不伪造精确时间。"""
+    raw = str(evidence or "")
+    normalized = "".join(raw.split())
+    quoted = [
+        "".join(item.split())
+        for item in re.findall(r"[\"'“「『](.*?)[\"'”」』]", raw)
+        if len("".join(item.split())) >= 6
+    ]
+    needles = [item for item in [normalized, *quoted] if len(item) >= 6]
+    if not needles:
+        return []
+    windows: list[dict[str, Any]] = []
+    for segment in transcript:
+        text = "".join(segment.text.split())
+        if len(text) < 6:
+            continue
+        if any(
+            needle in text or (len(text) >= 8 and text in needle)
+            or (
+                needle in quoted
+                and min(len(needle), len(text)) >= 8
+                and SequenceMatcher(None, needle, text).ratio() >= 0.33
+            )
+            for needle in needles
+        ):
+            windows.append(_window(segment.start, segment.end))
+    return windows[:4]
+
+
 def build_review_packet(
     *,
     report: ConfidenceReport,
@@ -60,6 +131,8 @@ def build_review_packet(
     trajectory: Trajectory,
     transcript: list[TranscriptSegment],
     parameter_audits: list[ToolParameterAudit] | None = None,
+    tool_mapping: dict[str, Any] | None = None,
+    observation_audit: dict[str, Any] | None = None,
     context_transcript: list[TranscriptSegment] | None = None,
     source_video_path: str | None = None,
 ) -> dict[str, Any]:
@@ -79,21 +152,32 @@ def build_review_packet(
     candidates = [a.model_dump(mode="json") for a in task.frame_assessments if not a.selected]
     issues: list[dict[str, Any]] = []
 
-    def add(code: str, origin: str, summary: str, guidance: str, *, evidence: str = "", frames: list[dict[str, Any]] | None = None, steps: list[int] | None = None, severity: str = "warning") -> None:
+    def add(code: str, origin: str, summary: str, guidance: str, *, evidence: str = "", frames: list[dict[str, Any]] | None = None, steps: list[int] | None = None, severity: str = "warning", category: str | None = None, time_windows: list[dict[str, Any]] | None = None) -> None:
         indices = steps or []
+        resolved_frames = frames or []
+        resolved_windows = list(time_windows or [])
+        if not resolved_windows:
+            for frame in resolved_frames:
+                timestamp = frame.get("timestamp")
+                if timestamp is not None:
+                    resolved_windows.append(_window(float(timestamp), float(timestamp)))
+        if not resolved_windows:
+            resolved_windows = _evidence_windows(evidence, transcript)
         issues.append({
+            "category": category or _issue_category(code),
             "code": code, "origin": origin, "severity": severity,
             "verification": "metadata_fact" if origin == "artifact" else "requires_human_confirmation",
             "summary": summary, "evidence": evidence,
             "task_window": _window(task.time_start, task.time_end),
-            "frames": frames or [], "step_indices": indices,
+            "time_windows": resolved_windows,
+            "frames": resolved_frames, "step_indices": indices,
             "json_pointers": [f"/steps/{index - 1}/observation" for index in indices],
             "repair_guidance": guidance,
         })
 
     if not selected:
         add("no_selected_image", "artifact", "Stage 3/SFT 未记录任何输入图片", "先在本题时间窗内核对原始目标；参考候选帧和出示窗，但不要把地图核验图或答案帧直接补为原图。允许保留当前结果供人工审核，不中断流水线。", severity="error")
-        add("stage2_image_provenance_unknown", "artifact", "没有 Stage 2 实际入模图片清单，不能断言模型未看图", "当前 Stage 2 在空图片列表时可能内部回退整视频概览帧，而 Stage 3/4 仍记录空图；先对齐三阶段实际使用的图片清单，再判断内容错配。")
+        add("stage2_no_image_input", "artifact", "本题 Stage 2 没有输入图片，只能依据字幕蒸馏", "当前策略不会再从整视频回退随机概览帧，以免混入相邻题或答案揭晓；样本继续跑完，但修复时应先回到 Stage 1.5 补取正确原图，再重新生成本题轨迹。")
     missing = [frame for frame in selected if not frame["file_exists"]]
     if missing:
         add("selected_file_missing", "artifact", "输入清单中的图片文件不存在", "恢复原文件或重新截取并同步 Stage 2/3/4 的图片路径，不以假路径代替。", frames=missing, severity="error")
@@ -112,6 +196,87 @@ def build_review_packet(
     if status == "needs_review":
         add("stage15_review_reason", "stage15_assessment", "Stage 1.5 留下待复核原因", "若原因是多个不相邻出示窗但只选一张，先判断是不是同一张原图重复出现；只有存在独立且缺失的视觉证据才补图，不强制凑图片数量。", evidence=task.status_reason)
 
+    # Observation 审核逐步落到问题清单，避免只剩一个聚合 gate、找不到哪一步。
+    observation_items: list[dict[str, Any]] = []
+    if isinstance(observation_audit, dict):
+        passes = observation_audit.get("passes")
+        if isinstance(passes, list) and passes:
+            final_pass = passes[-1]
+            if isinstance(final_pass, dict) and isinstance(final_pass.get("items"), list):
+                observation_items = [
+                    item for item in final_pass["items"] if isinstance(item, dict)
+                ]
+        elif isinstance(observation_audit.get("items"), list):
+            observation_items = [
+                item for item in observation_audit["items"] if isinstance(item, dict)
+            ]
+    for item in observation_items:
+        verdict = str(item.get("verdict") or "").strip().lower()
+        if verdict in {"supported", "pass", "accepted"}:
+            continue
+        step_index = item.get("step_index")
+        steps = [int(step_index)] if isinstance(step_index, int) and step_index > 0 else []
+        evidence = str(item.get("evidence") or item.get("reason") or "").strip()
+        reason = str(item.get("reason") or evidence or "审核未给出原因").strip()
+        correction = str(item.get("correction") or "").strip()
+        if verdict in {"fabricated", "unsupported", "hallucinated", "reject"}:
+            add(
+                "fabricated_observation",
+                "stage2_observation_audit",
+                f"第 {step_index or '?'} 步 Observation 被判为缺少直接依据",
+                correction or "对照该时间段字幕确认动作与返回；无来源内容删除或改为 reasoning，不补写新回执。",
+                evidence=reason,
+                steps=steps,
+                severity="error",
+            )
+        else:
+            add(
+                "observation_needs_repair",
+                "stage2_observation_audit",
+                f"第 {step_index or '?'} 步 Observation 证据尚不确定",
+                correction or "核对本题字幕与相邻语境；确认不了时保留为待审核，不把不确定项改成确定事实。",
+                evidence=reason,
+                steps=steps,
+            )
+
+    mapping = tool_mapping if isinstance(tool_mapping, dict) else {}
+    routing = mapping.get("tool_routing")
+    if not isinstance(routing, dict):
+        has_temp = bool(mapping.get("temporary_tools") or mapping.get("temporary_operations"))
+        routing = {
+            "pool": "temporary_review" if has_temp else "canonical_only",
+            "requires_tool_review": has_temp,
+        }
+    mapping_candidates = mapping.get("tool_review_candidates")
+    if not isinstance(mapping_candidates, list):
+        mapping_candidates = []
+    for candidate in mapping_candidates:
+        if not isinstance(candidate, dict):
+            continue
+        review_kind = str(candidate.get("review_kind") or "ambiguous_unmapped")
+        is_operation = review_kind in {"candidate_new_operation", "ambiguous_operation"}
+        step_index = candidate.get("step_index")
+        steps = [int(step_index)] if isinstance(step_index, int) and step_index > 0 else []
+        raw_tool = str(candidate.get("raw_tool") or "未命名 Tool")
+        alternatives = candidate.get("catalog_candidates")
+        alt_text = "、".join(str(item) for item in alternatives) if isinstance(alternatives, list) else ""
+        evidence = str(candidate.get("not_catalog_reason") or candidate.get("model_reason") or "").strip()
+        if alt_text:
+            evidence = f"{evidence}；已比较候选：{alt_text}" if evidence else f"已比较候选：{alt_text}"
+        add(
+            "temporary_operation" if is_operation else "temporary_tool",
+            "stage3_tool_mapping",
+            (
+                f"第 {step_index or '?'} 步使用临时 operation：{raw_tool}"
+                if is_operation
+                else f"第 {step_index or '?'} 步使用临时 Tool：{raw_tool}"
+            ),
+            "先对照31类正式 Tool 与全部 operation 做语义归并；只有多个独立样本反复出现同一执行器缺口，且能给出真实后端、完整 schema、许可与测试证据时，才另行设计并提 PR。当前轨迹只做人工修正，不自动改目录。",
+            evidence=evidence or "模型未能稳定归入现有目录，尚不能据此认定必须新增。",
+            steps=steps,
+            category="tool_catalog_coverage",
+        )
+
     guides = {
         "image_trajectory_mismatch": "在记录的选帧时间与本题视觉简报之间逐项比对地标；换错题/镜头的图优先修正输入。字幕已有的地图返回不能仅因选图错配就再判为虚假 Observation。",
         "fabricated_observation": "逐步核对动作是否发生、返回值是否有来源；查看本题字幕及前后语境。明确杜撰的回执可改为 reasoning 或人工重写；不能仅因窄切片没有写出动作就断言未执行。",
@@ -119,6 +284,12 @@ def build_review_packet(
     }
     for gate in [*report.hard_gates, *report.soft_flags]:
         if gate.code == "task_needs_review":
+            continue
+        if gate.code in {"fabricated_observation", "observation_needs_repair"} and any(
+            issue.get("code") == gate.code
+            and issue.get("origin") == "stage2_observation_audit"
+            for issue in issues
+        ):
             continue
         add(gate.code, "stage4_reviewer", "裁判报告的问题（待人工确认）", guides.get(gate.code, "核对裁判给出的证据和字段，保留原始输出，再决定修复方式；此记录不触发自动删除或重生成。"), evidence=gate.evidence, frames=selected if "image" in gate.code else None, steps=_step_indices(gate.evidence, len(trajectory.steps)), severity="error" if gate in report.hard_gates else "warning")
 
@@ -133,6 +304,10 @@ def build_review_packet(
 
     if report.judge_call_failed:
         add("judge_unavailable", "artifact", "语义审核未完成，不应把中性分当低质量证据", "保留样本，单独补审；不要重跑已成功的 Stage 2/3。")
+    category_counts: dict[str, int] = {}
+    for issue in issues:
+        category = str(issue.get("category") or "other")
+        category_counts[category] = category_counts.get(category, 0) + 1
     return {
         "schema_version": "manual_review_v1", "policy": "advisory_only_no_execution_gate",
         "task_id": task.task_id, "task_window": _window(task.time_start, task.time_end),
@@ -141,6 +316,8 @@ def build_review_packet(
         "review_priority": report.review_priority, "quality_recommendation": report.decision,
         "notice": "分数是审核启发式，不是正确率；reject 是质量建议，文件仍保留。Tool 调用为蒸馏记录，不代表已执行真实地理工具。",
         "evaluation_notes": report.notes,
+        "issue_category_counts": category_counts,
+        "tool_routing": routing,
         "selected_frames": selected, "unselected_candidates": candidates,
         "proposed_show_source_windows": [_window(p.start, p.end) for p in task.process_intervals if p.role.value == "show_source"],
         "window_notice": "出示窗来自 Stage 1.5 模型，供定位复核，不保证其中必有正确原图。",
@@ -165,12 +342,30 @@ def render_review_markdown(packet: dict[str, Any]) -> str:
     for frame in packet["selected_frames"]:
         lines.append(f"- 选中帧 {timecode(frame['timestamp'])}：{_file_link(frame['image_path'])}；时间来源 {frame['timestamp_source']}。")
     windows = [window["timecode"] for window in packet["proposed_show_source_windows"]]
-    lines.extend(["", "建议复核的模型出示窗：" + ("；".join(windows) or "未记录"), packet["window_notice"], "", "## 问题与修改指导", ""])
+    routing = packet.get("tool_routing") or {}
+    counts = packet.get("issue_category_counts") or {}
+    count_text = "；".join(f"{key}={value}" for key, value in counts.items()) or "无已识别问题"
+    lines.extend([
+        "",
+        "建议复核的模型出示窗：" + ("；".join(windows) or "未记录"),
+        packet["window_notice"],
+        "",
+        "## 问题总览",
+        "",
+        f"- 问题大类计数：{count_text}。",
+        f"- Tool 分流池：`{routing.get('pool', 'unknown')}`；需要 Tool 复核={bool(routing.get('requires_tool_review', False))}。",
+        "",
+        "## 问题与修改指导",
+        "",
+    ])
     for index, issue in enumerate(packet["issues"], start=1):
-        stamps = "、".join(timecode(frame["timestamp"]) for frame in issue["frames"]) or "无精确选帧时间，按题目窗口定位"
+        windows = issue.get("time_windows") or []
+        stamps = "、".join(str(window.get("timecode") or "") for window in windows if isinstance(window, dict) and window.get("timecode"))
+        if not stamps:
+            stamps = "无更精确证据时间，按题目窗口定位"
         lines.extend([f"### {index}. {issue['summary']}", "",
-                      f"- 类型：`{issue['code']}`；来源：`{issue['origin']}`；状态：`{issue['verification']}`。",
-                      f"- 时间：{issue['task_window']['timecode']}；关联帧：{stamps}。",
+                      f"- 大类：`{issue.get('category', 'other')}`；类型：`{issue['code']}`；来源：`{issue['origin']}`；状态：`{issue['verification']}`。",
+                      f"- 题目范围：{issue['task_window']['timecode']}；重点核对时间：{stamps}。",
                       f"- 原因：{issue['evidence'] or '见输入清单事实。'}",
                       f"- 修改建议：{issue['repair_guidance']}"])
         if issue["json_pointers"]:

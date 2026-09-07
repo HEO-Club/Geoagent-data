@@ -1,0 +1,307 @@
+{
+  "schema_version": "geoagent_tool_implementation_spec_v1",
+  "ordinal": 13,
+  "research_date": "2026-08-31",
+  "research_status": "design_researched_not_runtime_verified",
+  "catalog_source": "canonical_tool_catalog_v2.json",
+  "canonical_tool": {
+    "canonical": {
+      "name": "route_query",
+      "description": "查询道路连接和路线关系。",
+      "executor": "route_service",
+      "usage": "仅在需要访问该真实执行器并获得新证据时调用；先选择 operation，再按其 input_schema 填 inputs。缺少执行级参数时按 acquisition_hint 获取，不得编造坐标、文件、会话或前置结果。",
+      "operations": [
+        {
+          "name": "route",
+          "description": "查询道路连接、路线或沿线关系",
+          "aliases": [],
+          "input_schema": {
+            "description": "查询两点或多点之间的道路与路线关系。",
+            "fields": [
+              {
+                "name": "origin",
+                "type": "string_or_object",
+                "required": true,
+                "requirement_level": "execution",
+                "description": "路线起点。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 origin；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "起点",
+                  "from"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "destination",
+                "type": "string_or_object",
+                "required": true,
+                "requirement_level": "execution",
+                "description": "路线终点。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 destination；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "终点",
+                  "to"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "waypoints",
+                "type": "array",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "可选途经点。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 waypoints；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "途经点",
+                  "via"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "travel_mode",
+                "type": "string",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "出行方式。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 travel_mode；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "交通方式",
+                  "mode"
+                ],
+                "allowed_values": [
+                  "drive",
+                  "walk",
+                  "bike",
+                  "transit",
+                  "any"
+                ],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              }
+            ],
+            "required_any": [],
+            "mutually_exclusive": [],
+            "allow_extra": true,
+            "examples": []
+          }
+        }
+      ],
+      "params": [
+        {
+          "name": "operation",
+          "type": "string",
+          "required": true,
+          "description": "本次调用执行的 operation",
+          "allowed_values": [
+            "route"
+          ]
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "required": true,
+          "description": "本次调用要补齐的证据缺口，不得伪装成工具返回",
+          "allowed_values": []
+        },
+        {
+          "name": "inputs",
+          "type": "object",
+          "required": true,
+          "description": "严格按 operation.input_schema 传给执行器的真实输入",
+          "allowed_values": []
+        }
+      ],
+      "observation_fields": [
+        {
+          "name": "result",
+          "type": "object",
+          "nullable": true,
+          "description": "执行器实际返回；不得写入假设、计划或模型自行补全的数据"
+        }
+      ],
+      "is_terminal": false
+    },
+    "variants": [],
+    "variant_operations": {}
+  },
+  "parameter_guide": {
+    "route": [
+      {
+        "name": "origin",
+        "type": "string_or_object",
+        "required": true,
+        "requirement_level": "execution",
+        "purpose": "路线起点。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 origin；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "起点",
+          "from"
+        ],
+        "validation_note": "execution 级字段缺失时不得执行；按 how_to_obtain 先获取真实值。"
+      },
+      {
+        "name": "destination",
+        "type": "string_or_object",
+        "required": true,
+        "requirement_level": "execution",
+        "purpose": "路线终点。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 destination；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "终点",
+          "to"
+        ],
+        "validation_note": "execution 级字段缺失时不得执行；按 how_to_obtain 先获取真实值。"
+      },
+      {
+        "name": "waypoints",
+        "type": "array",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "可选途经点。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 waypoints；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "途经点",
+          "via"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "travel_mode",
+        "type": "string",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "出行方式。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 travel_mode；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [
+          "drive",
+          "walk",
+          "bike",
+          "transit",
+          "any"
+        ],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "交通方式",
+          "mode"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      }
+    ]
+  },
+  "implementation_research": {
+    "architecture": "routing_api_or_local_engine",
+    "backends": [
+      {
+        "name": "高德路径规划",
+        "kind": "external_api",
+        "role": "国内驾车、步行等路径",
+        "official_url": "https://lbs.amap.com/api/web-service/guide/routes",
+        "authentication": "高德 Web 服务 Key",
+        "license_note": "使用前核对软件与数据许可。"
+      },
+      {
+        "name": "OSRM",
+        "kind": "self_host",
+        "role": "基于 OSM 的路线、匹配和距离",
+        "official_url": "https://project-osrm.org/docs/",
+        "authentication": "无",
+        "license_note": "使用前核对软件与数据许可。"
+      }
+    ],
+    "execution_flow": [
+      "解析起终点、途经点和交通方式",
+      "调用对应路网快照",
+      "返回路线几何、里程、时间和数据版本"
+    ],
+    "limitations": [
+      "道路距离不等于测地直线距离",
+      "当前路网不能无说明证明历史路线",
+      "不支持的交通方式不能静默改写"
+    ],
+    "mcp_strategy": "高德 MCP 或自建 OSRM service；Tool 名保持统一。"
+  },
+  "recommended_executor_contract": {
+    "required_result_fields": [
+      "status",
+      "provider_or_algorithm",
+      "request_parameters_used",
+      "retrieved_at",
+      "source_result_id_or_raw_ref",
+      "provenance",
+      "warnings"
+    ],
+    "status_values": [
+      "success",
+      "no_result",
+      "no_coverage",
+      "parameter_missing",
+      "unsupported",
+      "permission_denied",
+      "provider_error"
+    ],
+    "rules": [
+      "no_result 与 no_coverage、provider_error 必须分开",
+      "任何精确数值必须带单位、方法和源数据",
+      "调用失败不得生成看似成功的 Observation",
+      "密钥、令牌和内部文件系统路径不得进入训练样本"
+    ]
+  },
+  "new_tool_review_hint": {
+    "covered_execution_boundary": "route_service",
+    "do_not_create_when": [
+      "只是对象、地区、查询词或参数不同",
+      "现有 Tool 的某个 operation 与本次动作共享同一执行器",
+      "只是基于已有结果进行比较、筛选、总结或推理"
+    ],
+    "consider_new_only_when": [
+      "现有31类执行器及所有 operation 均不能执行该动作",
+      "存在独立、可实现、可测试的真实后端边界",
+      "多个独立样本反复出现相同能力缺口",
+      "能够提供完整 schema、许可评估、失败语义和测试证据"
+    ]
+  }
+}

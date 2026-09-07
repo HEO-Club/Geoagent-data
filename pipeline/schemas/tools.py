@@ -123,6 +123,9 @@ class ToolForest(BaseModel):
 class MatchDecision(BaseModel):
     """LLM 对自由 tool 的执行器级归并或严格新建决策。"""
 
+    # Stage 3 重分类必须按调用步骤回填，不能仅按 raw_tool 名称回填；同一
+    # 轨迹中同名自由 Tool 可能实际对应不同执行器。
+    step_index: int | None = Field(default=None, ge=1)
     raw_tool: str = ""
     action: Literal["map", "create", "reasoning"]
     canonical_name: str | None = None
@@ -132,6 +135,7 @@ class MatchDecision(BaseModel):
     proposed_definition: ToolDefinition | None = None
     reason: str = ""
     not_catalog_reason: str = ""
+    catalog_candidates: list[str] = Field(default_factory=list)
     create_kind: Literal["new_executor", "new_operation"] | None = None
 
     @model_validator(mode="before")

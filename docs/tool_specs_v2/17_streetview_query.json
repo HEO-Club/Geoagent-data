@@ -1,0 +1,868 @@
+{
+  "schema_version": "geoagent_tool_implementation_spec_v1",
+  "ordinal": 17,
+  "research_date": "2026-08-31",
+  "research_status": "design_researched_not_runtime_verified",
+  "catalog_source": "canonical_tool_catalog_v2.json",
+  "canonical_tool": {
+    "canonical": {
+      "name": "streetview_query",
+      "description": "打开、导航、切换或截取街景会话。",
+      "executor": "streetview_service",
+      "usage": "仅在需要访问该真实执行器并获得新证据时调用；先选择 operation，再按其 input_schema 填 inputs。缺少执行级参数时按 acquisition_hint 获取，不得编造坐标、文件、会话或前置结果。",
+      "operations": [
+        {
+          "name": "open",
+          "description": "打开指定地点或候选点的街景",
+          "aliases": [
+            "retrieve",
+            "query"
+          ],
+          "input_schema": {
+            "description": "打开指定地点或坐标的街景。",
+            "fields": [
+              {
+                "name": "area",
+                "type": "location",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+                "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+                "context_sources": [
+                  "active_area"
+                ],
+                "context_default": "$active_area",
+                "aliases": [
+                  "区域",
+                  "地区",
+                  "地点",
+                  "候选区域",
+                  "检索范围",
+                  "搜索区域",
+                  "省域范围",
+                  "region",
+                  "target_area",
+                  "search_area",
+                  "sample_area",
+                  "location",
+                  "cities",
+                  "target"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "郑州附近黄河沿线"
+              },
+              {
+                "name": "coordinates",
+                "type": "array",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "WGS84 坐标。",
+                "acquisition_hint": "引用地图/OSM/地理编码前一步真实返回的坐标，不得由模型编造。",
+                "context_sources": [
+                  "previous_coordinates"
+                ],
+                "context_default": "$previous_coordinates",
+                "aliases": [
+                  "坐标",
+                  "latlon",
+                  "point"
+                ],
+                "allowed_values": [],
+                "item_type": "number",
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "provider",
+                "type": "string",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "街景服务提供方。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 provider；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "服务",
+                  "数据源"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              }
+            ],
+            "required_any": [
+              [
+                "area",
+                "coordinates"
+              ]
+            ],
+            "mutually_exclusive": [],
+            "allow_extra": true,
+            "examples": []
+          }
+        },
+        {
+          "name": "navigate",
+          "description": "沿道路或方向移动街景视点",
+          "aliases": [],
+          "input_schema": {
+            "description": "在已打开街景中沿道路或方向移动。",
+            "fields": [
+              {
+                "name": "session",
+                "type": "string",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "已打开街景会话或结果 ID。",
+                "acquisition_hint": "引用前一步 open/retrieve 返回的活动会话 ID；没有会话时先执行打开操作。",
+                "context_sources": [
+                  "active_session"
+                ],
+                "context_default": "$active_session",
+                "aliases": [
+                  "会话",
+                  "街景结果",
+                  "result_id"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "area",
+                "type": "location",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+                "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+                "context_sources": [
+                  "active_area"
+                ],
+                "context_default": "$active_area",
+                "aliases": [
+                  "区域",
+                  "地区",
+                  "地点",
+                  "候选区域",
+                  "检索范围",
+                  "搜索区域",
+                  "省域范围",
+                  "region",
+                  "target_area",
+                  "search_area",
+                  "sample_area",
+                  "location",
+                  "cities"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "郑州附近黄河沿线"
+              },
+              {
+                "name": "direction",
+                "type": "string",
+                "required": true,
+                "requirement_level": "semantic",
+                "description": "移动方向或道路方向。",
+                "acquisition_hint": "从图像朝向、道路方向或用户指定的导航方向中提取可执行方向。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "方向",
+                  "朝向",
+                  "bearing"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "distance_m",
+                "type": "number",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "移动距离（米）。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 distance_m；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "距离",
+                  "distance"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": 0.0,
+                "maximum": null,
+                "example": null
+              }
+            ],
+            "required_any": [
+              [
+                "session",
+                "area"
+              ]
+            ],
+            "mutually_exclusive": [],
+            "allow_extra": true,
+            "examples": []
+          }
+        },
+        {
+          "name": "change_time",
+          "description": "切换街景年份或历史图层",
+          "aliases": [],
+          "input_schema": {
+            "description": "切换指定地点或会话的街景年份。",
+            "fields": [
+              {
+                "name": "session",
+                "type": "string",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "街景会话或结果 ID。",
+                "acquisition_hint": "引用前一步 open/retrieve 返回的活动会话 ID；没有会话时先执行打开操作。",
+                "context_sources": [
+                  "active_session"
+                ],
+                "context_default": "$active_session",
+                "aliases": [
+                  "会话",
+                  "result_id"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "area",
+                "type": "location",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+                "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+                "context_sources": [
+                  "active_area"
+                ],
+                "context_default": "$active_area",
+                "aliases": [
+                  "区域",
+                  "地区",
+                  "地点",
+                  "候选区域",
+                  "检索范围",
+                  "搜索区域",
+                  "省域范围",
+                  "region",
+                  "target_area",
+                  "search_area",
+                  "sample_area",
+                  "location",
+                  "cities"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "郑州附近黄河沿线"
+              },
+              {
+                "name": "time_range",
+                "type": "string_or_object",
+                "required": true,
+                "requirement_level": "semantic",
+                "description": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。",
+                "acquisition_hint": "从字幕、task 或已有结果提取真实时间范围；来源没有时不得猜测。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "时期",
+                  "时间",
+                  "年份",
+                  "年代",
+                  "年代范围",
+                  "日期",
+                  "影像时期",
+                  "影像年份",
+                  "date_range",
+                  "year"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "1980-1995"
+              }
+            ],
+            "required_any": [
+              [
+                "session",
+                "area"
+              ]
+            ],
+            "mutually_exclusive": [],
+            "allow_extra": true,
+            "examples": []
+          }
+        },
+        {
+          "name": "capture",
+          "description": "获取指定视角的街景画面",
+          "aliases": [],
+          "input_schema": {
+            "description": "从街景会话获取指定视角画面。",
+            "fields": [
+              {
+                "name": "session",
+                "type": "string",
+                "required": true,
+                "requirement_level": "execution",
+                "description": "街景会话或结果 ID。",
+                "acquisition_hint": "引用前一步 open/retrieve 返回的活动会话 ID；没有会话时先执行打开操作。",
+                "context_sources": [
+                  "active_session"
+                ],
+                "context_default": "$active_session",
+                "aliases": [
+                  "会话",
+                  "result_id"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "heading",
+                "type": "number",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "水平朝向角（度）。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 heading；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "朝向",
+                  "方位角"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": 0.0,
+                "maximum": 360.0,
+                "example": null
+              },
+              {
+                "name": "pitch",
+                "type": "number",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "俯仰角（度）。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 pitch；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "俯仰"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": -90.0,
+                "maximum": 90.0,
+                "example": null
+              },
+              {
+                "name": "fov",
+                "type": "number",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "视场角（度）。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 fov；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "视角",
+                  "field_of_view"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": 1.0,
+                "maximum": 180.0,
+                "example": null
+              }
+            ],
+            "required_any": [],
+            "mutually_exclusive": [],
+            "allow_extra": true,
+            "examples": []
+          }
+        }
+      ],
+      "params": [
+        {
+          "name": "operation",
+          "type": "string",
+          "required": true,
+          "description": "本次调用执行的 operation",
+          "allowed_values": [
+            "open",
+            "navigate",
+            "change_time",
+            "capture"
+          ]
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "required": true,
+          "description": "本次调用要补齐的证据缺口，不得伪装成工具返回",
+          "allowed_values": []
+        },
+        {
+          "name": "inputs",
+          "type": "object",
+          "required": true,
+          "description": "严格按 operation.input_schema 传给执行器的真实输入",
+          "allowed_values": []
+        }
+      ],
+      "observation_fields": [
+        {
+          "name": "result",
+          "type": "object",
+          "nullable": true,
+          "description": "执行器实际返回；不得写入假设、计划或模型自行补全的数据"
+        }
+      ],
+      "is_terminal": false
+    },
+    "variants": [
+      "open_streetview",
+      "walk_streetview_along_road",
+      "check_earliest_available_streetview"
+    ],
+    "variant_operations": {
+      "open_streetview": "open",
+      "walk_streetview_along_road": "navigate",
+      "check_earliest_available_streetview": "change_time"
+    }
+  },
+  "parameter_guide": {
+    "open": [
+      {
+        "name": "area",
+        "type": "location",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+        "how_to_obtain": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+        "context_sources": [
+          "active_area"
+        ],
+        "context_default": "$active_area",
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "郑州附近黄河沿线",
+        "aliases": [
+          "区域",
+          "地区",
+          "地点",
+          "候选区域",
+          "检索范围",
+          "搜索区域",
+          "省域范围",
+          "region",
+          "target_area",
+          "search_area",
+          "sample_area",
+          "location",
+          "cities",
+          "target"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "coordinates",
+        "type": "array",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "WGS84 坐标。",
+        "how_to_obtain": "引用地图/OSM/地理编码前一步真实返回的坐标，不得由模型编造。",
+        "context_sources": [
+          "previous_coordinates"
+        ],
+        "context_default": "$previous_coordinates",
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "坐标",
+          "latlon",
+          "point"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "provider",
+        "type": "string",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "街景服务提供方。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 provider；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "服务",
+          "数据源"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      }
+    ],
+    "navigate": [
+      {
+        "name": "session",
+        "type": "string",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "已打开街景会话或结果 ID。",
+        "how_to_obtain": "引用前一步 open/retrieve 返回的活动会话 ID；没有会话时先执行打开操作。",
+        "context_sources": [
+          "active_session"
+        ],
+        "context_default": "$active_session",
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "会话",
+          "街景结果",
+          "result_id"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "area",
+        "type": "location",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+        "how_to_obtain": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+        "context_sources": [
+          "active_area"
+        ],
+        "context_default": "$active_area",
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "郑州附近黄河沿线",
+        "aliases": [
+          "区域",
+          "地区",
+          "地点",
+          "候选区域",
+          "检索范围",
+          "搜索区域",
+          "省域范围",
+          "region",
+          "target_area",
+          "search_area",
+          "sample_area",
+          "location",
+          "cities"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "direction",
+        "type": "string",
+        "required": true,
+        "requirement_level": "semantic",
+        "purpose": "移动方向或道路方向。",
+        "how_to_obtain": "从图像朝向、道路方向或用户指定的导航方向中提取可执行方向。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "方向",
+          "朝向",
+          "bearing"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "distance_m",
+        "type": "number",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "移动距离（米）。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 distance_m；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": 0.0,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "距离",
+          "distance"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      }
+    ],
+    "change_time": [
+      {
+        "name": "session",
+        "type": "string",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "街景会话或结果 ID。",
+        "how_to_obtain": "引用前一步 open/retrieve 返回的活动会话 ID；没有会话时先执行打开操作。",
+        "context_sources": [
+          "active_session"
+        ],
+        "context_default": "$active_session",
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "会话",
+          "result_id"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "area",
+        "type": "location",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+        "how_to_obtain": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+        "context_sources": [
+          "active_area"
+        ],
+        "context_default": "$active_area",
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "郑州附近黄河沿线",
+        "aliases": [
+          "区域",
+          "地区",
+          "地点",
+          "候选区域",
+          "检索范围",
+          "搜索区域",
+          "省域范围",
+          "region",
+          "target_area",
+          "search_area",
+          "sample_area",
+          "location",
+          "cities"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "time_range",
+        "type": "string_or_object",
+        "required": true,
+        "requirement_level": "semantic",
+        "purpose": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。",
+        "how_to_obtain": "从字幕、task 或已有结果提取真实时间范围；来源没有时不得猜测。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "1980-1995",
+        "aliases": [
+          "时期",
+          "时间",
+          "年份",
+          "年代",
+          "年代范围",
+          "日期",
+          "影像时期",
+          "影像年份",
+          "date_range",
+          "year"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      }
+    ],
+    "capture": [
+      {
+        "name": "session",
+        "type": "string",
+        "required": true,
+        "requirement_level": "execution",
+        "purpose": "街景会话或结果 ID。",
+        "how_to_obtain": "引用前一步 open/retrieve 返回的活动会话 ID；没有会话时先执行打开操作。",
+        "context_sources": [
+          "active_session"
+        ],
+        "context_default": "$active_session",
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "会话",
+          "result_id"
+        ],
+        "validation_note": "execution 级字段缺失时不得执行；按 how_to_obtain 先获取真实值。"
+      },
+      {
+        "name": "heading",
+        "type": "number",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "水平朝向角（度）。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 heading；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": 0.0,
+        "maximum": 360.0,
+        "example": null,
+        "aliases": [
+          "朝向",
+          "方位角"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "pitch",
+        "type": "number",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "俯仰角（度）。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 pitch；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": -90.0,
+        "maximum": 90.0,
+        "example": null,
+        "aliases": [
+          "俯仰"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "fov",
+        "type": "number",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "视场角（度）。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 fov；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": 1.0,
+        "maximum": 180.0,
+        "example": null,
+        "aliases": [
+          "视角",
+          "field_of_view"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      }
+    ]
+  },
+  "implementation_research": {
+    "architecture": "licensed_imagery_session",
+    "backends": [
+      {
+        "name": "Mapillary API",
+        "kind": "external_api",
+        "role": "众包街景、序列、位置与拍摄时间",
+        "official_url": "https://help.mapillary.com/hc/en-us/articles/360010234680-Accessing-imagery-and-data-through-the-Mapillary-API",
+        "authentication": "Mapillary access token",
+        "license_note": "逐项确认图像下载、保留和训练使用范围。"
+      },
+      {
+        "name": "Google Street View",
+        "kind": "external_api_restricted",
+        "role": "全景打开、邻接和视角截图",
+        "official_url": "https://developers.google.com/maps/documentation/streetview/request-streetview",
+        "authentication": "Google Maps Platform Key",
+        "license_note": "通用条款限制批量提取、缓存及用于训练/测试模型；无额外授权不作为默认 SFT 数据源。"
+      }
+    ],
+    "execution_flow": [
+      "open 建立真实 panorama/session",
+      "navigate/change_time 只能使用实际存在的邻接和日期",
+      "capture 返回视角、版权、拍摄日期与图片 ID"
+    ],
+    "limitations": [
+      "网站历史滑块不等于 API 可指定任意年份",
+      "无历史覆盖必须返回 no_coverage",
+      "会话和 panorama ID 不得编造"
+    ],
+    "mcp_strategy": "自建受许可约束的 session adapter；每个返回保留 provider attribution。"
+  },
+  "recommended_executor_contract": {
+    "required_result_fields": [
+      "status",
+      "provider_or_algorithm",
+      "request_parameters_used",
+      "retrieved_at",
+      "source_result_id_or_raw_ref",
+      "provenance",
+      "warnings"
+    ],
+    "status_values": [
+      "success",
+      "no_result",
+      "no_coverage",
+      "parameter_missing",
+      "unsupported",
+      "permission_denied",
+      "provider_error"
+    ],
+    "rules": [
+      "no_result 与 no_coverage、provider_error 必须分开",
+      "任何精确数值必须带单位、方法和源数据",
+      "调用失败不得生成看似成功的 Observation",
+      "密钥、令牌和内部文件系统路径不得进入训练样本"
+    ]
+  },
+  "new_tool_review_hint": {
+    "covered_execution_boundary": "streetview_service",
+    "do_not_create_when": [
+      "只是对象、地区、查询词或参数不同",
+      "现有 Tool 的某个 operation 与本次动作共享同一执行器",
+      "只是基于已有结果进行比较、筛选、总结或推理"
+    ],
+    "consider_new_only_when": [
+      "现有31类执行器及所有 operation 均不能执行该动作",
+      "存在独立、可实现、可测试的真实后端边界",
+      "多个独立样本反复出现相同能力缺口",
+      "能够提供完整 schema、许可评估、失败语义和测试证据"
+    ]
+  }
+}

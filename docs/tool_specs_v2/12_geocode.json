@@ -1,0 +1,313 @@
+{
+  "schema_version": "geoagent_tool_implementation_spec_v1",
+  "ordinal": 12,
+  "research_date": "2026-08-31",
+  "research_status": "design_researched_not_runtime_verified",
+  "catalog_source": "canonical_tool_catalog_v2.json",
+  "canonical_tool": {
+    "canonical": {
+      "name": "geocode",
+      "description": "在地名、地址和坐标之间转换。",
+      "executor": "geocoding_service",
+      "usage": "仅在需要访问该真实执行器并获得新证据时调用；先选择 operation，再按其 input_schema 填 inputs。缺少执行级参数时按 acquisition_hint 获取，不得编造坐标、文件、会话或前置结果。",
+      "operations": [
+        {
+          "name": "geocode",
+          "description": "在地名、地址和坐标表达之间查询映射",
+          "aliases": [],
+          "input_schema": {
+            "description": "在地名、地址和坐标表达之间转换。",
+            "fields": [
+              {
+                "name": "query",
+                "type": "string_or_array",
+                "required": true,
+                "requirement_level": "semantic",
+                "description": "提交给该服务的检索词、自然语言查询或明确对象描述。",
+                "acquisition_hint": "从本步 purpose/Thought 中提取明确检索对象和约束，不得只写“查询一下”。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "关键词",
+                  "检索词",
+                  "查询词",
+                  "检索对象",
+                  "对象",
+                  "目标",
+                  "特征组合",
+                  "筛选条件",
+                  "material",
+                  "keywords",
+                  "问题",
+                  "q",
+                  "search_query"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "铁路桥 石栏 历史照片"
+              },
+              {
+                "name": "area",
+                "type": "location",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+                "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+                "context_sources": [
+                  "active_area"
+                ],
+                "context_default": "$active_area",
+                "aliases": [
+                  "区域",
+                  "地区",
+                  "地点",
+                  "候选区域",
+                  "检索范围",
+                  "搜索区域",
+                  "省域范围",
+                  "region",
+                  "target_area",
+                  "search_area",
+                  "sample_area",
+                  "location",
+                  "cities"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "郑州附近黄河沿线"
+              },
+              {
+                "name": "direction",
+                "type": "string",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "正向或反向地理编码。",
+                "acquisition_hint": "从图像朝向、道路方向或用户指定的导航方向中提取可执行方向。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "方向",
+                  "mode"
+                ],
+                "allowed_values": [
+                  "forward",
+                  "reverse",
+                  "auto"
+                ],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "auto"
+              }
+            ],
+            "required_any": [],
+            "mutually_exclusive": [],
+            "allow_extra": true,
+            "examples": []
+          }
+        }
+      ],
+      "params": [
+        {
+          "name": "operation",
+          "type": "string",
+          "required": true,
+          "description": "本次调用执行的 operation",
+          "allowed_values": [
+            "geocode"
+          ]
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "required": true,
+          "description": "本次调用要补齐的证据缺口，不得伪装成工具返回",
+          "allowed_values": []
+        },
+        {
+          "name": "inputs",
+          "type": "object",
+          "required": true,
+          "description": "严格按 operation.input_schema 传给执行器的真实输入",
+          "allowed_values": []
+        }
+      ],
+      "observation_fields": [
+        {
+          "name": "result",
+          "type": "object",
+          "nullable": true,
+          "description": "执行器实际返回；不得写入假设、计划或模型自行补全的数据"
+        }
+      ],
+      "is_terminal": false
+    },
+    "variants": [],
+    "variant_operations": {}
+  },
+  "parameter_guide": {
+    "geocode": [
+      {
+        "name": "query",
+        "type": "string_or_array",
+        "required": true,
+        "requirement_level": "semantic",
+        "purpose": "提交给该服务的检索词、自然语言查询或明确对象描述。",
+        "how_to_obtain": "从本步 purpose/Thought 中提取明确检索对象和约束，不得只写“查询一下”。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "铁路桥 石栏 历史照片",
+        "aliases": [
+          "关键词",
+          "检索词",
+          "查询词",
+          "检索对象",
+          "对象",
+          "目标",
+          "特征组合",
+          "筛选条件",
+          "material",
+          "keywords",
+          "问题",
+          "q",
+          "search_query"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "area",
+        "type": "location",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+        "how_to_obtain": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+        "context_sources": [
+          "active_area"
+        ],
+        "context_default": "$active_area",
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "郑州附近黄河沿线",
+        "aliases": [
+          "区域",
+          "地区",
+          "地点",
+          "候选区域",
+          "检索范围",
+          "搜索区域",
+          "省域范围",
+          "region",
+          "target_area",
+          "search_area",
+          "sample_area",
+          "location",
+          "cities"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "direction",
+        "type": "string",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "正向或反向地理编码。",
+        "how_to_obtain": "从图像朝向、道路方向或用户指定的导航方向中提取可执行方向。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [
+          "forward",
+          "reverse",
+          "auto"
+        ],
+        "minimum": null,
+        "maximum": null,
+        "example": "auto",
+        "aliases": [
+          "方向",
+          "mode"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      }
+    ]
+  },
+  "implementation_research": {
+    "architecture": "provider_geocoder_or_self_host",
+    "backends": [
+      {
+        "name": "高德地理编码",
+        "kind": "external_api",
+        "role": "国内地址与坐标互转",
+        "official_url": "https://lbs.amap.com/api/web-service/guide/georegeo",
+        "authentication": "高德 Web 服务 Key",
+        "license_note": "使用前核对软件与数据许可。"
+      },
+      {
+        "name": "Nominatim",
+        "kind": "self_host_or_public_limited",
+        "role": "OSM 地名搜索与逆地理编码",
+        "official_url": "https://nominatim.org/release-docs/latest/api/Overview/",
+        "authentication": "无",
+        "license_note": "使用前核对软件与数据许可。"
+      }
+    ],
+    "execution_flow": [
+      "按 direction 选择正向/逆向",
+      "限制 area 并返回多个候选",
+      "记录匹配层级、坐标系和 provider"
+    ],
+    "limitations": [
+      "公共 Nominatim 绝对上限 1 req/s 且禁止重批量",
+      "地名中心点不等于精确目标",
+      "跑批优先自建或商业服务"
+    ],
+    "mcp_strategy": "统一 geocode executor；公共 Nominatim 不允许并发压测。"
+  },
+  "recommended_executor_contract": {
+    "required_result_fields": [
+      "status",
+      "provider_or_algorithm",
+      "request_parameters_used",
+      "retrieved_at",
+      "source_result_id_or_raw_ref",
+      "provenance",
+      "warnings"
+    ],
+    "status_values": [
+      "success",
+      "no_result",
+      "no_coverage",
+      "parameter_missing",
+      "unsupported",
+      "permission_denied",
+      "provider_error"
+    ],
+    "rules": [
+      "no_result 与 no_coverage、provider_error 必须分开",
+      "任何精确数值必须带单位、方法和源数据",
+      "调用失败不得生成看似成功的 Observation",
+      "密钥、令牌和内部文件系统路径不得进入训练样本"
+    ]
+  },
+  "new_tool_review_hint": {
+    "covered_execution_boundary": "geocoding_service",
+    "do_not_create_when": [
+      "只是对象、地区、查询词或参数不同",
+      "现有 Tool 的某个 operation 与本次动作共享同一执行器",
+      "只是基于已有结果进行比较、筛选、总结或推理"
+    ],
+    "consider_new_only_when": [
+      "现有31类执行器及所有 operation 均不能执行该动作",
+      "存在独立、可实现、可测试的真实后端边界",
+      "多个独立样本反复出现相同能力缺口",
+      "能够提供完整 schema、许可评估、失败语义和测试证据"
+    ]
+  }
+}

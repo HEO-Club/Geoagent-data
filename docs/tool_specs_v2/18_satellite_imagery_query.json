@@ -1,0 +1,944 @@
+{
+  "schema_version": "geoagent_tool_implementation_spec_v1",
+  "ordinal": 18,
+  "research_date": "2026-08-31",
+  "research_status": "design_researched_not_runtime_verified",
+  "catalog_source": "canonical_tool_catalog_v2.json",
+  "canonical_tool": {
+    "canonical": {
+      "name": "satellite_imagery_query",
+      "description": "获取、切换或查看卫星/航片影像。",
+      "executor": "satellite_imagery_service",
+      "usage": "仅在需要访问该真实执行器并获得新证据时调用；先选择 operation，再按其 input_schema 填 inputs。缺少执行级参数时按 acquisition_hint 获取，不得编造坐标、文件、会话或前置结果。",
+      "operations": [
+        {
+          "name": "retrieve",
+          "description": "获取指定区域和时间的卫星或航片",
+          "aliases": [
+            "open",
+            "query"
+          ],
+          "input_schema": {
+            "description": "获取指定区域和时间的卫星或航片。",
+            "fields": [
+              {
+                "name": "area",
+                "type": "location",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+                "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+                "context_sources": [
+                  "active_area"
+                ],
+                "context_default": "$active_area",
+                "aliases": [
+                  "区域",
+                  "地区",
+                  "地点",
+                  "候选区域",
+                  "检索范围",
+                  "搜索区域",
+                  "省域范围",
+                  "region",
+                  "target_area",
+                  "search_area",
+                  "sample_area",
+                  "location",
+                  "cities",
+                  "target"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "郑州附近黄河沿线"
+              },
+              {
+                "name": "coordinates",
+                "type": "string_or_array",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "待获取影像的一个或多个坐标。",
+                "acquisition_hint": "引用地图/OSM/地理编码前一步真实返回的坐标，不得由模型编造。",
+                "context_sources": [
+                  "previous_coordinates"
+                ],
+                "context_default": "$previous_coordinates",
+                "aliases": [
+                  "坐标",
+                  "points"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "source_result",
+                "type": "string_or_object",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "上一步筛选结果或坐标结果引用。",
+                "acquisition_hint": "引用产生该数据的前置 Tool 返回 ID；若尚未执行前置查询，先调用对应 query/retrieve。",
+                "context_sources": [
+                  "previous_tool_result"
+                ],
+                "context_default": "$previous_tool_result",
+                "aliases": [
+                  "已有结果",
+                  "筛选结果",
+                  "result_id"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "time_range",
+                "type": "string_or_object",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。",
+                "acquisition_hint": "从字幕、task 或已有结果提取真实时间范围；来源没有时不得猜测。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "时期",
+                  "时间",
+                  "年份",
+                  "年代",
+                  "年代范围",
+                  "日期",
+                  "影像时期",
+                  "影像年份",
+                  "date_range",
+                  "year"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "1980-1995"
+              },
+              {
+                "name": "provider",
+                "type": "string",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "影像服务或数据集。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 provider；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "数据源",
+                  "服务"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "layer",
+                "type": "string",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "影像图层，如 satellite/aerial/terrain。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 layer；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "图层",
+                  "影像类型"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "cloud_cover_max",
+                "type": "number",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "最大允许云量百分比。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 cloud_cover_max；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "最大云量",
+                  "cloud_threshold"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": 0.0,
+                "maximum": 100.0,
+                "example": null
+              },
+              {
+                "name": "resolution_m",
+                "type": "number",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "期望空间分辨率（米/像素）。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 resolution_m；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "分辨率",
+                  "resolution"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": 0.0,
+                "maximum": null,
+                "example": null
+              }
+            ],
+            "required_any": [
+              [
+                "area",
+                "coordinates",
+                "source_result"
+              ]
+            ],
+            "mutually_exclusive": [],
+            "allow_extra": true,
+            "examples": []
+          }
+        },
+        {
+          "name": "change_time",
+          "description": "切换历史年份、季节或水期影像",
+          "aliases": [],
+          "input_schema": {
+            "description": "在同一区域切换历史年份、季节或水期影像。",
+            "fields": [
+              {
+                "name": "area",
+                "type": "location",
+                "required": true,
+                "requirement_level": "semantic",
+                "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+                "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+                "context_sources": [
+                  "active_area"
+                ],
+                "context_default": "$active_area",
+                "aliases": [
+                  "区域",
+                  "地区",
+                  "地点",
+                  "候选区域",
+                  "检索范围",
+                  "搜索区域",
+                  "省域范围",
+                  "region",
+                  "target_area",
+                  "search_area",
+                  "sample_area",
+                  "location",
+                  "cities"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "郑州附近黄河沿线"
+              },
+              {
+                "name": "time_range",
+                "type": "string_or_object",
+                "required": true,
+                "requirement_level": "semantic",
+                "description": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。",
+                "acquisition_hint": "从字幕、task 或已有结果提取真实时间范围；来源没有时不得猜测。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "时期",
+                  "时间",
+                  "年份",
+                  "年代",
+                  "年代范围",
+                  "日期",
+                  "影像时期",
+                  "影像年份",
+                  "date_range",
+                  "year"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "1980-1995"
+              },
+              {
+                "name": "source_result",
+                "type": "string",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "可选的上一影像会话或结果 ID。",
+                "acquisition_hint": "引用产生该数据的前置 Tool 返回 ID；若尚未执行前置查询，先调用对应 query/retrieve。",
+                "context_sources": [
+                  "previous_tool_result"
+                ],
+                "context_default": "$previous_tool_result",
+                "aliases": [
+                  "已有影像",
+                  "result_id"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "provider",
+                "type": "string",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "影像服务提供方。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 provider；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "数据源",
+                  "服务"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              }
+            ],
+            "required_any": [],
+            "mutually_exclusive": [],
+            "allow_extra": true,
+            "examples": []
+          }
+        },
+        {
+          "name": "oblique_view",
+          "description": "获取倾斜或三维地形视角",
+          "aliases": [],
+          "input_schema": {
+            "description": "获取指定区域的倾斜、三维或地形视角。",
+            "fields": [
+              {
+                "name": "area",
+                "type": "location",
+                "required": true,
+                "requirement_level": "semantic",
+                "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+                "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+                "context_sources": [
+                  "active_area"
+                ],
+                "context_default": "$active_area",
+                "aliases": [
+                  "区域",
+                  "地区",
+                  "地点",
+                  "候选区域",
+                  "检索范围",
+                  "搜索区域",
+                  "省域范围",
+                  "region",
+                  "target_area",
+                  "search_area",
+                  "sample_area",
+                  "location",
+                  "cities"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "郑州附近黄河沿线"
+              },
+              {
+                "name": "heading",
+                "type": "number",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "观察朝向角（度）。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 heading；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "朝向",
+                  "方位角"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": 0.0,
+                "maximum": 360.0,
+                "example": null
+              },
+              {
+                "name": "tilt",
+                "type": "number",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "倾斜角（度）。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 tilt；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "倾角",
+                  "pitch"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": 0.0,
+                "maximum": 90.0,
+                "example": null
+              },
+              {
+                "name": "time_range",
+                "type": "string_or_object",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。",
+                "acquisition_hint": "从字幕、task 或已有结果提取真实时间范围；来源没有时不得猜测。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "时期",
+                  "时间",
+                  "年份",
+                  "年代",
+                  "年代范围",
+                  "日期",
+                  "影像时期",
+                  "影像年份",
+                  "date_range",
+                  "year"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "1980-1995"
+              }
+            ],
+            "required_any": [],
+            "mutually_exclusive": [],
+            "allow_extra": true,
+            "examples": []
+          }
+        }
+      ],
+      "params": [
+        {
+          "name": "operation",
+          "type": "string",
+          "required": true,
+          "description": "本次调用执行的 operation",
+          "allowed_values": [
+            "retrieve",
+            "change_time",
+            "oblique_view"
+          ]
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "required": true,
+          "description": "本次调用要补齐的证据缺口，不得伪装成工具返回",
+          "allowed_values": []
+        },
+        {
+          "name": "inputs",
+          "type": "object",
+          "required": true,
+          "description": "严格按 operation.input_schema 传给执行器的真实输入",
+          "allowed_values": []
+        }
+      ],
+      "observation_fields": [
+        {
+          "name": "result",
+          "type": "object",
+          "nullable": true,
+          "description": "执行器实际返回；不得写入假设、计划或模型自行补全的数据"
+        }
+      ],
+      "is_terminal": false
+    },
+    "variants": [
+      "compare_satellite_imagery",
+      "check_historical_imagery",
+      "compare_wetseason_imagery"
+    ],
+    "variant_operations": {
+      "compare_satellite_imagery": "retrieve",
+      "check_historical_imagery": "change_time",
+      "compare_wetseason_imagery": "change_time"
+    }
+  },
+  "parameter_guide": {
+    "retrieve": [
+      {
+        "name": "area",
+        "type": "location",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+        "how_to_obtain": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+        "context_sources": [
+          "active_area"
+        ],
+        "context_default": "$active_area",
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "郑州附近黄河沿线",
+        "aliases": [
+          "区域",
+          "地区",
+          "地点",
+          "候选区域",
+          "检索范围",
+          "搜索区域",
+          "省域范围",
+          "region",
+          "target_area",
+          "search_area",
+          "sample_area",
+          "location",
+          "cities",
+          "target"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "coordinates",
+        "type": "string_or_array",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "待获取影像的一个或多个坐标。",
+        "how_to_obtain": "引用地图/OSM/地理编码前一步真实返回的坐标，不得由模型编造。",
+        "context_sources": [
+          "previous_coordinates"
+        ],
+        "context_default": "$previous_coordinates",
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "坐标",
+          "points"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "source_result",
+        "type": "string_or_object",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "上一步筛选结果或坐标结果引用。",
+        "how_to_obtain": "引用产生该数据的前置 Tool 返回 ID；若尚未执行前置查询，先调用对应 query/retrieve。",
+        "context_sources": [
+          "previous_tool_result"
+        ],
+        "context_default": "$previous_tool_result",
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "已有结果",
+          "筛选结果",
+          "result_id"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "time_range",
+        "type": "string_or_object",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。",
+        "how_to_obtain": "从字幕、task 或已有结果提取真实时间范围；来源没有时不得猜测。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "1980-1995",
+        "aliases": [
+          "时期",
+          "时间",
+          "年份",
+          "年代",
+          "年代范围",
+          "日期",
+          "影像时期",
+          "影像年份",
+          "date_range",
+          "year"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "provider",
+        "type": "string",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "影像服务或数据集。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 provider；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "数据源",
+          "服务"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "layer",
+        "type": "string",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "影像图层，如 satellite/aerial/terrain。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 layer；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "图层",
+          "影像类型"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "cloud_cover_max",
+        "type": "number",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "最大允许云量百分比。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 cloud_cover_max；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": 0.0,
+        "maximum": 100.0,
+        "example": null,
+        "aliases": [
+          "最大云量",
+          "cloud_threshold"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "resolution_m",
+        "type": "number",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "期望空间分辨率（米/像素）。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 resolution_m；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": 0.0,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "分辨率",
+          "resolution"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      }
+    ],
+    "change_time": [
+      {
+        "name": "area",
+        "type": "location",
+        "required": true,
+        "requirement_level": "semantic",
+        "purpose": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+        "how_to_obtain": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+        "context_sources": [
+          "active_area"
+        ],
+        "context_default": "$active_area",
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "郑州附近黄河沿线",
+        "aliases": [
+          "区域",
+          "地区",
+          "地点",
+          "候选区域",
+          "检索范围",
+          "搜索区域",
+          "省域范围",
+          "region",
+          "target_area",
+          "search_area",
+          "sample_area",
+          "location",
+          "cities"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "time_range",
+        "type": "string_or_object",
+        "required": true,
+        "requirement_level": "semantic",
+        "purpose": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。",
+        "how_to_obtain": "从字幕、task 或已有结果提取真实时间范围；来源没有时不得猜测。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "1980-1995",
+        "aliases": [
+          "时期",
+          "时间",
+          "年份",
+          "年代",
+          "年代范围",
+          "日期",
+          "影像时期",
+          "影像年份",
+          "date_range",
+          "year"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "source_result",
+        "type": "string",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "可选的上一影像会话或结果 ID。",
+        "how_to_obtain": "引用产生该数据的前置 Tool 返回 ID；若尚未执行前置查询，先调用对应 query/retrieve。",
+        "context_sources": [
+          "previous_tool_result"
+        ],
+        "context_default": "$previous_tool_result",
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "已有影像",
+          "result_id"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "provider",
+        "type": "string",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "影像服务提供方。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 provider；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "数据源",
+          "服务"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      }
+    ],
+    "oblique_view": [
+      {
+        "name": "area",
+        "type": "location",
+        "required": true,
+        "requirement_level": "semantic",
+        "purpose": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+        "how_to_obtain": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+        "context_sources": [
+          "active_area"
+        ],
+        "context_default": "$active_area",
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "郑州附近黄河沿线",
+        "aliases": [
+          "区域",
+          "地区",
+          "地点",
+          "候选区域",
+          "检索范围",
+          "搜索区域",
+          "省域范围",
+          "region",
+          "target_area",
+          "search_area",
+          "sample_area",
+          "location",
+          "cities"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "heading",
+        "type": "number",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "观察朝向角（度）。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 heading；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": 0.0,
+        "maximum": 360.0,
+        "example": null,
+        "aliases": [
+          "朝向",
+          "方位角"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "tilt",
+        "type": "number",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "倾斜角（度）。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 tilt；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": 0.0,
+        "maximum": 90.0,
+        "example": null,
+        "aliases": [
+          "倾角",
+          "pitch"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "time_range",
+        "type": "string_or_object",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。",
+        "how_to_obtain": "从字幕、task 或已有结果提取真实时间范围；来源没有时不得猜测。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "1980-1995",
+        "aliases": [
+          "时期",
+          "时间",
+          "年份",
+          "年代",
+          "年代范围",
+          "日期",
+          "影像时期",
+          "影像年份",
+          "date_range",
+          "year"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      }
+    ]
+  },
+  "implementation_research": {
+    "architecture": "stac_catalog_plus_process_api",
+    "backends": [
+      {
+        "name": "Copernicus Data Space Sentinel Hub",
+        "kind": "external_api",
+        "role": "STAC 检索、影像处理和下载",
+        "official_url": "https://documentation.dataspace.copernicus.eu/APIs/SentinelHub/Overview.html",
+        "authentication": "Copernicus 账户、OAuth client_id/client_secret",
+        "license_note": "使用前核对软件与数据许可。"
+      },
+      {
+        "name": "Planet Data API",
+        "kind": "commercial_api",
+        "role": "商业高分影像目录与资产",
+        "official_url": "https://docs.planet.com/develop/apis/data/",
+        "authentication": "Planet 账户/OAuth或受支持的 API 凭证",
+        "license_note": "下载和训练使用取决于商业合同。"
+      }
+    ],
+    "execution_flow": [
+      "Catalog 先按 AOI/日期/云量查真实 acquisition",
+      "选择实际可用资产后 Process/下载",
+      "记录 scene_id、日期、分辨率、CRS、处理脚本和许可"
+    ],
+    "limitations": [
+      "resolution_m 不能创造不存在的分辨率",
+      "云量/拼接/季节会影响判断",
+      "oblique_view 渲染不得冒充真实斜拍照片"
+    ],
+    "mcp_strategy": "自建 OAuth token 缓存的 API adapter；不要每次请求新 token。"
+  },
+  "recommended_executor_contract": {
+    "required_result_fields": [
+      "status",
+      "provider_or_algorithm",
+      "request_parameters_used",
+      "retrieved_at",
+      "source_result_id_or_raw_ref",
+      "provenance",
+      "warnings"
+    ],
+    "status_values": [
+      "success",
+      "no_result",
+      "no_coverage",
+      "parameter_missing",
+      "unsupported",
+      "permission_denied",
+      "provider_error"
+    ],
+    "rules": [
+      "no_result 与 no_coverage、provider_error 必须分开",
+      "任何精确数值必须带单位、方法和源数据",
+      "调用失败不得生成看似成功的 Observation",
+      "密钥、令牌和内部文件系统路径不得进入训练样本"
+    ]
+  },
+  "new_tool_review_hint": {
+    "covered_execution_boundary": "satellite_imagery_service",
+    "do_not_create_when": [
+      "只是对象、地区、查询词或参数不同",
+      "现有 Tool 的某个 operation 与本次动作共享同一执行器",
+      "只是基于已有结果进行比较、筛选、总结或推理"
+    ],
+    "consider_new_only_when": [
+      "现有31类执行器及所有 operation 均不能执行该动作",
+      "存在独立、可实现、可测试的真实后端边界",
+      "多个独立样本反复出现相同能力缺口",
+      "能够提供完整 schema、许可评估、失败语义和测试证据"
+    ]
+  }
+}

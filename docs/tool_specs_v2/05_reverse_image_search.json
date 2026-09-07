@@ -1,0 +1,466 @@
+{
+  "schema_version": "geoagent_tool_implementation_spec_v1",
+  "ordinal": 5,
+  "research_date": "2026-08-31",
+  "research_status": "design_researched_not_runtime_verified",
+  "catalog_source": "canonical_tool_catalog_v2.json",
+  "canonical_tool": {
+    "canonical": {
+      "name": "reverse_image_search",
+      "description": "提交整图或裁剪图进行相似图片检索。",
+      "executor": "reverse_image_search_engine",
+      "usage": "仅在需要访问该真实执行器并获得新证据时调用；先选择 operation，再按其 input_schema 填 inputs。缺少执行级参数时按 acquisition_hint 获取，不得编造坐标、文件、会话或前置结果。",
+      "operations": [
+        {
+          "name": "search",
+          "description": "提交图片并返回相似图片或来源页面",
+          "aliases": [],
+          "input_schema": {
+            "description": "提交完整图片到反向搜图服务。",
+            "fields": [
+              {
+                "name": "image",
+                "type": "string",
+                "required": true,
+                "requirement_level": "execution",
+                "description": "待处理图片的路径、图片 ID 或当前输入图片引用；不得填写不存在的图片。",
+                "acquisition_hint": "优先引用 $current_image；若只需要局部特征，先调用 image_process.crop/zoom 生成截图并把返回的图片 ID 传入，禁止编造文件名。",
+                "context_sources": [
+                  "current_image"
+                ],
+                "context_default": "$current_image",
+                "aliases": [
+                  "图片",
+                  "图像",
+                  "image_path",
+                  "image_id",
+                  "对象",
+                  "target_image"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "input_image_1"
+              },
+              {
+                "name": "engines",
+                "type": "array",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "可选搜索引擎列表。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 engines；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "引擎",
+                  "providers"
+                ],
+                "allowed_values": [],
+                "item_type": "string",
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "top_k",
+                "type": "integer",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "最多返回结果数。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 top_k；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "结果数",
+                  "limit"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": 1.0,
+                "maximum": 100.0,
+                "example": 10
+              }
+            ],
+            "required_any": [],
+            "mutually_exclusive": [],
+            "allow_extra": true,
+            "examples": []
+          }
+        },
+        {
+          "name": "search_crop",
+          "description": "提交指定裁剪区域进行局部反向搜索",
+          "aliases": [],
+          "input_schema": {
+            "description": "提交指定裁剪区域进行局部反向搜图。",
+            "fields": [
+              {
+                "name": "image",
+                "type": "string",
+                "required": true,
+                "requirement_level": "execution",
+                "description": "待处理图片的路径、图片 ID 或当前输入图片引用；不得填写不存在的图片。",
+                "acquisition_hint": "优先引用 $current_image；若只需要局部特征，先调用 image_process.crop/zoom 生成截图并把返回的图片 ID 传入，禁止编造文件名。",
+                "context_sources": [
+                  "current_image"
+                ],
+                "context_default": "$current_image",
+                "aliases": [
+                  "图片",
+                  "图像",
+                  "image_path",
+                  "image_id",
+                  "对象",
+                  "target_image"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "input_image_1"
+              },
+              {
+                "name": "region",
+                "type": "string_or_array",
+                "required": true,
+                "requirement_level": "execution",
+                "description": "图片中的目标区域，可用 [x1,y1,x2,y2]、命名区域或可复现的区域描述表示。",
+                "acquisition_hint": "在当前图片上明确裁剪框或可复现的目标区域描述。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "区域",
+                  "裁剪区域",
+                  "目标区域",
+                  "roi",
+                  "bbox",
+                  "crop_region"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "bridge_tower_top"
+              },
+              {
+                "name": "engines",
+                "type": "array",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "可选搜索引擎列表。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 engines；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "引擎",
+                  "providers"
+                ],
+                "allowed_values": [],
+                "item_type": "string",
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "top_k",
+                "type": "integer",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "最多返回结果数。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 top_k；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "结果数",
+                  "limit"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": 1.0,
+                "maximum": 100.0,
+                "example": null
+              }
+            ],
+            "required_any": [],
+            "mutually_exclusive": [],
+            "allow_extra": true,
+            "examples": []
+          }
+        }
+      ],
+      "params": [
+        {
+          "name": "operation",
+          "type": "string",
+          "required": true,
+          "description": "本次调用执行的 operation",
+          "allowed_values": [
+            "search",
+            "search_crop"
+          ]
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "required": true,
+          "description": "本次调用要补齐的证据缺口，不得伪装成工具返回",
+          "allowed_values": []
+        },
+        {
+          "name": "inputs",
+          "type": "object",
+          "required": true,
+          "description": "严格按 operation.input_schema 传给执行器的真实输入",
+          "allowed_values": []
+        }
+      ],
+      "observation_fields": [
+        {
+          "name": "result",
+          "type": "object",
+          "nullable": true,
+          "description": "执行器实际返回；不得写入假设、计划或模型自行补全的数据"
+        }
+      ],
+      "is_terminal": false
+    },
+    "variants": [
+      "ai_visual_search",
+      "cropped_image_search",
+      "logo_reverse_search"
+    ],
+    "variant_operations": {
+      "ai_visual_search": "search",
+      "cropped_image_search": "search_crop",
+      "logo_reverse_search": "search_crop"
+    }
+  },
+  "parameter_guide": {
+    "search": [
+      {
+        "name": "image",
+        "type": "string",
+        "required": true,
+        "requirement_level": "execution",
+        "purpose": "待处理图片的路径、图片 ID 或当前输入图片引用；不得填写不存在的图片。",
+        "how_to_obtain": "优先引用 $current_image；若只需要局部特征，先调用 image_process.crop/zoom 生成截图并把返回的图片 ID 传入，禁止编造文件名。",
+        "context_sources": [
+          "current_image"
+        ],
+        "context_default": "$current_image",
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "input_image_1",
+        "aliases": [
+          "图片",
+          "图像",
+          "image_path",
+          "image_id",
+          "对象",
+          "target_image"
+        ],
+        "validation_note": "execution 级字段缺失时不得执行；按 how_to_obtain 先获取真实值。"
+      },
+      {
+        "name": "engines",
+        "type": "array",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "可选搜索引擎列表。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 engines；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "引擎",
+          "providers"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "top_k",
+        "type": "integer",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "最多返回结果数。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 top_k；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": 1.0,
+        "maximum": 100.0,
+        "example": 10,
+        "aliases": [
+          "结果数",
+          "limit"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      }
+    ],
+    "search_crop": [
+      {
+        "name": "image",
+        "type": "string",
+        "required": true,
+        "requirement_level": "execution",
+        "purpose": "待处理图片的路径、图片 ID 或当前输入图片引用；不得填写不存在的图片。",
+        "how_to_obtain": "优先引用 $current_image；若只需要局部特征，先调用 image_process.crop/zoom 生成截图并把返回的图片 ID 传入，禁止编造文件名。",
+        "context_sources": [
+          "current_image"
+        ],
+        "context_default": "$current_image",
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "input_image_1",
+        "aliases": [
+          "图片",
+          "图像",
+          "image_path",
+          "image_id",
+          "对象",
+          "target_image"
+        ],
+        "validation_note": "execution 级字段缺失时不得执行；按 how_to_obtain 先获取真实值。"
+      },
+      {
+        "name": "region",
+        "type": "string_or_array",
+        "required": true,
+        "requirement_level": "execution",
+        "purpose": "图片中的目标区域，可用 [x1,y1,x2,y2]、命名区域或可复现的区域描述表示。",
+        "how_to_obtain": "在当前图片上明确裁剪框或可复现的目标区域描述。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "bridge_tower_top",
+        "aliases": [
+          "区域",
+          "裁剪区域",
+          "目标区域",
+          "roi",
+          "bbox",
+          "crop_region"
+        ],
+        "validation_note": "execution 级字段缺失时不得执行；按 how_to_obtain 先获取真实值。"
+      },
+      {
+        "name": "engines",
+        "type": "array",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "可选搜索引擎列表。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 engines；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "引擎",
+          "providers"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "top_k",
+        "type": "integer",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "最多返回结果数。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 top_k；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": 1.0,
+        "maximum": 100.0,
+        "example": null,
+        "aliases": [
+          "结果数",
+          "limit"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      }
+    ]
+  },
+  "implementation_research": {
+    "architecture": "external_index_with_local_crop",
+    "backends": [
+      {
+        "name": "Google Cloud Vision Web Detection",
+        "kind": "external_api",
+        "role": "匹配网页、完整/局部匹配图和视觉相似图",
+        "official_url": "https://docs.cloud.google.com/vision/docs/detecting-web",
+        "authentication": "Google Cloud 项目、启用 Vision、ADC/服务账号",
+        "license_note": "调用前核对图片上传、结果留存和训练用途条款。"
+      },
+      {
+        "name": "SerpAPI Google Lens",
+        "kind": "third_party_api",
+        "role": "第三方 Lens 结果接口",
+        "official_url": "https://serpapi.com/google-lens-api",
+        "authentication": "SerpAPI Key",
+        "license_note": "不是 Google 官方 Lens API；需单独评估稳定性与许可。"
+      }
+    ],
+    "execution_flow": [
+      "必要时先生成局部 crop",
+      "提交可授权图片并限制 top_k",
+      "保存来源 URL、匹配类型和检索时间"
+    ],
+    "limitations": [
+      "搜索命中不是地点真值",
+      "不得虚构已执行的检索回执",
+      "敏感或无授权图片不上传第三方"
+    ],
+    "mcp_strategy": "自建 provider adapter；密钥只在服务端环境变量中，不进入 Tool inputs。"
+  },
+  "recommended_executor_contract": {
+    "required_result_fields": [
+      "status",
+      "provider_or_algorithm",
+      "request_parameters_used",
+      "retrieved_at",
+      "source_result_id_or_raw_ref",
+      "provenance",
+      "warnings"
+    ],
+    "status_values": [
+      "success",
+      "no_result",
+      "no_coverage",
+      "parameter_missing",
+      "unsupported",
+      "permission_denied",
+      "provider_error"
+    ],
+    "rules": [
+      "no_result 与 no_coverage、provider_error 必须分开",
+      "任何精确数值必须带单位、方法和源数据",
+      "调用失败不得生成看似成功的 Observation",
+      "密钥、令牌和内部文件系统路径不得进入训练样本"
+    ]
+  },
+  "new_tool_review_hint": {
+    "covered_execution_boundary": "reverse_image_search_engine",
+    "do_not_create_when": [
+      "只是对象、地区、查询词或参数不同",
+      "现有 Tool 的某个 operation 与本次动作共享同一执行器",
+      "只是基于已有结果进行比较、筛选、总结或推理"
+    ],
+    "consider_new_only_when": [
+      "现有31类执行器及所有 operation 均不能执行该动作",
+      "存在独立、可实现、可测试的真实后端边界",
+      "多个独立样本反复出现相同能力缺口",
+      "能够提供完整 schema、许可评估、失败语义和测试证据"
+    ]
+  }
+}

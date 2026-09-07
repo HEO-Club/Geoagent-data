@@ -312,8 +312,10 @@ def run_stage2(
         images = [p for p in image_paths if str(p).strip()]
     elif image_path:
         images = [image_path]
-    else:
-        # 独立 CLI 兼容：无审核帧时回退均匀概览帧
+    elif task is None:
+        # 仅独立 CLI 兼容：没有 Stage 1.5 task 时回退均匀概览帧。
+        # task 已存在但 image_paths 为空，说明选图失败；此时不得从整视频抽
+        # 概览帧，否则会把相邻题、工具画面或答案揭晓泄露给本题 Stage 2。
         try:
             duration = video_duration_sec(video_path)
             stamps = _pick_overview_timestamps(duration)

@@ -120,3 +120,71 @@ def test_replay_does_not_promote_failed_judge_to_success() -> None:
     report = _report().model_copy(update={"judge_call_failed": True})
     with pytest.raises(ValueError, match="原审核失败"):
         recompute._replay_judge(report)()
+
+
+def test_review_packet_has_categories_times_and_tool_routing() -> None:
+    trajectory = Trajectory(
+        id="v__t01",
+        system_prompt="system",
+        user_query="query",
+        image_paths=[],
+        steps=[
+            TrajectoryStep(
+                event_type="tool_call",
+                thought="准备检索",
+                action=Action(tool="temporary_lookup", params={"operation": "execute", "purpose": "核对", "inputs": {}}),
+                observation={"result": "声称已经命中"},
+            ),
+            TrajectoryStep(
+                event_type="final",
+                thought="提交",
+                action=Action(tool="final_answer", params={"location": "某地"}),
+            ),
+        ],
+    )
+    transcript = [
+        TranscriptSegment(start=96, end=99, text="旁白明确说只计划搜索，尚未执行")
+    ]
+    mapping = {
+        "tool_routing": {"pool": "temporary_review", "requires_tool_review": True},
+        "tool_review_candidates": [
+            {
+                "step_index": 1,
+                "review_kind": "ambiguous_unmapped",
+                "raw_tool": "temporary_lookup",
+                "model_confidence": 0.6,
+                "model_reason": "无法稳定归并",
+                "catalog_candidates": ["web_search", "administrative_registry"],
+            }
+        ],
+    }
+    observation_audit = {
+        "passes": [
+            {
+                "items": [
+                    {
+                        "step_index": 1,
+                        "verdict": "fabricated",
+                        "reason": "旁白明确说只计划搜索，尚未执行",
+                    }
+                ]
+            }
+        ]
+    }
+    packet = build_review_packet(
+        report=_report(),
+        task=_task(),
+        trajectory=trajectory,
+        transcript=transcript,
+        tool_mapping=mapping,
+        observation_audit=observation_audit,
+    )
+    assert packet["tool_routing"]["pool"] == "temporary_review"
+    assert packet["issue_category_counts"]["observation_truthfulness"] == 1
+    assert packet["issue_category_counts"]["tool_catalog_coverage"] == 1
+    fabricated = next(issue for issue in packet["issues"] if issue["code"] == "fabricated_observation")
+    assert fabricated["time_windows"][0]["start"] == 96
+    markdown = render_review_markdown(packet)
+    assert "问题大类计数" in markdown
+    assert "01:36.000–01:39.000" in markdown
+    assert "temporary_review" in markdown

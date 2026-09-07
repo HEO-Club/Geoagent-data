@@ -1,4 +1,4 @@
-"""Run Stage 2/3 and fused Stage 4 on the nine existing evaluation videos."""
+"""Run Stage 2/3 and fused Stage 4 on existing Stage 1.5 evaluation tasks."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pipeline.schemas.audit import AuditSplitResult, GeoTaskSpec, TaskStatus
 from pipeline.schemas.trajectory import Trajectory
 from pipeline.schemas.transcript import TranscriptSegment
+from pipeline.config import get_settings
 from pipeline.stage2_freeform_tao.run import run_stage2
 from pipeline.stage3_normalize_format.format_jsonl import run_stage3
 from pipeline.stage4_confidence.run import run_stage4
@@ -26,6 +27,7 @@ DEFAULT_IDS = [
     "04_BV1SbeqzoE5y",
     "05_BV1ibbWzQEfN",
     "06_BV1CDtizwEhE",
+    "07_BV1fKMQzUEQx",
     "08_BV1jjN2zdEQH",
     "09_BV15zyUY2EKs",
     "10_BV1ze2JY5EMV",
@@ -51,8 +53,10 @@ def _load_transcript(video_id: str) -> list[TranscriptSegment]:
     return [TranscriptSegment.model_validate(item) for item in value]
 
 
-def _find_audit(video_id: str) -> tuple[AuditSplitResult, Path]:
-    for root in STAGE15_ROOTS:
+def _find_audit(
+    video_id: str, roots: list[Path] | None = None
+) -> tuple[AuditSplitResult, Path]:
+    for root in roots or STAGE15_ROOTS:
         candidates = list(root.rglob(f"{video_id}/stage_audit_split.json"))
         if not candidates:
             candidates = [
@@ -64,8 +68,9 @@ def _find_audit(video_id: str) -> tuple[AuditSplitResult, Path]:
             audit = AuditSplitResult.model_validate_json(
                 path.read_text(encoding="utf-8")
             )
-            if audit.tasks:
-                return audit, path
+            # 视频级 reject 可以合法地没有 task；它仍是有效 Stage 1.5 结果，
+            # 只是不向 Stage 2–4 派发作业。
+            return audit, path
     raise FileNotFoundError(f"未找到 {video_id} 的可用 Stage 1.5 tasks")
 
 
@@ -156,6 +161,7 @@ def _run_task(
     final = trajectory.steps[-1]
     location = final.action.params.get("location") if final.action else None
     mapping = _read_json(mapping_path)
+    routing = mapping.get("tool_routing") if isinstance(mapping.get("tool_routing"), dict) else {}
     parameter = _read_json(parameter_path)
     calls = parameter.get("calls", []) if isinstance(parameter.get("calls"), list) else []
     return {
@@ -174,6 +180,10 @@ def _run_task(
         ),
         "tool_calls_before": mapping.get("tool_calls_before_stage3"),
         "tool_calls_after": mapping.get("tool_calls_after_stage3"),
+        "tool_pool": routing.get("pool", "unknown"),
+        "requires_tool_review": bool(routing.get("requires_tool_review", False)),
+        "temporary_tools": mapping.get("temporary_tools") or [],
+        "temporary_operations": mapping.get("temporary_operations") or [],
         "parameter_readiness": {
             level: sum(call.get("readiness") == level for call in calls)
             for level in ("ready", "context_resolvable", "repairable", "invalid")
@@ -194,16 +204,23 @@ def main() -> None:
     parser.add_argument("--max-workers", type=int, default=3)
     parser.add_argument("--ids", nargs="*", default=DEFAULT_IDS)
     parser.add_argument("--task-ids", nargs="*", default=None)
+    parser.add_argument(
+        "--stage15-roots",
+        nargs="*",
+        type=Path,
+        default=None,
+        help="可选 Stage 1.5 结果根目录，按给定顺序查找；省略时使用历史默认目录",
+    )
     args = parser.parse_args()
 
     args.out.mkdir(parents=True, exist_ok=True)
-    trees_path = args.out / "tool_trees_runtime_v2.json"
+    trees_path = Path(get_settings().TOOL_CATALOG_PATH)
     jobs: list[tuple[str, GeoTaskSpec, list[TranscriptSegment], str]] = []
     stage15_sources: dict[str, str] = {}
     for case_id in args.ids:
         video_id = _video_id(case_id)
         transcript = _load_transcript(video_id)
-        audit, audit_path = _find_audit(video_id)
+        audit, audit_path = _find_audit(video_id, args.stage15_roots)
         stage15_sources[case_id] = str(audit_path)
         for task in audit.tasks:
             if task.status == TaskStatus.rejected:
@@ -249,7 +266,7 @@ def main() -> None:
     rows.sort(key=lambda row: (row["case_id"], row["task_id"]))
     summary = {
         "catalog": "canonical_tool_catalog_v2.json",
-        "model": "claude-sonnet-5",
+        "model": get_settings().LLM_ANTHROPIC_MODEL,
         "case_count": len({row["case_id"] for row in rows}),
         "task_count": len(rows),
         "error_count": len(errors),
@@ -264,6 +281,10 @@ def main() -> None:
                 "needs_review",
                 "reject",
             )
+        },
+        "tool_pool_counts": {
+            pool_name: sum(row.get("tool_pool") == pool_name for row in rows)
+            for pool_name in ("canonical_only", "temporary_review", "unknown")
         },
         "stage15_sources": stage15_sources,
         "items": rows,

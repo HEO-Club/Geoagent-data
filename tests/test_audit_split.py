@@ -1391,6 +1391,56 @@ def test_nearby_display_window_repairs_task_boundary() -> None:
     assert display == (892.0, 910.0)
 
 
+def test_missing_display_window_adds_bounded_visual_lookback() -> None:
+    windows = audit._prepend_boundary_lookback_window(
+        [(900.0, 903.0)],
+        task_start=900.0,
+        display_time_start=None,
+        tolerance=20.0,
+    )
+    assert windows == [(880.0, 900.0), (900.0, 903.0)]
+    explicit = audit._prepend_boundary_lookback_window(
+        [(900.0, 903.0)],
+        task_start=900.0,
+        display_time_start=900.0,
+        tolerance=20.0,
+    )
+    assert explicit == [(900.0, 903.0)]
+
+
+def test_explicit_final_location_segment_extends_distillation_window() -> None:
+    transcript = [
+        TranscriptSegment(start=90, end=120, text="前一镜头位于安民村"),
+        TranscriptSegment(start=390, end=420, text="向东排查发现目标村庄"),
+        TranscriptSegment(
+            start=420,
+            end=450,
+            text="确认了，这里是广西荔浦市大塘镇苏杰村。",
+        ),
+    ]
+    task = audit._LLMGeoTaskDraft(
+        time_start=90,
+        time_end=420,
+        segment_start_idx=0,
+        segment_end_idx=1,
+        target_kind=TargetKind.still_image,
+        answer_status=AnswerStatus.resolved,
+        final_location_text="广西荔浦市大塘镇苏杰村",
+    )
+    start, end, seg0, seg1 = audit._expand_window_to_explicit_answer_segment(
+        task,
+        time_start=90,
+        time_end=420,
+        final_location_text=task.final_location_text,
+        transcript=transcript,
+        duration=600,
+    )
+    assert start == 90
+    assert end == 450
+    assert seg0 == 0
+    assert seg1 == 2
+
+
 def test_ambiguous_task_is_saved_and_skips_frame_materialization(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

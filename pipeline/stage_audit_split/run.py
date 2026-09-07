@@ -809,6 +809,52 @@ def _normalize_task_window(
     return t0, t1
 
 
+def _expand_window_to_explicit_answer_segment(
+    raw: _LLMGeoTaskDraft,
+    *,
+    time_start: float,
+    time_end: float,
+    final_location_text: str,
+    transcript: list[TranscriptSegment],
+    duration: float,
+) -> tuple[float, float, int | None, int | None]:
+    """确保蒸馏窗包含字幕中明确写出最终地点的揭晓段。
+
+    这里只接受去标点后的完整地点字符串包含关系，不做模糊猜测；找不到时
+    保持模型边界，避免把相邻题答案扩进来。
+    """
+    compact_location = re.sub(r"[\W_]+", "", final_location_text, flags=re.UNICODE)
+    seg0 = getattr(raw, "segment_start_idx", None)
+    seg1 = getattr(raw, "segment_end_idx", None)
+    resolved0 = int(seg0) if isinstance(seg0, int) and 0 <= seg0 < len(transcript) else None
+    resolved1 = int(seg1) if isinstance(seg1, int) and 0 <= seg1 < len(transcript) else None
+    if len(compact_location) < 4:
+        return time_start, time_end, resolved0, resolved1
+    matches = [
+        index
+        for index, segment in enumerate(transcript)
+        if compact_location
+        in re.sub(r"[\W_]+", "", segment.text, flags=re.UNICODE)
+    ]
+    if not matches:
+        return time_start, time_end, resolved0, resolved1
+    # 优先选择离当前蒸馏窗最近的完整答案段。
+    index = min(
+        matches,
+        key=lambda item: min(
+            abs(transcript[item].start - time_end),
+            abs(transcript[item].end - time_start),
+        ),
+    )
+    segment = transcript[index]
+    max_time = max(0.0, float(duration) - 0.001) if duration > 0 else segment.end
+    expanded_start = min(time_start, max(0.0, float(segment.start)))
+    expanded_end = max(time_end, min(max_time, float(segment.end)))
+    resolved0 = index if resolved0 is None else min(resolved0, index)
+    resolved1 = index if resolved1 is None else max(resolved1, index)
+    return expanded_start, expanded_end, resolved0, resolved1
+
+
 def _resolve_display_window(
     raw: _LLMGeoTaskDraft,
     *,
@@ -933,6 +979,27 @@ def _resolve_sample_windows(
         raw, distill_start=distill_start, distill_end=distill_end
     )
     return [fallback], clipped
+
+
+def _prepend_boundary_lookback_window(
+    sample_windows: list[tuple[float, float]],
+    *,
+    task_start: float,
+    display_time_start: float | None,
+    tolerance: float,
+) -> list[tuple[float, float]]:
+    """在 ASR/task 起点前补一个仅供视觉验收的候选窗。"""
+    lookback = max(0.0, float(tolerance))
+    start = max(0.0, float(task_start))
+    if (
+        display_time_start is not None
+        or lookback <= 0
+        or start <= 0
+        or not sample_windows
+        or min(window[0] for window in sample_windows) < start - 1e-6
+    ):
+        return sample_windows
+    return [(max(0.0, start - lookback), start), *sample_windows]
 
 
 def _dense_sample_windows(
@@ -1592,6 +1659,16 @@ def _materialize_task_images(
         distill_end=t1,
         intervals=process_intervals,
     )
+    # ASR 段落常在原图已经出现数秒后才开始。模型没有给出更早 display
+    # window、且首个 show_source 紧贴蒸馏窗起点时，把前置容差区仅作为
+    # 候选窗交给同一视觉 brief 验收；它不是强制选图，也不能绕过泄露/
+    # process_tool 过滤。这样可找回 892s 已全屏出现、900s 才开始旁白的原图。
+    sample_windows = _prepend_boundary_lookback_window(
+        sample_windows,
+        task_start=t0,
+        display_time_start=getattr(raw, "display_time_start", None),
+        tolerance=float(settings.AUDIT_TASK_BOUNDARY_TOLERANCE_SEC),
+    )
     sample_stamps = _dense_sample_windows(
         sample_windows,
         interval=interval,
@@ -2153,6 +2230,19 @@ def run_audit_split(
             if not isinstance(answer_status, AnswerStatus):
                 answer_status = AnswerStatus(str(answer_status))
             final_location = str(getattr(raw, "final_location_text", "") or "").strip()
+            resolved_seg0 = getattr(raw, "segment_start_idx", None)
+            resolved_seg1 = getattr(raw, "segment_end_idx", None)
+            if answer_status == AnswerStatus.resolved and final_location:
+                t0, t1, resolved_seg0, resolved_seg1 = (
+                    _expand_window_to_explicit_answer_segment(
+                        raw,
+                        time_start=t0,
+                        time_end=t1,
+                        final_location_text=final_location,
+                        transcript=transcript,
+                        duration=duration,
+                    )
+                )
             hard_cap = max_kf_cfg
             status = TaskStatus.accepted
             status_reason = ""
@@ -2221,8 +2311,8 @@ def run_audit_split(
                 keyframe_timestamps=stamps,
                 image_paths=paths,
                 multi_target_images=multi,
-                segment_start_idx=getattr(raw, "segment_start_idx", None),
-                segment_end_idx=getattr(raw, "segment_end_idx", None),
+                segment_start_idx=resolved_seg0,
+                segment_end_idx=resolved_seg1,
                 task_summary=str(getattr(raw, "task_summary", "") or "").strip(),
                 visual_evidence_brief=visual_brief,
                 process_intervals=process_intervals,
