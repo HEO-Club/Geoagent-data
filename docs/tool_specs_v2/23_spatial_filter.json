@@ -2,7 +2,7 @@
   "schema_version": "geoagent_tool_implementation_spec_v1",
   "ordinal": 23,
   "research_date": "2026-08-31",
-  "research_status": "design_researched_not_runtime_verified",
+  "research_status": "design_researched_not_runtime_implemented",
   "catalog_source": "canonical_tool_catalog_v2.json",
   "canonical_tool": {
     "canonical": {

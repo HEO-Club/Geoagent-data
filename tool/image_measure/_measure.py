@@ -9,7 +9,13 @@ from typing import Any, Literal
 from PIL import Image, ImageStat
 
 from tool.contract import Observation, RuntimeContext
-from tool.image_edit._transform import RegionError, _named_regions, _parse_region, _try_json
+from tool.image_edit._transform import (
+    RegionError,
+    _check_pixel_count,
+    _named_regions,
+    _parse_region,
+    _try_json,
+)
 from tool.runtime.image_store import ImageResolveError, resolve_image_ref
 
 _MEASUREMENTS = frozenset({"distance", "angle", "ratio", "area", "color"})
@@ -92,7 +98,10 @@ def execute_measure(
     try:
         with Image.open(source_path) as opened:
             width, height = opened.size
+            _check_pixel_count((width, height), ctx, "max_input_image_pixels")
             rgb = opened.convert("RGB") if measurement == "color" else None
+    except RegionError as exc:
+        return _fail(str(exc), exc.error_code)
     except OSError as exc:
         return _fail(f"无法读取图片: {exc}", "image_not_found")
 
@@ -379,7 +388,7 @@ def _finish_area(
         return _ok(
             {
                 "value": pixel_value,
-                "unit": "px",
+                "unit": "px^2",
                 "method": "bbox_area",
                 "assumptions": assumptions,
                 "measurement": "area",
@@ -394,7 +403,7 @@ def _finish_area(
     return _ok(
         {
             "value": pixel_value * scale * scale,
-            "unit": parsed_ref.scale.unit,
+            "unit": f"{parsed_ref.scale.unit}^2",
             "method": "reference_scale",
             "assumptions": assumptions,
             "measurement": "area",

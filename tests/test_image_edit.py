@@ -69,6 +69,101 @@ def test_crop_normalized_box(tmp_path: Path) -> None:
     assert observation.result["height"] == 40
 
 
+def test_region_coordinate_space_removes_zero_one_ambiguity(tmp_path: Path) -> None:
+    source = _gradient(tmp_path / "src.png", width=100, height=80)
+    pixel = execute(
+        "image_edit",
+        "crop",
+        purpose="明确像素框",
+        inputs={
+            "image": str(source),
+            "region": {
+                "x1": 0,
+                "y1": 0,
+                "x2": 1,
+                "y2": 1,
+                "coordinate_space": "pixels",
+            },
+        },
+        ctx=RuntimeContext(extras={"artifact_dir": str(tmp_path / "pixel")}),
+    )
+    normalized = execute(
+        "image_edit",
+        "crop",
+        purpose="明确归一化框",
+        inputs={
+            "image": str(source),
+            "region": {
+                "x1": 0,
+                "y1": 0,
+                "x2": 1,
+                "y2": 1,
+                "coordinate_space": "normalized",
+            },
+        },
+        ctx=RuntimeContext(extras={"artifact_dir": str(tmp_path / "normalized")}),
+    )
+    assert pixel.ok is True and normalized.ok is True
+    assert pixel.result is not None and normalized.result is not None
+    assert (pixel.result["width"], pixel.result["height"]) == (1, 1)
+    assert (normalized.result["width"], normalized.result["height"]) == (100, 80)
+
+
+def test_zoom_and_output_pixel_limits(tmp_path: Path) -> None:
+    source = _gradient(tmp_path / "src.png", width=20, height=20)
+    excessive_scale = execute(
+        "image_edit",
+        "zoom",
+        purpose="拒绝过大倍率",
+        inputs={"image": str(source), "region": [0, 0, 10, 10], "scale": 17},
+    )
+    assert excessive_scale.ok is False
+    assert excessive_scale.error_code == "invalid_scale"
+
+    excessive_pixels = execute(
+        "image_edit",
+        "zoom",
+        purpose="拒绝过大输出",
+        inputs={"image": str(source), "region": [0, 0, 10, 10], "scale": 4},
+        ctx=RuntimeContext(
+            extras={
+                "artifact_dir": str(tmp_path / "out"),
+                "max_output_image_pixels": 100,
+            }
+        ),
+    )
+    assert excessive_pixels.ok is False
+    assert excessive_pixels.error_code == "image_too_large"
+
+
+def test_runtime_path_allowlist(tmp_path: Path) -> None:
+    source = _gradient(tmp_path / "src.png")
+    denied = execute(
+        "image_edit",
+        "crop",
+        purpose="目录外文件",
+        inputs={"image": str(source), "region": [0, 0, 4, 4]},
+        ctx=RuntimeContext(
+            allowed_file_roots=[],
+            extras={"artifact_dir": str(tmp_path / "denied")},
+        ),
+    )
+    assert denied.ok is False
+    assert denied.error_code == "path_not_allowed"
+
+    allowed = execute(
+        "image_edit",
+        "crop",
+        purpose="目录内文件",
+        inputs={"image": str(source), "region": [0, 0, 4, 4]},
+        ctx=RuntimeContext(
+            allowed_file_roots=[tmp_path],
+            extras={"artifact_dir": str(tmp_path / "allowed")},
+        ),
+    )
+    assert allowed.ok is True
+
+
 def test_zoom_uses_lanczos_not_nearest(tmp_path: Path) -> None:
     source = _checkerboard(tmp_path / "src.png")
     observation = execute(

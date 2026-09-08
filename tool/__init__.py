@@ -1,7 +1,7 @@
 """按 canonical_tool_catalog_v2.json 落地的真实 Tool 执行器包。
 
 每个子目录对应一个 canonical tool；每个 operation 一个模块，暴露 `execute`。
-`image_edit`、`image_measure`、`image_compare`、`ocr_read`、`reverse_image_search` 与 `media_metadata_read` 已接入执行器；其余 tool 仍为占位，不调用外部付费 API。
+图像六类工具以及 `geocode`、`osm_query`、`poi_search` 已接入执行器；其余 tool 仍为占位。
 """
 
 from __future__ import annotations

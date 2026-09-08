@@ -129,7 +129,7 @@ _DURATION_RE = re.compile(
 )
 _INPUT_FORMAT_RE = re.compile(r"Input #\d+,\s*([^,]+)")
 _VIDEO_STREAM_RE = re.compile(r"Video:\s*([^,\s(]+)")
-_VIDEO_SIZE_RE = re.compile(r"(\d+)x(\d+)")
+_VIDEO_SIZE_RE = re.compile(r"(?<!\d)(\d{2,6})x(\d{2,6})(?!\d)")
 _CREATION_TIME_RE = re.compile(r"^\s*creation_time\s*:\s*(\S+)", re.MULTILINE)
 
 
@@ -384,10 +384,10 @@ def _apply_container(snapshot: _Snapshot, payload: dict[str, Any]) -> None:
     if duration is not None and duration >= 0:
         snapshot.duration_sec = duration
     width = _to_int(payload.get("width"))
-    if width is not None and width > 0:
+    if width is not None and width > 1:
         snapshot.width = width
     height = _to_int(payload.get("height"))
-    if height is not None and height > 0:
+    if height is not None and height > 1:
         snapshot.height = height
 
 
@@ -669,10 +669,11 @@ def _parse_ffmpeg_stderr(text: str) -> dict[str, Any]:
         minutes = int(match_duration.group(2))
         seconds = float(match_duration.group(3))
         payload["duration_sec"] = hours * 3600 + minutes * 60 + seconds
-    match_codec = _VIDEO_STREAM_RE.search(header)
+    video_line = next((line for line in header.splitlines() if "Video:" in line), "")
+    match_codec = _VIDEO_STREAM_RE.search(video_line)
     if match_codec:
         payload["video_codec"] = match_codec.group(1).strip()
-    match_size = _VIDEO_SIZE_RE.search(header)
+    match_size = _VIDEO_SIZE_RE.search(video_line)
     if match_size:
         payload["width"] = int(match_size.group(1))
         payload["height"] = int(match_size.group(2))

@@ -13,6 +13,8 @@ from tool.runtime.image_store import ImageResolveError, put_image, resolve_image
 _ENHANCE_KEYS = frozenset({"brightness", "contrast", "sharpness", "shadows"})
 _OUTPUT_FORMATS = frozenset({"png", "jpeg", "webp"})
 _DEFAULT_ZOOM_SCALE = 2.0
+_MAX_ZOOM_SCALE = 16.0
+_DEFAULT_MAX_IMAGE_PIXELS = 50_000_000
 _FACTOR_MIN = 0.1
 _FACTOR_MAX = 3.0
 
@@ -77,7 +79,10 @@ def _run_edit(
 
     try:
         with Image.open(source_path) as opened:
+            _check_pixel_count(opened.size, ctx, "max_input_image_pixels")
             source = opened.convert("RGBA") if opened.mode == "P" else opened.copy()
+    except RegionError as exc:
+        return _fail(str(exc), exc.error_code)
     except OSError as exc:
         return _fail(f"无法读取图片: {exc}", "image_not_found")
 
@@ -93,7 +98,13 @@ def _run_edit(
             box = _parse_region(raw_region, width, height, ctx)
             padding = inputs.get("padding") if operation == "crop" else None
             if padding is not None:
-                box = _apply_padding(box, padding, width, height)
+                box = _apply_padding(
+                    box,
+                    padding,
+                    width,
+                    height,
+                    mode=inputs.get("padding_mode"),
+                )
         except RegionError as exc:
             return _fail(str(exc), exc.error_code)
 
@@ -106,10 +117,14 @@ def _run_edit(
         applied["region"] = list(box)
         if inputs.get("padding") is not None:
             applied["padding"] = inputs["padding"]
+            applied["padding_mode"] = _padding_mode(
+                inputs["padding"],
+                inputs.get("padding_mode"),
+            )
     elif operation == "zoom":
         assert box is not None
         try:
-            scale = _parse_scale(inputs.get("scale"))
+            scale = _parse_scale(inputs.get("scale"), ctx)
         except ValueError as exc:
             return _fail(str(exc), "invalid_scale")
         cropped = source.crop(box)
@@ -117,6 +132,10 @@ def _run_edit(
             max(1, round(cropped.size[0] * scale)),
             max(1, round(cropped.size[1] * scale)),
         )
+        try:
+            _check_pixel_count(new_size, ctx, "max_output_image_pixels")
+        except RegionError as exc:
+            return _fail(str(exc), exc.error_code)
         result_image = cropped.resize(new_size, Image.Resampling.LANCZOS)
         applied["region"] = list(box)
         applied["scale"] = scale
@@ -191,7 +210,10 @@ def _parse_region(
         raise RegionError("region 必须是 [x1,y1,x2,y2] 或等价对象", "invalid_region")
 
     x1, y1, x2, y2 = coords
-    if _looks_normalized(coords):
+    coordinate_space = _coordinate_space(value)
+    if coordinate_space == "normalized" or (
+        coordinate_space == "auto" and _looks_normalized(coords)
+    ):
         x1, y1, x2, y2 = x1 * width, y1 * height, x2 * width, y2 * height
 
     left, right = sorted((x1, x2))
@@ -211,6 +233,8 @@ def _apply_padding(
     padding: Any,
     width: int,
     height: int,
+    *,
+    mode: Any = None,
 ) -> tuple[int, int, int, int]:
     try:
         pad = float(padding)
@@ -219,7 +243,8 @@ def _apply_padding(
     if pad < 0:
         raise RegionError("padding 必须是非负数字", "invalid_region")
     x1, y1, x2, y2 = box
-    if pad >= 1:
+    padding_mode = _padding_mode(padding, mode)
+    if padding_mode == "pixels":
         pad_x = pad_y = pad
     elif pad == 0:
         return box
@@ -241,16 +266,72 @@ def _apply_padding(
     return padded
 
 
-def _parse_scale(raw: Any) -> float:
+def _parse_scale(raw: Any, ctx: RuntimeContext | None = None) -> float:
     if raw is None:
         return _DEFAULT_ZOOM_SCALE
     try:
         scale = float(raw)
     except (TypeError, ValueError) as exc:
         raise ValueError("scale 必须是 >= 1 的数字") from exc
-    if scale < 1:
-        raise ValueError("scale 必须 >= 1")
+    max_scale = _runtime_limit(ctx, "max_zoom_scale", _MAX_ZOOM_SCALE)
+    if scale < 1 or scale > max_scale:
+        raise ValueError(f"scale 必须在 1 到 {max_scale:g} 之间")
     return scale
+
+
+def _coordinate_space(value: Any) -> str:
+    if not isinstance(value, dict):
+        return "auto"
+    raw = value.get("coordinate_space", "auto")
+    if not isinstance(raw, str) or raw not in {"auto", "pixels", "normalized"}:
+        raise RegionError(
+            "region.coordinate_space 必须是 auto、pixels 或 normalized",
+            "invalid_region",
+        )
+    return raw
+
+
+def _padding_mode(padding: Any, raw_mode: Any) -> str:
+    if raw_mode is None or (isinstance(raw_mode, str) and not raw_mode.strip()):
+        try:
+            return "pixels" if float(padding) >= 1 else "ratio"
+        except (TypeError, ValueError):
+            return "pixels"
+    if not isinstance(raw_mode, str):
+        raise RegionError("padding_mode 必须是 pixels 或 ratio", "invalid_region")
+    normalized = raw_mode.strip().lower()
+    aliases = {
+        "px": "pixels",
+        "pixel": "pixels",
+        "pixels": "pixels",
+        "ratio": "ratio",
+    }
+    if normalized not in aliases:
+        raise RegionError("padding_mode 必须是 pixels 或 ratio", "invalid_region")
+    return aliases[normalized]
+
+
+def _runtime_limit(ctx: RuntimeContext | None, name: str, default: float) -> float:
+    raw = ctx.extras.get(name) if ctx is not None else None
+    try:
+        value = float(raw) if raw is not None else float(default)
+    except (TypeError, ValueError):
+        value = float(default)
+    return value if value > 0 else float(default)
+
+
+def _check_pixel_count(
+    size: tuple[int, int],
+    ctx: RuntimeContext | None,
+    limit_name: str,
+) -> None:
+    limit = int(_runtime_limit(ctx, limit_name, _DEFAULT_MAX_IMAGE_PIXELS))
+    pixels = int(size[0]) * int(size[1])
+    if pixels > limit:
+        raise RegionError(
+            f"图片像素数 {pixels} 超过运行时上限 {limit}",
+            "image_too_large",
+        )
 
 
 def _parse_adjustments(

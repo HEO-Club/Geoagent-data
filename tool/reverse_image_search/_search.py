@@ -15,7 +15,7 @@ from typing import Any, Protocol, runtime_checkable
 from PIL import Image
 
 from tool.contract import Observation, RuntimeContext
-from tool.image_edit._transform import RegionError, _parse_region, _try_json
+from tool.image_edit._transform import RegionError, _check_pixel_count, _parse_region, _try_json
 from tool.runtime.image_store import ImageResolveError, put_image, resolve_image_ref
 
 _DEFAULT_TOP_K = 10
@@ -304,6 +304,7 @@ def _load_image(
     source_id, source_path = resolve_image_ref(image_ref, ctx)
     try:
         with Image.open(source_path) as opened:
+            _check_pixel_count(opened.size, ctx, "max_input_image_pixels")
             source = opened.convert("RGB")
     except OSError as exc:
         raise ImageResolveError(f"无法读取图片: {exc}", "image_not_found") from exc
@@ -407,9 +408,9 @@ def _resolve_engine(
         name = str(getattr(injected, "name", "injected"))
         return injected, name
     _load_dotenv()
-    if not _allow_real_api():
+    if not _allow_real_tool_api():
         raise EngineUnavailableError(
-            "ALLOW_REAL_API=false，禁止调用真实反向搜图 API",
+            "ALLOW_REAL_TOOL_API=false，禁止调用真实反向搜图 API",
         )
     last_error: EngineUnavailableError | None = None
     names = requested or [_DEFAULT_ENGINE]
@@ -431,10 +432,15 @@ def _build_engine(name: str) -> ReverseImageSearchEngine:
             raise EngineUnavailableError("未配置 SERPAPI_API_KEY 或 SERPAPI_KEY")
         return SerpapiGoogleLensEngine(
             api_key=api_key,
-            search_endpoint=_env_value("SERPAPI_ENDPOINT", _DEFAULT_SERPAPI_SEARCH_ENDPOINT),
-            image_endpoint=_env_value(
+            search_endpoint=_validated_endpoint(
+                "SERPAPI_ENDPOINT",
+                _DEFAULT_SERPAPI_SEARCH_ENDPOINT,
+                allowed_hosts={"serpapi.com"},
+            ),
+            image_endpoint=_validated_endpoint(
                 "SERPAPI_IMAGE_ENDPOINT",
                 _DEFAULT_SERPAPI_IMAGE_ENDPOINT,
+                allowed_hosts={"serpapi.com"},
             ),
             timeout_sec=timeout_sec,
         )
@@ -444,15 +450,43 @@ def _build_engine(name: str) -> ReverseImageSearchEngine:
             raise EngineUnavailableError("未配置 GOOGLE_VISION_API_KEY")
         return GoogleVisionWebDetectionEngine(
             api_key=api_key,
-            endpoint=_env_value("GOOGLE_VISION_ENDPOINT", _DEFAULT_VISION_ENDPOINT),
+            endpoint=_validated_endpoint(
+                "GOOGLE_VISION_ENDPOINT",
+                _DEFAULT_VISION_ENDPOINT,
+                allowed_hosts={"vision.googleapis.com"},
+            ),
             timeout_sec=timeout_sec,
         )
     raise EngineUnavailableError(f"不支持的 engines: {name}")
 
 
-def _allow_real_api() -> bool:
-    raw = os.environ.get("ALLOW_REAL_API", "false").strip().lower()
+def _allow_real_tool_api() -> bool:
+    raw = os.environ.get("ALLOW_REAL_TOOL_API", "false").strip().lower()
     return raw in {"1", "true", "yes", "on"}
+
+
+def _validated_endpoint(
+    name: str,
+    default: str,
+    *,
+    allowed_hosts: set[str],
+) -> str:
+    endpoint = _env_value(name, default)
+    parsed = urllib.parse.urlparse(endpoint)
+    if parsed.scheme.lower() != "https" or not parsed.hostname:
+        raise EngineUnavailableError(f"{name} 必须是有效 HTTPS 地址")
+    allow_custom = os.environ.get("ALLOW_CUSTOM_TOOL_ENDPOINTS", "false").strip().lower()
+    if parsed.hostname.lower() not in allowed_hosts and allow_custom not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        hosts = ", ".join(sorted(allowed_hosts))
+        raise EngineUnavailableError(
+            f"{name} 主机不在白名单（{hosts}）；自定义 HTTPS 端点需显式开启 ALLOW_CUSTOM_TOOL_ENDPOINTS",
+        )
+    return endpoint
 
 
 def _serpapi_api_key() -> str:

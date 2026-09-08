@@ -10,7 +10,7 @@ import numpy as np
 from PIL import Image
 
 from tool.contract import Observation, RuntimeContext
-from tool.image_edit._transform import RegionError, _parse_region, _try_json
+from tool.image_edit._transform import RegionError, _check_pixel_count, _parse_region, _try_json
 from tool.runtime.image_store import ImageResolveError, put_image, resolve_image_ref
 
 CURRENT_IMAGES_REF = "$current_images"
@@ -26,6 +26,7 @@ _RESIDUAL_THRESHOLD = 30
 _MAX_UNMATCHED_REGIONS = 8
 _MIN_UNMATCHED_AREA = 16
 _MAX_DRAWN_MATCHES = 80
+_MAX_COMPARE_IMAGES = 16
 _ASSUMPTIONS = [
     "匹配分数是证据，不表示地点相同",
     "桥梁、电塔、建筑等相似结构仍需其他证据交叉核验",
@@ -175,6 +176,18 @@ def _parse_image_refs(raw: Any, ctx: RuntimeContext | None) -> list[str]:
         refs.append(item.strip())
     if len(refs) < 2:
         raise CompareInputError("images 至少需要两张图片", "too_few_images")
+    max_images = _MAX_COMPARE_IMAGES
+    if ctx is not None:
+        try:
+            max_images = int(ctx.extras.get("max_compare_images", max_images))
+        except (TypeError, ValueError):
+            max_images = _MAX_COMPARE_IMAGES
+    max_images = max(2, max_images)
+    if len(refs) > max_images:
+        raise CompareInputError(
+            f"images 最多允许 {max_images} 张",
+            "too_many_images",
+        )
     return refs
 
 
@@ -195,7 +208,10 @@ def _load_images(refs: list[str], ctx: RuntimeContext | None) -> list[LoadedImag
         image_id, path = resolve_image_ref(ref, ctx)
         try:
             with Image.open(path) as opened:
+                _check_pixel_count(opened.size, ctx, "max_input_image_pixels")
                 image = opened.convert("RGB")
+        except RegionError:
+            raise
         except OSError as exc:
             raise ImageResolveError(f"无法读取图片: {exc}", "image_not_found") from exc
         width, height = image.size
@@ -423,7 +439,7 @@ def _pixel_pair(
     score = max(0.0, 1.0 - min(1.0, mae / 255.0))
     vis = np.clip(diff, 0, 255).astype(np.uint8)
     image_id, path = put_image(
-        Image.fromarray(vis, mode="RGB"),
+        Image.fromarray(vis),
         source_id=left.image_id,
         suffix="png",
         ctx=ctx,
@@ -449,6 +465,7 @@ def _histogram_pair(left: LoadedImage, right: LoadedImage) -> dict[str, Any]:
     hist_b = _hsv_hist(right.roi_rgb())
     correlation = float(cv2.compareHist(hist_a, hist_b, cv2.HISTCMP_CORREL))
     bhattacharyya = float(cv2.compareHist(hist_a, hist_b, cv2.HISTCMP_BHATTACHARYYA))
+    similarity = max(0.0, min(1.0, 1.0 - bhattacharyya))
     return {
         "image_a": left.image_id,
         "image_b": right.image_id,
@@ -457,7 +474,8 @@ def _histogram_pair(left: LoadedImage, right: LoadedImage) -> dict[str, Any]:
             "correlation": correlation,
             "bhattacharyya": bhattacharyya,
         },
-        "score": correlation,
+        "score": similarity,
+        "score_semantics": "1 - Bhattacharyya distance，范围 0..1",
     }
 
 

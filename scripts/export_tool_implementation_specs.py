@@ -15,6 +15,17 @@ ROOT = Path(__file__).resolve().parents[1]
 CATALOG_PATH = ROOT / "canonical_tool_catalog_v2.json"
 OUT_DIR = ROOT / "docs" / "tool_specs_v2"
 RESEARCH_DATE = "2026-08-31"
+RUNTIME_STATUS = {
+    "image_edit": "runtime_verified_local",
+    "image_measure": "runtime_verified_local",
+    "image_compare": "runtime_verified_local",
+    "ocr_read": "runtime_verified_local",
+    "media_metadata_read": "runtime_verified_local",
+    "reverse_image_search": "runtime_implemented_provider_mock_verified_live_key_pending",
+    "geocode": "runtime_implemented_provider_mock_verified_live_service_pending",
+    "osm_query": "runtime_implemented_provider_mock_verified_live_service_pending",
+    "poi_search": "runtime_implemented_provider_mock_verified_live_service_pending",
+}
 
 
 def _backend(
@@ -397,7 +408,10 @@ def main() -> None:
             "schema_version": "geoagent_tool_implementation_spec_v1",
             "ordinal": ordinal,
             "research_date": RESEARCH_DATE,
-            "research_status": "design_researched_not_runtime_verified",
+            "research_status": RUNTIME_STATUS.get(
+                name,
+                "design_researched_not_runtime_implemented",
+            ),
             "catalog_source": "canonical_tool_catalog_v2.json",
             "canonical_tool": tree,
             "parameter_guide": parameter_guides,

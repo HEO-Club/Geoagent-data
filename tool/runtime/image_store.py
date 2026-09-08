@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import tempfile
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
@@ -36,7 +37,7 @@ class ImageStore(Protocol):
     """图片引用仓库：登记已有文件、写出派生图、按 ID 取路径。"""
 
     def resolve(self, ref: str) -> Path:
-        """把图片 ID 或已知路径解析为本地文件。未知引用时抛出 FileNotFoundError。"""
+        """把已登记图片 ID 解析为本地文件；直接路径由运行时白名单策略处理。"""
 
     def put(
         self,
@@ -62,26 +63,27 @@ class FilesystemImageStore:
         self.root.mkdir(parents=True, exist_ok=True)
         self._paths: dict[str, Path] = {}
         self._counter = 0
+        self._lock = threading.RLock()
 
     def resolve(self, ref: str) -> Path:
-        if ref in self._paths:
-            return self._paths[ref]
-        path = Path(ref)
-        if path.is_file():
-            return path.resolve()
+        with self._lock:
+            if ref in self._paths:
+                return self._paths[ref]
         raise FileNotFoundError(ref)
 
     def path_for(self, image_id: str) -> Path:
-        if image_id not in self._paths:
-            raise FileNotFoundError(image_id)
-        return self._paths[image_id]
+        with self._lock:
+            if image_id not in self._paths:
+                raise FileNotFoundError(image_id)
+            return self._paths[image_id]
 
     def register(self, path: Path, image_id: str | None = None) -> str:
         resolved = Path(path).resolve()
         if not resolved.is_file():
             raise FileNotFoundError(str(path))
-        assigned = image_id or self._next_id()
-        self._paths[assigned] = resolved
+        with self._lock:
+            assigned = image_id or self._next_id()
+            self._paths[assigned] = resolved
         return assigned
 
     def put(
@@ -92,10 +94,12 @@ class FilesystemImageStore:
         suffix: str,
     ) -> str:
         del source_id
-        image_id = self._next_id()
+        with self._lock:
+            image_id = self._next_id()
         path = self.root / f"{image_id}.{_file_suffix(suffix)}"
         _save_pil(image, path, suffix)
-        self._paths[image_id] = path
+        with self._lock:
+            self._paths[image_id] = path
         return image_id
 
     def _next_id(self) -> str:
@@ -135,12 +139,27 @@ def resolve_image_ref(
     path = Path(token)
     if path.is_file():
         resolved = path.resolve()
+        if ctx is not None and ctx.allowed_file_roots is not None:
+            roots = [Path(root).resolve() for root in ctx.allowed_file_roots]
+            if not any(_is_within(resolved, root) for root in roots):
+                raise ImageResolveError(
+                    f"文件不在运行时允许目录内: {resolved}",
+                    "path_not_allowed",
+                )
         image_id = token
         if store is not None:
             image_id = store.register(resolved, image_id=token)
         return image_id, resolved
 
     raise ImageResolveError(f"找不到图片: {token}", "image_not_found")
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
 
 
 def put_image(

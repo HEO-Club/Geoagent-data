@@ -195,7 +195,7 @@ def test_area_pixels_and_scaled_area(tmp_path: Path) -> None:
     assert pixels.ok is True
     assert pixels.result is not None
     assert pixels.result["value"] == 800.0
-    assert pixels.result["unit"] == "px"
+    assert pixels.result["unit"] == "px^2"
     assert pixels.result["method"] == "bbox_area"
 
     scaled = _measure(
@@ -211,7 +211,7 @@ def test_area_pixels_and_scaled_area(tmp_path: Path) -> None:
     assert scaled.result["method"] == "reference_scale"
     assert scaled.result["scale"] == pytest.approx(0.5)
     assert scaled.result["value"] == pytest.approx(200.0)
-    assert scaled.result["unit"] == "m"
+    assert scaled.result["unit"] == "m^2"
     assert any("未做透视" in item for item in scaled.result["assumptions"])
 
 

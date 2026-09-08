@@ -6,10 +6,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from tool.runtime.image_store import ImageStore
+    from tool.runtime.result_store import ResultStore
 
 
 @dataclass
@@ -23,6 +25,9 @@ class RuntimeContext:
     active_session: str | None = None
     extras: dict[str, Any] = field(default_factory=dict)
     image_store: ImageStore | None = None
+    result_store: ResultStore | None = None
+    # None 保持本地 CLI 兼容；MCP/服务端应传明确目录列表，空列表表示禁止直接路径。
+    allowed_file_roots: list[Path] | None = None
 
 
 @dataclass

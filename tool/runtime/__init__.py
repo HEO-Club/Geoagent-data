@@ -9,6 +9,7 @@ from tool.runtime.image_store import (
     put_image,
     resolve_image_ref,
 )
+from tool.runtime.result_store import InMemoryResultStore, ResultStore
 
 __all__ = [
     "FilesystemImageStore",
@@ -16,4 +17,6 @@ __all__ = [
     "ImageStore",
     "put_image",
     "resolve_image_ref",
+    "InMemoryResultStore",
+    "ResultStore",
 ]

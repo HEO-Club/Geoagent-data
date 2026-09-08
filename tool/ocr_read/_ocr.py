@@ -12,7 +12,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from tool.contract import Observation, RuntimeContext
-from tool.image_edit._transform import RegionError, _parse_region, _try_json
+from tool.image_edit._transform import RegionError, _check_pixel_count, _parse_region, _try_json
 from tool.runtime.image_store import ImageResolveError, put_image, resolve_image_ref
 
 _TEXT_KINDS = frozenset({"natural_text", "number", "road_sign", "address", "auto"})
@@ -193,6 +193,7 @@ def _load_roi(inputs: dict[str, Any], ctx: RuntimeContext | None) -> LoadedRoi:
     source_id, source_path = resolve_image_ref(image_ref, ctx)
     try:
         with Image.open(source_path) as opened:
+            _check_pixel_count(opened.size, ctx, "max_input_image_pixels")
             source = opened.convert("RGB")
     except OSError as exc:
         raise ImageResolveError(f"无法读取图片: {exc}", "image_not_found") from exc

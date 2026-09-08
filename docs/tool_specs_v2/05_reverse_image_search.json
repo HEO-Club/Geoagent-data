@@ -2,7 +2,7 @@
   "schema_version": "geoagent_tool_implementation_spec_v1",
   "ordinal": 5,
   "research_date": "2026-08-31",
-  "research_status": "design_researched_not_runtime_verified",
+  "research_status": "runtime_implemented_provider_mock_verified_live_key_pending",
   "catalog_source": "canonical_tool_catalog_v2.json",
   "canonical_tool": {
     "canonical": {
@@ -24,7 +24,7 @@
                 "required": true,
                 "requirement_level": "execution",
                 "description": "待处理图片的路径、图片 ID 或当前输入图片引用；不得填写不存在的图片。",
-                "acquisition_hint": "优先引用 $current_image；若只需要局部特征，先调用 image_process.crop/zoom 生成截图并把返回的图片 ID 传入，禁止编造文件名。",
+                "acquisition_hint": "优先引用 $current_image；若只需要局部特征，先调用 image_edit.crop/zoom 生成截图并把返回的图片 ID 传入，禁止编造文件名。",
                 "context_sources": [
                   "current_image"
                 ],
@@ -101,7 +101,7 @@
                 "required": true,
                 "requirement_level": "execution",
                 "description": "待处理图片的路径、图片 ID 或当前输入图片引用；不得填写不存在的图片。",
-                "acquisition_hint": "优先引用 $current_image；若只需要局部特征，先调用 image_process.crop/zoom 生成截图并把返回的图片 ID 传入，禁止编造文件名。",
+                "acquisition_hint": "优先引用 $current_image；若只需要局部特征，先调用 image_edit.crop/zoom 生成截图并把返回的图片 ID 传入，禁止编造文件名。",
                 "context_sources": [
                   "current_image"
                 ],
@@ -122,11 +122,11 @@
               },
               {
                 "name": "region",
-                "type": "string_or_array",
+                "type": "region",
                 "required": true,
                 "requirement_level": "execution",
-                "description": "图片中的目标区域，可用 [x1,y1,x2,y2]、命名区域或可复现的区域描述表示。",
-                "acquisition_hint": "在当前图片上明确裁剪框或可复现的目标区域描述。",
+                "description": "图片中的目标区域，可用 [x1,y1,x2,y2]、命名区域或对象表示；对象可带 coordinate_space=auto/pixels/normalized 消除 0..1 坐标歧义。",
+                "acquisition_hint": "在当前图片上明确裁剪框或可复现的目标区域描述；0..1 边界框应显式标注 coordinate_space，避免把 1 像素框误解为整图。",
                 "context_sources": [],
                 "context_default": null,
                 "aliases": [
@@ -244,7 +244,7 @@
         "required": true,
         "requirement_level": "execution",
         "purpose": "待处理图片的路径、图片 ID 或当前输入图片引用；不得填写不存在的图片。",
-        "how_to_obtain": "优先引用 $current_image；若只需要局部特征，先调用 image_process.crop/zoom 生成截图并把返回的图片 ID 传入，禁止编造文件名。",
+        "how_to_obtain": "优先引用 $current_image；若只需要局部特征，先调用 image_edit.crop/zoom 生成截图并把返回的图片 ID 传入，禁止编造文件名。",
         "context_sources": [
           "current_image"
         ],
@@ -309,7 +309,7 @@
         "required": true,
         "requirement_level": "execution",
         "purpose": "待处理图片的路径、图片 ID 或当前输入图片引用；不得填写不存在的图片。",
-        "how_to_obtain": "优先引用 $current_image；若只需要局部特征，先调用 image_process.crop/zoom 生成截图并把返回的图片 ID 传入，禁止编造文件名。",
+        "how_to_obtain": "优先引用 $current_image；若只需要局部特征，先调用 image_edit.crop/zoom 生成截图并把返回的图片 ID 传入，禁止编造文件名。",
         "context_sources": [
           "current_image"
         ],
@@ -330,11 +330,11 @@
       },
       {
         "name": "region",
-        "type": "string_or_array",
+        "type": "region",
         "required": true,
         "requirement_level": "execution",
-        "purpose": "图片中的目标区域，可用 [x1,y1,x2,y2]、命名区域或可复现的区域描述表示。",
-        "how_to_obtain": "在当前图片上明确裁剪框或可复现的目标区域描述。",
+        "purpose": "图片中的目标区域，可用 [x1,y1,x2,y2]、命名区域或对象表示；对象可带 coordinate_space=auto/pixels/normalized 消除 0..1 坐标歧义。",
+        "how_to_obtain": "在当前图片上明确裁剪框或可复现的目标区域描述；0..1 边界框应显式标注 coordinate_space，避免把 1 像素框误解为整图。",
         "context_sources": [],
         "context_default": null,
         "allowed_values": [],

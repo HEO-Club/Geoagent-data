@@ -31,6 +31,30 @@ def test_v2_catalog_has_granular_tools_and_contracts() -> None:
         assert all(op.input_schema is not None for op in tree.canonical.operations)
 
 
+def test_image_runtime_contract_matches_executor_inputs() -> None:
+    forest = build_tool_forest_v2()
+    image_tools = {tree.canonical.name: tree for tree in forest.trees}
+
+    edit_ops = {
+        operation.name: operation.input_schema
+        for operation in image_tools["image_edit"].canonical.operations
+    }
+    crop_fields = {field.name: field for field in edit_ops["crop"].fields}
+    zoom_fields = {field.name: field for field in edit_ops["zoom"].fields}
+    assert crop_fields["region"].type == "region"
+    assert {"padding", "padding_mode", "output_format"} <= set(crop_fields)
+    assert zoom_fields["scale"].maximum == 16
+    assert "output_format" in zoom_fields
+
+    measure = image_tools["image_measure"].canonical.operations[0]
+    measure_fields = {field.name: field for field in measure.input_schema.fields}
+    assert measure_fields["axis"].allowed_values == [
+        "horizontal",
+        "vertical",
+        "diagonal",
+    ]
+
+
 def test_guidance_explains_fixed_outer_contract_and_acquisition() -> None:
     guidance = render_tool_contract_guidance(build_tool_forest_v2())
     assert "params.operation" in guidance
@@ -162,3 +186,35 @@ def test_grounded_values_are_coerced_without_requiring_full_params() -> None:
         step_index=3,
     )
     assert streetview.readiness == "ready"
+
+
+def test_center_scoped_geo_queries_require_radius() -> None:
+    forest = build_tool_forest_v2()
+    missing_radius = normalize_and_validate_tool_inputs(
+        forest,
+        tool="osm_query",
+        operation="query",
+        inputs={
+            "center": {"lat": 34.95, "lon": 113.5},
+            "feature_types": ["桥梁"],
+        },
+        step_index=1,
+    )
+    assert missing_radius.readiness == "repairable"
+    assert any(
+        issue.code == "required_input_missing" and issue.field == "radius_m"
+        for issue in missing_radius.issues
+    )
+
+    complete = normalize_and_validate_tool_inputs(
+        forest,
+        tool="osm_query",
+        operation="query",
+        inputs={
+            "center": {"lat": 34.95, "lon": 113.5},
+            "radius_m": 1000,
+            "feature_types": ["桥梁"],
+        },
+        step_index=2,
+    )
+    assert complete.readiness == "ready"

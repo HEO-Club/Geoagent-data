@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from tool.osm_query.query import execute as query
 from tool.osm_query.count import execute as count
+from tool.osm_query.query import execute as query
 
 OPERATIONS = {
     'query': query,
@@ -12,6 +12,6 @@ OPERATIONS = {
 
 __all__ = [
     "OPERATIONS",
-    'query',
     'count',
+    'query',
 ]

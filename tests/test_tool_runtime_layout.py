@@ -50,6 +50,11 @@ IMPLEMENTED_OPERATIONS = {
     ("reverse_image_search", "search_crop"),
     ("media_metadata_read", "exif"),
     ("media_metadata_read", "file"),
+    ("geocode", "geocode"),
+    ("osm_query", "query"),
+    ("osm_query", "count"),
+    ("poi_search", "poi_search"),
+    ("poi_search", "browse"),
 }
 
 

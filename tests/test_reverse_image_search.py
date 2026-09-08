@@ -404,7 +404,7 @@ def test_serpapi_engine_uploads_then_searches(
         assert b"query.jpg" in body
         return _FakeHttpResponse({"image_id": "img_test_1"})
 
-    monkeypatch.setenv("ALLOW_REAL_API", "true")
+    monkeypatch.setenv("ALLOW_REAL_TOOL_API", "true")
     monkeypatch.setenv("SERPAPI_API_KEY", "test-serpapi-key")
     monkeypatch.setenv("SERPAPI_KEY", "")
     monkeypatch.setattr(search_mod.urllib.request, "urlopen", fake_urlopen)
@@ -428,7 +428,7 @@ def test_serpapi_missing_key_is_engine_unavailable(
     tmp_path: Path,
     monkeypatch: Any,
 ) -> None:
-    monkeypatch.setenv("ALLOW_REAL_API", "true")
+    monkeypatch.setenv("ALLOW_REAL_TOOL_API", "true")
     monkeypatch.setenv("SERPAPI_API_KEY", "")
     monkeypatch.setenv("SERPAPI_KEY", "")
     monkeypatch.setenv("GOOGLE_VISION_API_KEY", "")
@@ -443,3 +443,36 @@ def test_serpapi_missing_key_is_engine_unavailable(
     assert observation.error_code == "engine_unavailable"
     assert observation.error is not None
     assert "SERPAPI" in observation.error
+
+
+def test_real_engine_rejects_http_and_unapproved_hosts(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setenv("ALLOW_REAL_TOOL_API", "true")
+    monkeypatch.setenv("SERPAPI_API_KEY", "test-key")
+    source = _gradient(tmp_path / "endpoint.png")
+
+    monkeypatch.setenv("SERPAPI_ENDPOINT", "http://serpapi.com/search.json")
+    http_result = execute(
+        "reverse_image_search",
+        "search",
+        purpose="拒绝 HTTP",
+        inputs={"image": str(source)},
+        ctx=RuntimeContext(extras={"artifact_dir": str(tmp_path / "http")}),
+    )
+    assert http_result.ok is False
+    assert http_result.error_code == "engine_unavailable"
+    assert http_result.error is not None and "HTTPS" in http_result.error
+
+    monkeypatch.setenv("SERPAPI_ENDPOINT", "https://example.com/search.json")
+    host_result = execute(
+        "reverse_image_search",
+        "search",
+        purpose="拒绝未知主机",
+        inputs={"image": str(source)},
+        ctx=RuntimeContext(extras={"artifact_dir": str(tmp_path / "host")}),
+    )
+    assert host_result.ok is False
+    assert host_result.error_code == "engine_unavailable"
+    assert host_result.error is not None and "白名单" in host_result.error

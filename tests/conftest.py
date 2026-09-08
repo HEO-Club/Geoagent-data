@@ -10,6 +10,8 @@ from pipeline.config import clear_settings_cache
 @pytest.fixture(autouse=True)
 def isolate_real_api_default(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("ALLOW_REAL_API", "false")
+    monkeypatch.setenv("ALLOW_REAL_TOOL_API", "false")
+    monkeypatch.setenv("ALLOW_CUSTOM_TOOL_ENDPOINTS", "false")
     monkeypatch.setenv("APP_ENV", "test")
     clear_settings_cache()
     yield

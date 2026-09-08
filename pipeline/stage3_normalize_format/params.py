@@ -16,6 +16,14 @@ from pipeline.schemas.tools import (
 )
 from pipeline.stage3_normalize_format.trees import find_tree_for_name
 
+_REQUIRED_WITH: dict[tuple[str, str], dict[str, list[str]]] = {
+    ("map_query", "poi_search"): {"center": ["radius_m"]},
+    ("map_query", "browse"): {"center": ["radius_m"]},
+    ("poi_search", "poi_search"): {"center": ["radius_m"]},
+    ("poi_search", "browse"): {"center": ["radius_m"]},
+    ("osm_query", "query"): {"center": ["radius_m"]},
+}
+
 
 def _norm_name(value: Any) -> str:
     text = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
@@ -98,6 +106,12 @@ def _type_matches(value: Any, expected: str, item_type: str | None) -> bool:
         )
     if expected == "string_or_object":
         return _type_matches(value, "string", None) or isinstance(value, dict)
+    if expected == "region":
+        return (
+            _type_matches(value, "string", None)
+            or isinstance(value, dict)
+            or (isinstance(value, list) and bool(value))
+        )
     if expected == "number_or_string":
         return _type_matches(value, "number", None) or _type_matches(
             value, "string", None
@@ -126,11 +140,14 @@ def _field_alias_map(schema: ToolInputSchema) -> dict[str, InputFieldSpec]:
 def _default_acquisition_hint(name: str) -> str:
     hints = {
         "image": (
-            "优先引用 $current_image；若只需要局部特征，先调用 image_process.crop/zoom "
+            "优先引用 $current_image；若只需要局部特征，先调用 image_edit.crop/zoom "
             "生成截图并把返回的图片 ID 传入，禁止编造文件名。"
         ),
         "images": "从当前输入图或前置 crop/capture 返回值收集真实图片 ID，至少两张。",
-        "region": "在当前图片上明确裁剪框或可复现的目标区域描述。",
+        "region": (
+            "在当前图片上明确裁剪框或可复现的目标区域描述；0..1 边界框应显式标注 "
+            "coordinate_space，避免把 1 像素框误解为整图。"
+        ),
         "area": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
         "query": "从本步 purpose/Thought 中提取明确检索对象和约束，不得只写“查询一下”。",
         "source_result": (
@@ -529,6 +546,19 @@ def normalize_and_validate_tool_inputs(
                 guidance=guidance,
             )
         )
+    required_with = _REQUIRED_WITH.get(
+        (tree.canonical.name, canonical_operation),
+        {},
+    )
+    for trigger, dependencies in required_with.items():
+        if trigger not in normalized:
+            continue
+        for name in dependencies:
+            if name in normalized:
+                continue
+            field = fields_by_name.get(name)
+            if field is not None and not resolve_from_context(field):
+                add_missing(field)
     for group in schema.mutually_exclusive:
         present = [name for name in group if name in normalized]
         if len(present) > 1:
@@ -712,8 +742,8 @@ def _image(required: bool = True) -> InputFieldSpec:
 def _region(required: bool = False) -> InputFieldSpec:
     return _field(
         "region",
-        "图片中的目标区域，可用 [x1,y1,x2,y2]、命名区域或可复现的区域描述表示。",
-        type="string_or_array",
+        "图片中的目标区域，可用 [x1,y1,x2,y2]、命名区域或对象表示；对象可带 coordinate_space=auto/pixels/normalized 消除 0..1 坐标歧义。",
+        type="region",
         required=required,
         aliases=["区域", "裁剪区域", "目标区域", "roi", "bbox", "crop_region"],
         example="bridge_tower_top",
@@ -790,15 +820,15 @@ def _operation_schemas() -> dict[tuple[str, str], ToolInputSchema]:
     )
     schemas[("image_process", "crop")] = _schema(
         "从输入图片裁取指定区域。",
-        [_image(), _region(required=True), _field("padding", "裁剪区域外扩像素或比例。", type="number", aliases=["边距", "padding_px"], minimum=0)],
+        [_image(), _region(required=True), _field("padding", "裁剪区域外扩值；配合 padding_mode 明确单位。未指定时为兼容旧数据，<1 按比例、>=1 按像素。", type="number", aliases=["边距", "padding_px"], minimum=0), _field("padding_mode", "padding 的单位。", allowed_values=["pixels", "ratio"], aliases=["边距单位"]), _field("output_format", "裁剪图输出格式。", allowed_values=["png", "jpeg", "webp"], aliases=["格式", "format"], example="png")],
     )
     schemas[("image_process", "zoom")] = _schema(
         "放大指定图片区域，产生供后续识别使用的派生图。",
-        [_image(), _region(required=True), _field("scale", "放大倍数。", type="number", aliases=["倍数", "zoom", "zoom_factor"], minimum=1, example=2)],
+        [_image(), _region(required=True), _field("scale", "放大倍数，默认最多 16 倍以避免资源耗尽。", type="number", aliases=["倍数", "zoom", "zoom_factor"], minimum=1, maximum=16, example=2), _field("output_format", "放大图输出格式。", allowed_values=["png", "jpeg", "webp"], aliases=["格式", "format"], example="png")],
     )
     schemas[("image_process", "measure")] = _schema(
         "测量图片中的像素距离、角度、比例或其他可计算视觉量。",
-        [_image(), _region(), _field("measurement", "要计算的量。", required=True, aliases=["测量项", "检查项", "metric"], allowed_values=["distance", "angle", "ratio", "area", "color"], example="angle"), _field("reference", "尺度、参照线或已知尺寸。", type="string_or_object", aliases=["参照", "基准", "reference_line"])],
+        [_image(), _region(), _field("measurement", "要计算的量。", required=True, aliases=["测量项", "检查项", "metric"], allowed_values=["distance", "angle", "ratio", "area", "color"], example="angle"), _field("axis", "框量测所用方向；省略时 distance 取较长边。", allowed_values=["horizontal", "vertical", "diagonal"], aliases=["方向", "测量方向"]), _field("reference", "尺度、参照线或已知尺寸。", type="string_or_object", aliases=["参照", "基准", "reference_line"])],
     )
     schemas[("image_process", "compare")] = _schema(
         "对两张或多张真实图片执行程序化差异或特征比较。",
@@ -811,8 +841,8 @@ def _operation_schemas() -> dict[tuple[str, str], ToolInputSchema]:
         [_image(), _region(), _field("languages", "候选语言代码列表；未知时可省略。", type="array", item_type="string", aliases=["语言", "language"], example=["zh", "en"]), _field("text_kind", "预期文字类型。", aliases=["文字类型", "kind"], allowed_values=["natural_text", "number", "road_sign", "address", "auto"])],
     )
     schemas[("ocr_read", "decode")] = _schema(
-        "解码二维码、条码或其他机器编码。",
-        [_image(), _region(), _field("code_types", "允许识别的编码类型。", type="array", item_type="string", aliases=["编码类型", "types"], example=["qr", "barcode"])],
+        "解码二维码；当前本地执行器不实现一维条码，若请求 barcode 会明确返回不支持。",
+        [_image(), _region(), _field("code_types", "请求的编码类型；当前可执行值为 qr。", type="array", item_type="string", aliases=["编码类型", "types"], example=["qr"])],
     )
     schemas[("reverse_image_search", "search")] = _schema(
         "提交完整图片到反向搜图服务。",
@@ -840,13 +870,13 @@ def _operation_schemas() -> dict[tuple[str, str], ToolInputSchema]:
 
     # map_query
     schemas[("map_query", "poi_search")] = _schema(
-        "在地图服务中按名称或类别搜索 POI。",
-        [_area(), _query(), _field("categories", "POI 类别或类型。", type="string_or_array", aliases=["类别", "类型", "poi_type"]), _field("radius_m", "以中心点检索时的半径（米）。", type="number", aliases=["半径", "radius"], minimum=0), _field("top_k", "最多返回候选数。", type="integer", aliases=["结果数", "limit"], minimum=1, maximum=500)],
+        "按名称搜索 POI，或在明确区域内按类别/OSM 属性搜索；结果是候选，不是最终地点。",
+        [_area(), _query(), _field("bbox", "WGS84 查询框 [west,south,east,north]。", type="array", item_type="number", aliases=["边界框", "bounds"]), _field("center", "WGS84 中心坐标 [lat,lon]，与 radius_m 配合。", type="location", aliases=["中心", "中心点"]), _field("categories", "POI 类别或类型；当前安全映射桥梁、河流、道路、学校、公园、电塔、建筑、车站、机场等常见 OSM 类型。", type="string_or_array", aliases=["类别", "类型", "poi_type"]), _field("filters", "可选 OSM tag 过滤条件。", type="object", aliases=["筛选条件", "标签", "tags"]), _field("radius_m", "以中心点检索时的半径（米）。", type="number", aliases=["半径", "radius"], minimum=0), _field("language", "名称结果语言代码。", aliases=["语言", "lang"]), _field("top_k", "最多返回候选数。", type="integer", aliases=["结果数", "limit"], minimum=1, maximum=200)],
         required_any=[["area", "query", "categories"]],
     )
     schemas[("map_query", "geocode")] = _schema(
         "在地名、地址和坐标表达之间转换。",
-        [_query(required=True), _area(), _field("direction", "正向或反向地理编码。", aliases=["方向", "mode"], allowed_values=["forward", "reverse", "auto"], example="auto")],
+        [_field("query", "正向查询使用地名/地址，反向查询使用 [lat,lon] 或坐标对象。", type="location", required=True, requirement_level="semantic", aliases=["检索词", "地点", "地址", "坐标", "q"], example="郑州黄河文化公园"), _area(), _field("direction", "正向或反向地理编码；auto 根据 query 形状判断。", aliases=["方向", "mode"], allowed_values=["forward", "reverse", "auto"], example="auto"), _field("language", "候选名称的语言代码。", aliases=["语言", "lang"]), _field("top_k", "每个正向查询最多返回候选数。", type="integer", aliases=["结果数", "limit"], minimum=1, maximum=10, example=5)],
     )
     schemas[("map_query", "route")] = _schema(
         "查询两点或多点之间的道路与路线关系。",
@@ -857,14 +887,15 @@ def _operation_schemas() -> dict[tuple[str, str], ToolInputSchema]:
         [_area(required=True), _field("layers", "需要加载的一个或多个图层。", type="string_or_array", required=True, aliases=["图层", "数据层", "layer", "地图类型"], example=["hydrology"]), _time_range(), _field("provider", "地图或数据服务提供方。", aliases=["数据源", "服务"] )],
     )
     schemas[("map_query", "browse")] = _schema(
-        "在指定区域浏览地图并返回符合描述的候选要素。",
-        [_area(required=True), _query(), _field("filters", "附加属性或空间过滤条件。", type="object", aliases=["筛选条件", "条件"]), _field("top_k", "最多返回候选数。", type="integer", aliases=["结果数", "limit"], minimum=1, maximum=500)],
+        "在明确区域内按名称、类别或 OSM 属性浏览候选要素；禁止无过滤遍历。",
+        [_area(), _field("bbox", "WGS84 查询框 [west,south,east,north]。", type="array", item_type="number", aliases=["边界框", "bounds"]), _field("center", "WGS84 中心坐标 [lat,lon]，与 radius_m 配合。", type="location", aliases=["中心", "中心点"]), _query(), _field("categories", "POI 类别或类型。", type="string_or_array", aliases=["类别", "类型", "poi_type"]), _field("filters", "OSM tag 过滤条件。", type="object", aliases=["筛选条件", "条件", "标签", "tags"]), _field("radius_m", "中心点查询半径（米）。", type="number", aliases=["半径", "radius"], minimum=0), _field("top_k", "最多返回候选数。", type="integer", aliases=["结果数", "limit"], minimum=1, maximum=200)],
+        required_any=[["area", "bbox", "center"]],
     )
 
     # osm_query: 默认传结构化约束；overpass_ql 仅在确有原始代码时可选。
     schemas[("osm_query", "query")] = _schema(
         "查询 OSM 要素。默认传 area/tags 等结构化约束，由执行器生成 Overpass QL；只有轨迹确实编写了代码时才传 overpass_ql。",
-        [_area(), _field("bbox", "WGS84 查询框 [west,south,east,north]。", type="array", item_type="number", aliases=["边界框", "bounds", "extent"]), _field("center", "中心坐标或地名，与 radius_m 配合。", type="string_or_object", aliases=["中心点", "中心"]), _field("radius_m", "中心点查询半径（米）。", type="number", aliases=["半径", "radius"], minimum=0), _field("tags", "OSM 标签过滤，如 {\"bridge\":\"yes\"}。", type="object", aliases=["标签", "osm_tags", "filters"], example={"bridge": "yes"}), _field("feature_types", "希望检索的自然语言要素类型；执行器负责映射为 OSM 标签。", type="string_or_array", aliases=["特征", "目标类型", "要素类型", "categories"], example=["桥梁"]), _field("element_types", "OSM 元素类型。", type="array", item_type="string", aliases=["元素类型", "types"], example=["node", "way", "relation"]), _field("spatial_relation", "空间关系约束，如 within/near/intersects。", aliases=["空间关系", "关系"]), _field("return_geometry", "是否返回完整几何。", type="boolean", aliases=["返回几何", "geometry"], example=True), _field("limit", "最多返回要素数。", type="integer", aliases=["结果数", "top_k"], minimum=1, maximum=10000), _field("overpass_ql", "可选的完整 Overpass QL；不是默认必填参数。", aliases=["代码", "查询代码", "query_code", "raw_query"])],
+        [_area(), _field("bbox", "WGS84 查询框 [west,south,east,north]。", type="array", item_type="number", aliases=["边界框", "bounds", "extent"]), _field("center", "WGS84 中心坐标 [lat,lon]，与 radius_m 配合；地名应先由 geocode 解析。", type="location", aliases=["中心点", "中心"]), _field("radius_m", "中心点查询半径（米）。", type="number", aliases=["半径", "radius"], minimum=0), _field("tags", "OSM 标签过滤，如 {\"bridge\":\"yes\"}。", type="object", aliases=["标签", "osm_tags", "filters"], example={"bridge": "yes"}), _field("feature_types", "希望检索的自然语言要素类型；执行器仅对已知类型做安全 OSM 标签映射，未知类型要求显式 tags。", type="string_or_array", aliases=["特征", "目标类型", "要素类型", "categories"], example=["桥梁"]), _field("element_types", "OSM 元素类型。", type="array", item_type="string", aliases=["元素类型", "types"], example=["node", "way", "relation"]), _field("spatial_relation", "范围关系；当前支持 area/bbox 的 within 与 center 的 near。", aliases=["空间关系", "关系"], allowed_values=["within", "near"]), _field("return_geometry", "是否返回完整几何。", type="boolean", aliases=["返回几何", "geometry"], example=True), _field("limit", "最多返回要素数，运行时上限 1000。", type="integer", aliases=["结果数", "top_k"], minimum=1, maximum=1000), _field("overpass_ql", "可选完整 Overpass QL；运行时默认禁用，只有受信调用方显式授权后才能执行。", aliases=["代码", "查询代码", "query_code", "raw_query"])],
         required_any=[["area", "bbox", "center", "overpass_ql"]],
         examples=[{"area": "郑州市", "tags": {"bridge": "yes"}, "return_geometry": True}],
     )

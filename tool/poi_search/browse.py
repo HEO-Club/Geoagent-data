@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from tool.contract import Observation, RuntimeContext, not_implemented
+from tool.contract import Observation, RuntimeContext
+from tool.poi_search._search import execute_browse
 
 
 def execute(
@@ -13,11 +14,9 @@ def execute(
     inputs: dict[str, Any],
     ctx: RuntimeContext | None = None,
 ) -> Observation:
-    """执行 poi_search.browse。尚未接入真实执行器。"""
+    """执行明确区域内的受限 POI 浏览。"""
 
-    return not_implemented(
-        'poi_search',
-        'browse',
+    return execute_browse(
         purpose=purpose,
         inputs=inputs,
         ctx=ctx,
