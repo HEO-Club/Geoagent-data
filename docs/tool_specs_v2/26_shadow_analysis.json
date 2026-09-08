@@ -1,0 +1,313 @@
+{
+  "schema_version": "geoagent_tool_implementation_spec_v1",
+  "ordinal": 26,
+  "research_date": "2026-08-31",
+  "research_status": "design_researched_not_runtime_verified",
+  "catalog_source": "canonical_tool_catalog_v2.json",
+  "canonical_tool": {
+    "canonical": {
+      "name": "shadow_analysis",
+      "description": "根据太阳和物体参数计算理论阴影。",
+      "executor": "shadow_model_engine",
+      "usage": "仅在需要访问该真实执行器并获得新证据时调用；先选择 operation，再按其 input_schema 填 inputs。缺少执行级参数时按 acquisition_hint 获取，不得编造坐标、文件、会话或前置结果。",
+      "operations": [
+        {
+          "name": "shadow_model",
+          "description": "根据太阳位置计算理论阴影方向或长度",
+          "aliases": [],
+          "input_schema": {
+            "description": "根据太阳位置和物体高度计算理论阴影。",
+            "fields": [
+              {
+                "name": "area",
+                "type": "location",
+                "required": true,
+                "requirement_level": "semantic",
+                "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+                "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+                "context_sources": [
+                  "active_area"
+                ],
+                "context_default": "$active_area",
+                "aliases": [
+                  "区域",
+                  "地区",
+                  "地点",
+                  "候选区域",
+                  "检索范围",
+                  "搜索区域",
+                  "省域范围",
+                  "region",
+                  "target_area",
+                  "search_area",
+                  "sample_area",
+                  "location",
+                  "cities"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "郑州附近黄河沿线"
+              },
+              {
+                "name": "datetime",
+                "type": "string",
+                "required": true,
+                "requirement_level": "semantic",
+                "description": "拍摄日期时间。",
+                "acquisition_hint": "组合来源中明确给出的日期、时间和时区；缺任一关键项时标记待补充。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "时间",
+                  "日期时间"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "object_height_m",
+                "type": "number",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "产生阴影的物体高度（米）。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 object_height_m；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "物体高度",
+                  "height"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": 0.0,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "surface",
+                "type": "string_or_object",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "地面坡度或朝向。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 surface；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "地面",
+                  "坡面"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              }
+            ],
+            "required_any": [],
+            "mutually_exclusive": [],
+            "allow_extra": true,
+            "examples": []
+          }
+        }
+      ],
+      "params": [
+        {
+          "name": "operation",
+          "type": "string",
+          "required": true,
+          "description": "本次调用执行的 operation",
+          "allowed_values": [
+            "shadow_model"
+          ]
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "required": true,
+          "description": "本次调用要补齐的证据缺口，不得伪装成工具返回",
+          "allowed_values": []
+        },
+        {
+          "name": "inputs",
+          "type": "object",
+          "required": true,
+          "description": "严格按 operation.input_schema 传给执行器的真实输入",
+          "allowed_values": []
+        }
+      ],
+      "observation_fields": [
+        {
+          "name": "result",
+          "type": "object",
+          "nullable": true,
+          "description": "执行器实际返回；不得写入假设、计划或模型自行补全的数据"
+        }
+      ],
+      "is_terminal": false
+    },
+    "variants": [],
+    "variant_operations": {}
+  },
+  "parameter_guide": {
+    "shadow_model": [
+      {
+        "name": "area",
+        "type": "location",
+        "required": true,
+        "requirement_level": "semantic",
+        "purpose": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+        "how_to_obtain": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+        "context_sources": [
+          "active_area"
+        ],
+        "context_default": "$active_area",
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "郑州附近黄河沿线",
+        "aliases": [
+          "区域",
+          "地区",
+          "地点",
+          "候选区域",
+          "检索范围",
+          "搜索区域",
+          "省域范围",
+          "region",
+          "target_area",
+          "search_area",
+          "sample_area",
+          "location",
+          "cities"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "datetime",
+        "type": "string",
+        "required": true,
+        "requirement_level": "semantic",
+        "purpose": "拍摄日期时间。",
+        "how_to_obtain": "组合来源中明确给出的日期、时间和时区；缺任一关键项时标记待补充。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "时间",
+          "日期时间"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "object_height_m",
+        "type": "number",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "产生阴影的物体高度（米）。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 object_height_m；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": 0.0,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "物体高度",
+          "height"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "surface",
+        "type": "string_or_object",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "地面坡度或朝向。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 surface；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "地面",
+          "坡面"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      }
+    ]
+  },
+  "implementation_research": {
+    "architecture": "local_geometry_using_solar_ephemeris",
+    "backends": [
+      {
+        "name": "pvlib + local geometry",
+        "kind": "local_library",
+        "role": "太阳位置与阴影方向/长度模型",
+        "official_url": "https://pvlib-python.readthedocs.io/en/stable/reference/generated/pvlib.solarposition.get_solarposition.html",
+        "authentication": "无",
+        "license_note": "使用前核对软件与数据许可。"
+      }
+    ],
+    "execution_flow": [
+      "调用太阳位置",
+      "验证物体高度、地面和相机/图像尺度",
+      "计算阴影候选并返回假设与误差"
+    ],
+    "limitations": [
+      "未知物高、地面坡度和相机姿态时通常多解",
+      "简单公式仅适用于竖直物体和平地",
+      "不得从模糊阴影补精确时间"
+    ],
+    "mcp_strategy": "本地组合 executor，不需要新外部服务。"
+  },
+  "recommended_executor_contract": {
+    "required_result_fields": [
+      "status",
+      "provider_or_algorithm",
+      "request_parameters_used",
+      "retrieved_at",
+      "source_result_id_or_raw_ref",
+      "provenance",
+      "warnings"
+    ],
+    "status_values": [
+      "success",
+      "no_result",
+      "no_coverage",
+      "parameter_missing",
+      "unsupported",
+      "permission_denied",
+      "provider_error"
+    ],
+    "rules": [
+      "no_result 与 no_coverage、provider_error 必须分开",
+      "任何精确数值必须带单位、方法和源数据",
+      "调用失败不得生成看似成功的 Observation",
+      "密钥、令牌和内部文件系统路径不得进入训练样本"
+    ]
+  },
+  "new_tool_review_hint": {
+    "covered_execution_boundary": "shadow_model_engine",
+    "do_not_create_when": [
+      "只是对象、地区、查询词或参数不同",
+      "现有 Tool 的某个 operation 与本次动作共享同一执行器",
+      "只是基于已有结果进行比较、筛选、总结或推理"
+    ],
+    "consider_new_only_when": [
+      "现有31类执行器及所有 operation 均不能执行该动作",
+      "存在独立、可实现、可测试的真实后端边界",
+      "多个独立样本反复出现相同能力缺口",
+      "能够提供完整 schema、许可评估、失败语义和测试证据"
+    ]
+  }
+}

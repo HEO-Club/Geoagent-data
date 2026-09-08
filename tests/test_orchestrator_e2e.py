@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -15,8 +16,22 @@ from pipeline.schemas.audit import (
     TaskStatus,
     TargetKind,
 )
+from pipeline.schemas.confidence import ConfidenceJudgeDraft
 from pipeline.schemas.freeform import FreeFormStep, FreeFormTrajectory
+from pipeline.schemas.trajectory import Trajectory
 from pipeline.schemas.transcript import TranscriptSegment
+
+
+def _dummy_stage4_judge(**_kwargs: Any) -> ConfidenceJudgeDraft:
+    """e2e 注入：高分、无硬门槛。"""
+    return ConfidenceJudgeDraft(
+        evidence_grounding=0.85,
+        final_answer_support=0.8,
+        tool_param_correctness=0.8,
+        logical_consistency=0.85,
+        input_quality_alignment=0.8,
+        notes="e2e-mock",
+    )
 
 
 def test_run_one_video_e2e(
@@ -29,7 +44,6 @@ def test_run_one_video_e2e(
     monkeypatch.setenv("TRANSCRIPTS_DIR", str(tmp_path / "transcripts"))
     monkeypatch.setenv("TOOL_TREES_PATH", str(tmp_path / "tool_trees.json"))
     monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
-    monkeypatch.setenv("AUDIT_TRAJECTORY_IMAGE_CHECK", "false")
     from pipeline.config import clear_settings_cache
 
     clear_settings_cache()
@@ -100,7 +114,14 @@ def test_run_one_video_e2e(
                     tool="plant_check",
                     params={},
                     observation={"hint": "south"},
-                )
+                ),
+                FreeFormStep(
+                    event_type="final",
+                    thought="conclude",
+                    tool="final_answer",
+                    params={"location": "南方"},
+                    observation=None,
+                ),
             ],
         )
         path = Path(kwargs["out_path"]) if kwargs.get("out_path") else (
@@ -118,22 +139,28 @@ def test_run_one_video_e2e(
         str(video),
         image_path="img.jpg",
         stage3_matcher=lambda _n, _f: None,
+        stage4_judge=_dummy_stage4_judge,
     )
     assert len(entries) == 1
     entry = entries[0]
     assert entry.source_video == "e2e"
     assert any(m.role == "assistant" for m in entry.messages)
     assert "[Image:" in entry.messages[1].content
+    assert entry.quality_score is not None
+    assert entry.quality_score >= 0.5
     manifest = orchestrator.load_manifest("e2e")
     assert manifest.stages["stage1"] == "done"
     assert manifest.stages["stage_audit_split"] == "done"
     assert manifest.stages["task:e2e__t01:stage2"] == "done"
     assert manifest.stages["task:e2e__t01:stage3"] == "done"
+    assert manifest.stages["task:e2e__t01:stage4"] == "done"
     assert manifest.stages["task:e2e__t02:stage2"] == "rejected"
     assert manifest.stages["task:e2e__t02:stage3"] == "rejected"
+    assert manifest.stages["task:e2e__t02:stage4"] == "rejected"
     task_dir = tmp_path / "intermediate" / "e2e" / "tasks" / "e2e__t01"
     assert (task_dir / "stage2_freeform_tao.json").is_file()
     assert (task_dir / "stage3_trajectory.json").is_file()
+    assert (task_dir / "stage4_confidence.json").is_file()
     rejected_dir = (
         tmp_path / "intermediate" / "e2e" / "tasks" / "e2e__t02"
     )
@@ -144,6 +171,134 @@ def test_run_one_video_e2e(
     final = tmp_path / "output" / "geolocate_agent.jsonl"
     assert final.is_file()
     shard = tmp_path / "output" / "shards" / "e2e__t01.jsonl"
+    assert shard.is_file()
+    from pipeline.schemas.dataset import DatasetEntry
+
+    shard_entry = DatasetEntry.model_validate_json(
+        shard.read_text(encoding="utf-8").splitlines()[0]
+    )
+    assert shard_entry.quality_score == pytest.approx(entry.quality_score)
+
+
+def test_run_one_video_needs_review_continues_downstream(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """选图 needs_review 仍跑完 Stage 2–4 并写出 JSONL。"""
+    video = tmp_path / "review.mp4"
+    video.write_bytes(b"vid")
+    monkeypatch.setenv("INTERMEDIATE_DIR", str(tmp_path / "intermediate"))
+    monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "output"))
+    monkeypatch.setenv("TRANSCRIPTS_DIR", str(tmp_path / "transcripts"))
+    monkeypatch.setenv("TOOL_TREES_PATH", str(tmp_path / "tool_trees.json"))
+    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
+    from pipeline.config import clear_settings_cache
+
+    clear_settings_cache()
+
+    def fake_stage1(video_path: str, **kwargs: Any) -> list[TranscriptSegment]:
+        segs = [TranscriptSegment(start=0, end=1, text="南方竹子")]
+        inter = tmp_path / "intermediate" / "review"
+        inter.mkdir(parents=True, exist_ok=True)
+        from pipeline.schemas.transcript import Stage1Result
+
+        (inter / "stage1_transcript.json").write_text(
+            Stage1Result(
+                video_id="review", video_path=video_path, segments=segs
+            ).model_dump_json(),
+            encoding="utf-8",
+        )
+        return segs
+
+    def fake_audit(
+        video_path: str,
+        transcript: list[TranscriptSegment],
+        **kwargs: Any,
+    ) -> AuditSplitResult:
+        frame = tmp_path / "frame.jpg"
+        frame.write_bytes(b"jpg")
+        result = AuditSplitResult(
+            video_id="review",
+            decision=AuditDecision.accept,
+            reason="地理定位视频",
+            tasks=[
+                GeoTaskSpec(
+                    task_id="review__t01",
+                    time_start=0.0,
+                    time_end=1.0,
+                    target_kind=TargetKind.still_image,
+                    keyframe_timestamps=[0.5],
+                    image_paths=[str(frame)],
+                    status=TaskStatus.needs_review,
+                    status_reason="选中帧仍含讲解覆盖、界面残留或质量低于阈值",
+                    image_selection_note=(
+                        "选图质量等级=needs_review\n选中张数=1\n"
+                        "选图原因: 选中帧仍含讲解覆盖、界面残留或质量低于阈值"
+                    ),
+                    segment_start_idx=0,
+                    segment_end_idx=0,
+                ),
+            ],
+        )
+        out = Path(kwargs["out_path"]) if kwargs.get("out_path") else (
+            tmp_path / "intermediate" / "review" / "stage_audit_split.json"
+        )
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(result.model_dump_json(indent=2), encoding="utf-8")
+        return result
+
+    def fake_stage2(
+        video_path: str,
+        transcript: list[TranscriptSegment],
+        **kwargs: Any,
+    ) -> FreeFormTrajectory:
+        traj = FreeFormTrajectory(
+            source_video="review",
+            steps=[
+                FreeFormStep(
+                    thought="see bamboo",
+                    tool="plant_check",
+                    params={},
+                    observation={"hint": "south"},
+                ),
+                FreeFormStep(
+                    event_type="final",
+                    thought="conclude",
+                    tool="final_answer",
+                    params={"location": "南方"},
+                    observation=None,
+                ),
+            ],
+        )
+        path = Path(kwargs["out_path"]) if kwargs.get("out_path") else (
+            tmp_path / "intermediate" / "review" / "stage2_freeform_tao.json"
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(traj.model_dump_json(indent=2), encoding="utf-8")
+        return traj
+
+    monkeypatch.setattr(orchestrator, "run_stage1", fake_stage1)
+    monkeypatch.setattr(orchestrator, "run_audit_split", fake_audit)
+    monkeypatch.setattr(orchestrator, "run_stage2", fake_stage2)
+
+    entries = orchestrator.run_one_video(
+        str(video),
+        skip_completed=False,
+        stage3_matcher=lambda _n, _f: None,
+        stage4_judge=_dummy_stage4_judge,
+    )
+    assert len(entries) == 1
+    manifest = orchestrator.load_manifest("review")
+    assert manifest.stages["task:review__t01:stage2"] == "done"
+    assert manifest.stages["task:review__t01:stage3"] == "done"
+    assert manifest.stages["task:review__t01:stage4"] == "done"
+    task_dir = tmp_path / "intermediate" / "review" / "tasks" / "review__t01"
+    assert (task_dir / "stage2_freeform_tao.json").is_file()
+    assert (task_dir / "stage3_trajectory.json").is_file()
+    assert (task_dir / "stage4_confidence.json").is_file()
+    conf = json.loads((task_dir / "stage4_confidence.json").read_text(encoding="utf-8"))
+    assert "needs_review" in conf["notes"]
+    assert "选图" in conf["notes"]
+    shard = tmp_path / "output" / "shards" / "review__t01.jsonl"
     assert shard.is_file()
 
 
@@ -207,18 +362,17 @@ def test_run_one_video_reject_skips_downstream(
     assert manifest.stages["stage_audit_split"] == "rejected"
 
 
-def test_run_one_video_skips_stage3_on_trajectory_image_conflict(
+def test_run_one_video_continues_without_trajectory_image_gate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """轨迹–选图明显冲突时跳过 Stage3，不改写 Stage2 产物。"""
-    video = tmp_path / "conflict.mp4"
+    """不再做轨迹–选图一致性门禁：Stage 2 后直接跑 Stage 3/4 并写 JSONL。"""
+    video = tmp_path / "noconflict.mp4"
     video.write_bytes(b"vid")
     monkeypatch.setenv("INTERMEDIATE_DIR", str(tmp_path / "intermediate"))
     monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "output"))
     monkeypatch.setenv("TRANSCRIPTS_DIR", str(tmp_path / "transcripts"))
     monkeypatch.setenv("TOOL_TREES_PATH", str(tmp_path / "tool_trees.json"))
     monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
-    monkeypatch.setenv("AUDIT_TRAJECTORY_IMAGE_CHECK", "true")
     from pipeline.config import clear_settings_cache
 
     clear_settings_cache()
@@ -228,13 +382,13 @@ def test_run_one_video_skips_stage3_on_trajectory_image_conflict(
 
     def fake_stage1(video_path: str, **kwargs: Any) -> list[TranscriptSegment]:
         segs = [TranscriptSegment(start=0, end=1, text="红瓦屋顶")]
-        inter = tmp_path / "intermediate" / "conflict"
+        inter = tmp_path / "intermediate" / "noconflict"
         inter.mkdir(parents=True, exist_ok=True)
         from pipeline.schemas.transcript import Stage1Result
 
         (inter / "stage1_transcript.json").write_text(
             Stage1Result(
-                video_id="conflict", video_path=video_path, segments=segs
+                video_id="noconflict", video_path=video_path, segments=segs
             ).model_dump_json(),
             encoding="utf-8",
         )
@@ -246,12 +400,12 @@ def test_run_one_video_skips_stage3_on_trajectory_image_conflict(
         **kwargs: Any,
     ) -> AuditSplitResult:
         result = AuditSplitResult(
-            video_id="conflict",
+            video_id="noconflict",
             decision=AuditDecision.accept,
             reason="单任务",
             tasks=[
                 GeoTaskSpec(
-                    task_id="conflict__t01",
+                    task_id="noconflict__t01",
                     time_start=0.0,
                     time_end=1.0,
                     target_kind=TargetKind.still_image,
@@ -274,7 +428,7 @@ def test_run_one_video_skips_stage3_on_trajectory_image_conflict(
         **kwargs: Any,
     ) -> FreeFormTrajectory:
         traj = FreeFormTrajectory(
-            source_video="conflict",
+            source_video="noconflict",
             steps=[
                 FreeFormStep(
                     event_type="reasoning",
@@ -294,44 +448,150 @@ def test_run_one_video_skips_stage3_on_trajectory_image_conflict(
         path.write_text(traj.model_dump_json(), encoding="utf-8")
         return traj
 
-    stage3_called = {"n": 0}
+    monkeypatch.setattr(orchestrator, "run_stage1", fake_stage1)
+    monkeypatch.setattr(orchestrator, "run_audit_split", fake_audit)
+    monkeypatch.setattr(orchestrator, "run_stage2", fake_stage2)
 
-    def fake_stage3(*_a: Any, **_k: Any) -> Any:
-        stage3_called["n"] += 1
-        raise AssertionError("冲突后不应进入 stage3")
-
-    from pipeline.stage_audit_split.trajectory_image_check import (
-        TrajectoryImageConsistencyResult,
+    entries = orchestrator.run_one_video(
+        str(video),
+        skip_completed=False,
+        stage3_matcher=lambda _n, _f: None,
+        stage4_judge=_dummy_stage4_judge,
     )
+    assert len(entries) == 1
+    task_dir = (
+        tmp_path / "intermediate" / "noconflict" / "tasks" / "noconflict__t01"
+    )
+    assert (task_dir / "stage2_freeform_tao.json").is_file()
+    assert (task_dir / "stage3_trajectory.json").is_file()
+    assert (task_dir / "stage4_confidence.json").is_file()
+    assert not (task_dir / "image_trajectory_consistency.json").exists()
+    manifest = orchestrator.load_manifest("noconflict")
+    assert manifest.stages["task:noconflict__t01:stage2"] == "done"
+    assert manifest.stages["task:noconflict__t01:stage3"] == "done"
+    assert manifest.stages["task:noconflict__t01:stage4"] == "done"
+    shard = tmp_path / "output" / "shards" / "noconflict__t01.jsonl"
+    assert shard.is_file()
 
-    def fake_check(**_k: Any) -> TrajectoryImageConsistencyResult:
-        return TrajectoryImageConsistencyResult(
-            conflict=True,
-            confidence=0.95,
-            reason="选中图主体与 brief 不是同一场景",
+
+def test_run_one_video_empty_images_still_writes_jsonl(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """image_paths 为空的 needs_review 题仍跑完 Stage 2–4 并入库。"""
+    video = tmp_path / "emptyimg.mp4"
+    video.write_bytes(b"vid")
+    monkeypatch.setenv("INTERMEDIATE_DIR", str(tmp_path / "intermediate"))
+    monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "output"))
+    monkeypatch.setenv("TRANSCRIPTS_DIR", str(tmp_path / "transcripts"))
+    monkeypatch.setenv("TOOL_TREES_PATH", str(tmp_path / "tool_trees.json"))
+    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
+    from pipeline.config import clear_settings_cache
+
+    clear_settings_cache()
+
+    def fake_stage1(video_path: str, **kwargs: Any) -> list[TranscriptSegment]:
+        segs = [TranscriptSegment(start=0, end=1, text="定位题旁白")]
+        inter = tmp_path / "intermediate" / "emptyimg"
+        inter.mkdir(parents=True, exist_ok=True)
+        from pipeline.schemas.transcript import Stage1Result
+
+        (inter / "stage1_transcript.json").write_text(
+            Stage1Result(
+                video_id="emptyimg", video_path=video_path, segments=segs
+            ).model_dump_json(),
+            encoding="utf-8",
         )
+        return segs
+
+    def fake_audit(
+        video_path: str,
+        transcript: list[TranscriptSegment],
+        **kwargs: Any,
+    ) -> AuditSplitResult:
+        result = AuditSplitResult(
+            video_id="emptyimg",
+            decision=AuditDecision.accept,
+            reason="地理定位视频",
+            tasks=[
+                GeoTaskSpec(
+                    task_id="emptyimg__t01",
+                    time_start=0.0,
+                    time_end=1.0,
+                    target_kind=TargetKind.still_image,
+                    image_paths=[],
+                    status=TaskStatus.needs_review,
+                    status_reason="出示窗内未找到干净待定位原图",
+                    image_selection_note=(
+                        "选图质量等级=needs_review\n选中张数=0\n"
+                        "选图原因: 出示窗内未找到干净待定位原图\n选中帧: 无"
+                    ),
+                    segment_start_idx=0,
+                    segment_end_idx=0,
+                ),
+            ],
+        )
+        out = Path(kwargs["out_path"]) if kwargs.get("out_path") else (
+            tmp_path / "intermediate" / "emptyimg" / "stage_audit_split.json"
+        )
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(result.model_dump_json(indent=2), encoding="utf-8")
+        return result
+
+    def fake_stage2(
+        video_path: str,
+        transcript: list[TranscriptSegment],
+        **kwargs: Any,
+    ) -> FreeFormTrajectory:
+        traj = FreeFormTrajectory(
+            source_video="emptyimg",
+            steps=[
+                FreeFormStep(
+                    event_type="reasoning",
+                    thought="根据旁白推理地点",
+                ),
+                FreeFormStep(
+                    event_type="final",
+                    thought="conclude",
+                    tool="final_answer",
+                    params={"location": "某市"},
+                    observation=None,
+                ),
+            ],
+        )
+        path = Path(kwargs["out_path"]) if kwargs.get("out_path") else (
+            tmp_path
+            / "intermediate"
+            / "emptyimg"
+            / "tasks"
+            / "emptyimg__t01"
+            / "stage2_freeform_tao.json"
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(traj.model_dump_json(indent=2), encoding="utf-8")
+        return traj
 
     monkeypatch.setattr(orchestrator, "run_stage1", fake_stage1)
     monkeypatch.setattr(orchestrator, "run_audit_split", fake_audit)
     monkeypatch.setattr(orchestrator, "run_stage2", fake_stage2)
-    monkeypatch.setattr(orchestrator, "run_stage3", fake_stage3)
-    monkeypatch.setattr(
-        orchestrator, "check_trajectory_image_consistency", fake_check
-    )
 
-    entries = orchestrator.run_one_video(str(video), skip_completed=False)
-    assert entries == []
-    assert stage3_called["n"] == 0
-    task_dir = tmp_path / "intermediate" / "conflict" / "tasks" / "conflict__t01"
-    freeform_path = task_dir / "stage2_freeform_tao.json"
-    assert freeform_path.is_file()
-    original = freeform_path.read_text(encoding="utf-8")
-    assert "红瓦屋顶临水场景" in original
-    consistency = task_dir / "image_trajectory_consistency.json"
-    assert consistency.is_file()
-    assert "不是同一场景" in consistency.read_text(encoding="utf-8")
-    manifest = orchestrator.load_manifest("conflict")
-    assert manifest.stages["task:conflict__t01:stage2"] == "done"
-    assert manifest.stages["task:conflict__t01:stage3"] == "needs_review"
-    # 轨迹未被改写
-    assert freeform_path.read_text(encoding="utf-8") == original
+    entries = orchestrator.run_one_video(
+        str(video),
+        skip_completed=False,
+        stage3_matcher=lambda _n, _f: None,
+        stage4_judge=_dummy_stage4_judge,
+    )
+    assert len(entries) == 1
+    assert entries[0].messages[1].content == "Locate the place shown in the image."
+    assert "[Image:" not in entries[0].messages[1].content
+    traj_path = (
+        tmp_path
+        / "intermediate"
+        / "emptyimg"
+        / "tasks"
+        / "emptyimg__t01"
+        / "stage3_trajectory.json"
+    )
+    traj = Trajectory.model_validate_json(traj_path.read_text(encoding="utf-8"))
+    assert traj.image_paths == []
+    shard = tmp_path / "output" / "shards" / "emptyimg__t01.jsonl"
+    assert shard.is_file()

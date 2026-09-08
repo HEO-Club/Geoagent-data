@@ -276,6 +276,57 @@ def test_anthropic_stream_can_be_disabled_per_call(
     clear_settings_cache()
 
 
+def test_anthropic_stream_missing_snapshot_retries_non_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _BrokenStream:
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, *_args):  # type: ignore[no-untyped-def]
+            return False
+
+        def get_final_message(self):  # type: ignore[no-untyped-def]
+            raise AssertionError("missing final snapshot")
+
+    class _Messages:
+        def __init__(self) -> None:
+            self.create_calls = 0
+
+        def stream(self, **_kwargs):  # type: ignore[no-untyped-def]
+            return _BrokenStream()
+
+        def create(self, **_kwargs):  # type: ignore[no-untyped-def]
+            self.create_calls += 1
+            return SimpleNamespace(
+                content=[SimpleNamespace(type="tool_use", input={"x": "fallback"})]
+            )
+
+    monkeypatch.setenv("LLM_ANTHROPIC_STREAM", "true")
+    clear_settings_cache()
+    endpoint = llm._EndpointConfig(
+        provider="anthropic",
+        base_url="https://relay.example",
+        model="claude-test",
+        api_key="test-key",
+        timeout_sec=30.0,
+        max_output_tokens=1024,
+        reasoning_effort=None,
+        omit_sampling_params=True,
+        multimodal=True,
+    )
+    messages = _Messages()
+    result = llm._create_anthropic_structured(
+        SimpleNamespace(messages=messages),
+        endpoint=endpoint,
+        response_model=_T,
+        content="prompt",
+    )
+    assert result.x == "fallback"
+    assert messages.create_calls == 1
+    clear_settings_cache()
+
+
 def test_anthropic_stream_has_overall_deadline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

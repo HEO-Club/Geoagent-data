@@ -1,0 +1,329 @@
+{
+  "schema_version": "geoagent_tool_implementation_spec_v1",
+  "ordinal": 6,
+  "research_date": "2026-08-31",
+  "research_status": "design_researched_not_runtime_verified",
+  "catalog_source": "canonical_tool_catalog_v2.json",
+  "canonical_tool": {
+    "canonical": {
+      "name": "media_metadata_read",
+      "description": "读取 EXIF、GPS 和通用媒体元数据。",
+      "executor": "local_media_metadata_reader",
+      "usage": "仅在需要访问该真实执行器并获得新证据时调用；先选择 operation，再按其 input_schema 填 inputs。缺少执行级参数时按 acquisition_hint 获取，不得编造坐标、文件、会话或前置结果。",
+      "operations": [
+        {
+          "name": "exif",
+          "description": "读取图片 EXIF 和 GPS 元数据",
+          "aliases": [
+            "execute",
+            "read"
+          ],
+          "input_schema": {
+            "description": "读取真实图片文件的 EXIF/GPS 元数据。",
+            "fields": [
+              {
+                "name": "file",
+                "type": "string",
+                "required": true,
+                "requirement_level": "execution",
+                "description": "可访问的图片文件路径或文件 ID。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 file；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "文件",
+                  "图片",
+                  "image",
+                  "path"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "fields",
+                "type": "string_or_array",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "要读取的 EXIF 字段；缺省时读取全部安全字段。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 fields；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "字段",
+                  "读取项"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              }
+            ],
+            "required_any": [],
+            "mutually_exclusive": [],
+            "allow_extra": true,
+            "examples": []
+          }
+        },
+        {
+          "name": "file",
+          "description": "读取文件容器、编码、创建时间等通用元数据",
+          "aliases": [],
+          "input_schema": {
+            "description": "读取媒体文件容器和通用属性。",
+            "fields": [
+              {
+                "name": "file",
+                "type": "string",
+                "required": true,
+                "requirement_level": "execution",
+                "description": "可访问的媒体文件路径或文件 ID。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 file；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "文件",
+                  "媒体",
+                  "path"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "fields",
+                "type": "string_or_array",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "要读取的属性字段。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 fields；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "字段",
+                  "读取项"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              }
+            ],
+            "required_any": [],
+            "mutually_exclusive": [],
+            "allow_extra": true,
+            "examples": []
+          }
+        }
+      ],
+      "params": [
+        {
+          "name": "operation",
+          "type": "string",
+          "required": true,
+          "description": "本次调用执行的 operation",
+          "allowed_values": [
+            "exif",
+            "file"
+          ]
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "required": true,
+          "description": "本次调用要补齐的证据缺口，不得伪装成工具返回",
+          "allowed_values": []
+        },
+        {
+          "name": "inputs",
+          "type": "object",
+          "required": true,
+          "description": "严格按 operation.input_schema 传给执行器的真实输入",
+          "allowed_values": []
+        }
+      ],
+      "observation_fields": [
+        {
+          "name": "result",
+          "type": "object",
+          "nullable": true,
+          "description": "执行器实际返回；不得写入假设、计划或模型自行补全的数据"
+        }
+      ],
+      "is_terminal": false
+    },
+    "variants": [
+      "exif_metadata_read",
+      "read_exif",
+      "media_metadata_read"
+    ],
+    "variant_operations": {
+      "exif_metadata_read": "exif",
+      "read_exif": "exif",
+      "media_metadata_read": "file"
+    }
+  },
+  "parameter_guide": {
+    "exif": [
+      {
+        "name": "file",
+        "type": "string",
+        "required": true,
+        "requirement_level": "execution",
+        "purpose": "可访问的图片文件路径或文件 ID。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 file；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "文件",
+          "图片",
+          "image",
+          "path"
+        ],
+        "validation_note": "execution 级字段缺失时不得执行；按 how_to_obtain 先获取真实值。"
+      },
+      {
+        "name": "fields",
+        "type": "string_or_array",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "要读取的 EXIF 字段；缺省时读取全部安全字段。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 fields；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "字段",
+          "读取项"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      }
+    ],
+    "file": [
+      {
+        "name": "file",
+        "type": "string",
+        "required": true,
+        "requirement_level": "execution",
+        "purpose": "可访问的媒体文件路径或文件 ID。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 file；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "文件",
+          "媒体",
+          "path"
+        ],
+        "validation_note": "execution 级字段缺失时不得执行；按 how_to_obtain 先获取真实值。"
+      },
+      {
+        "name": "fields",
+        "type": "string_or_array",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "要读取的属性字段。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 fields；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "字段",
+          "读取项"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      }
+    ]
+  },
+  "implementation_research": {
+    "architecture": "local_metadata_parser",
+    "backends": [
+      {
+        "name": "ExifTool",
+        "kind": "local_cli",
+        "role": "EXIF、GPS、拍摄时间和设备字段",
+        "official_url": "https://exiftool.org/exiftool_pod2.html",
+        "authentication": "无",
+        "license_note": "使用前核对软件与数据许可。"
+      },
+      {
+        "name": "ffprobe",
+        "kind": "local_cli",
+        "role": "视频容器、时长、码流和时间基",
+        "official_url": "https://ffmpeg.org/ffprobe.html",
+        "authentication": "无",
+        "license_note": "使用前核对软件与数据许可。"
+      }
+    ],
+    "execution_flow": [
+      "只读打开真实文件",
+      "按 fields 提取并保留原始标签名",
+      "区分拍摄时间、编码时间和文件时间"
+    ],
+    "limitations": [
+      "字段缺失必须返回 absent",
+      "EXIF 可被修改不能作为唯一真值",
+      "转发平台常会清除元数据"
+    ],
+    "mcp_strategy": "本地只读 executor，限制到工作区已登记 media_id。"
+  },
+  "recommended_executor_contract": {
+    "required_result_fields": [
+      "status",
+      "provider_or_algorithm",
+      "request_parameters_used",
+      "retrieved_at",
+      "source_result_id_or_raw_ref",
+      "provenance",
+      "warnings"
+    ],
+    "status_values": [
+      "success",
+      "no_result",
+      "no_coverage",
+      "parameter_missing",
+      "unsupported",
+      "permission_denied",
+      "provider_error"
+    ],
+    "rules": [
+      "no_result 与 no_coverage、provider_error 必须分开",
+      "任何精确数值必须带单位、方法和源数据",
+      "调用失败不得生成看似成功的 Observation",
+      "密钥、令牌和内部文件系统路径不得进入训练样本"
+    ]
+  },
+  "new_tool_review_hint": {
+    "covered_execution_boundary": "local_media_metadata_reader",
+    "do_not_create_when": [
+      "只是对象、地区、查询词或参数不同",
+      "现有 Tool 的某个 operation 与本次动作共享同一执行器",
+      "只是基于已有结果进行比较、筛选、总结或推理"
+    ],
+    "consider_new_only_when": [
+      "现有31类执行器及所有 operation 均不能执行该动作",
+      "存在独立、可实现、可测试的真实后端边界",
+      "多个独立样本反复出现相同能力缺口",
+      "能够提供完整 schema、许可评估、失败语义和测试证据"
+    ]
+  }
+}

@@ -1,0 +1,498 @@
+{
+  "schema_version": "geoagent_tool_implementation_spec_v1",
+  "ordinal": 4,
+  "research_date": "2026-08-31",
+  "research_status": "design_researched_not_runtime_verified",
+  "catalog_source": "canonical_tool_catalog_v2.json",
+  "canonical_tool": {
+    "canonical": {
+      "name": "ocr_read",
+      "description": "识别或解码图中文字和编码。",
+      "executor": "ocr_engine",
+      "usage": "仅在需要访问该真实执行器并获得新证据时调用；先选择 operation，再按其 input_schema 填 inputs。缺少执行级参数时按 acquisition_hint 获取，不得编造坐标、文件、会话或前置结果。",
+      "operations": [
+        {
+          "name": "recognize",
+          "description": "识别图片区域中的自然语言文字和数字",
+          "aliases": [],
+          "input_schema": {
+            "description": "识别图片区域中的文字或数字。",
+            "fields": [
+              {
+                "name": "image",
+                "type": "string",
+                "required": true,
+                "requirement_level": "execution",
+                "description": "待处理图片的路径、图片 ID 或当前输入图片引用；不得填写不存在的图片。",
+                "acquisition_hint": "优先引用 $current_image；若只需要局部特征，先调用 image_process.crop/zoom 生成截图并把返回的图片 ID 传入，禁止编造文件名。",
+                "context_sources": [
+                  "current_image"
+                ],
+                "context_default": "$current_image",
+                "aliases": [
+                  "图片",
+                  "图像",
+                  "image_path",
+                  "image_id",
+                  "对象",
+                  "target_image"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "input_image_1"
+              },
+              {
+                "name": "region",
+                "type": "string_or_array",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "图片中的目标区域，可用 [x1,y1,x2,y2]、命名区域或可复现的区域描述表示。",
+                "acquisition_hint": "在当前图片上明确裁剪框或可复现的目标区域描述。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "区域",
+                  "裁剪区域",
+                  "目标区域",
+                  "roi",
+                  "bbox",
+                  "crop_region"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "bridge_tower_top"
+              },
+              {
+                "name": "languages",
+                "type": "array",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "候选语言代码列表；未知时可省略。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 languages；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "语言",
+                  "language"
+                ],
+                "allowed_values": [],
+                "item_type": "string",
+                "minimum": null,
+                "maximum": null,
+                "example": [
+                  "zh",
+                  "en"
+                ]
+              },
+              {
+                "name": "text_kind",
+                "type": "string",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "预期文字类型。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 text_kind；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "文字类型",
+                  "kind"
+                ],
+                "allowed_values": [
+                  "natural_text",
+                  "number",
+                  "road_sign",
+                  "address",
+                  "auto"
+                ],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              }
+            ],
+            "required_any": [],
+            "mutually_exclusive": [],
+            "allow_extra": true,
+            "examples": []
+          }
+        },
+        {
+          "name": "decode",
+          "description": "解码二维码、嵌入式代码或特殊字符",
+          "aliases": [],
+          "input_schema": {
+            "description": "解码二维码、条码或其他机器编码。",
+            "fields": [
+              {
+                "name": "image",
+                "type": "string",
+                "required": true,
+                "requirement_level": "execution",
+                "description": "待处理图片的路径、图片 ID 或当前输入图片引用；不得填写不存在的图片。",
+                "acquisition_hint": "优先引用 $current_image；若只需要局部特征，先调用 image_process.crop/zoom 生成截图并把返回的图片 ID 传入，禁止编造文件名。",
+                "context_sources": [
+                  "current_image"
+                ],
+                "context_default": "$current_image",
+                "aliases": [
+                  "图片",
+                  "图像",
+                  "image_path",
+                  "image_id",
+                  "对象",
+                  "target_image"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "input_image_1"
+              },
+              {
+                "name": "region",
+                "type": "string_or_array",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "图片中的目标区域，可用 [x1,y1,x2,y2]、命名区域或可复现的区域描述表示。",
+                "acquisition_hint": "在当前图片上明确裁剪框或可复现的目标区域描述。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "区域",
+                  "裁剪区域",
+                  "目标区域",
+                  "roi",
+                  "bbox",
+                  "crop_region"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "bridge_tower_top"
+              },
+              {
+                "name": "code_types",
+                "type": "array",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "允许识别的编码类型。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 code_types；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "编码类型",
+                  "types"
+                ],
+                "allowed_values": [],
+                "item_type": "string",
+                "minimum": null,
+                "maximum": null,
+                "example": [
+                  "qr",
+                  "barcode"
+                ]
+              }
+            ],
+            "required_any": [],
+            "mutually_exclusive": [],
+            "allow_extra": true,
+            "examples": []
+          }
+        }
+      ],
+      "params": [
+        {
+          "name": "operation",
+          "type": "string",
+          "required": true,
+          "description": "本次调用执行的 operation",
+          "allowed_values": [
+            "recognize",
+            "decode"
+          ]
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "required": true,
+          "description": "本次调用要补齐的证据缺口，不得伪装成工具返回",
+          "allowed_values": []
+        },
+        {
+          "name": "inputs",
+          "type": "object",
+          "required": true,
+          "description": "严格按 operation.input_schema 传给执行器的真实输入",
+          "allowed_values": []
+        }
+      ],
+      "observation_fields": [
+        {
+          "name": "result",
+          "type": "object",
+          "nullable": true,
+          "description": "执行器实际返回；不得写入假设、计划或模型自行补全的数据"
+        }
+      ],
+      "is_terminal": false
+    },
+    "variants": [
+      "ocr",
+      "ocr_text",
+      "embedded_code_decode"
+    ],
+    "variant_operations": {
+      "ocr": "recognize",
+      "ocr_text": "recognize",
+      "embedded_code_decode": "decode"
+    }
+  },
+  "parameter_guide": {
+    "recognize": [
+      {
+        "name": "image",
+        "type": "string",
+        "required": true,
+        "requirement_level": "execution",
+        "purpose": "待处理图片的路径、图片 ID 或当前输入图片引用；不得填写不存在的图片。",
+        "how_to_obtain": "优先引用 $current_image；若只需要局部特征，先调用 image_process.crop/zoom 生成截图并把返回的图片 ID 传入，禁止编造文件名。",
+        "context_sources": [
+          "current_image"
+        ],
+        "context_default": "$current_image",
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "input_image_1",
+        "aliases": [
+          "图片",
+          "图像",
+          "image_path",
+          "image_id",
+          "对象",
+          "target_image"
+        ],
+        "validation_note": "execution 级字段缺失时不得执行；按 how_to_obtain 先获取真实值。"
+      },
+      {
+        "name": "region",
+        "type": "string_or_array",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "图片中的目标区域，可用 [x1,y1,x2,y2]、命名区域或可复现的区域描述表示。",
+        "how_to_obtain": "在当前图片上明确裁剪框或可复现的目标区域描述。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "bridge_tower_top",
+        "aliases": [
+          "区域",
+          "裁剪区域",
+          "目标区域",
+          "roi",
+          "bbox",
+          "crop_region"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "languages",
+        "type": "array",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "候选语言代码列表；未知时可省略。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 languages；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": [
+          "zh",
+          "en"
+        ],
+        "aliases": [
+          "语言",
+          "language"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "text_kind",
+        "type": "string",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "预期文字类型。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 text_kind；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [
+          "natural_text",
+          "number",
+          "road_sign",
+          "address",
+          "auto"
+        ],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "文字类型",
+          "kind"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      }
+    ],
+    "decode": [
+      {
+        "name": "image",
+        "type": "string",
+        "required": true,
+        "requirement_level": "execution",
+        "purpose": "待处理图片的路径、图片 ID 或当前输入图片引用；不得填写不存在的图片。",
+        "how_to_obtain": "优先引用 $current_image；若只需要局部特征，先调用 image_process.crop/zoom 生成截图并把返回的图片 ID 传入，禁止编造文件名。",
+        "context_sources": [
+          "current_image"
+        ],
+        "context_default": "$current_image",
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "input_image_1",
+        "aliases": [
+          "图片",
+          "图像",
+          "image_path",
+          "image_id",
+          "对象",
+          "target_image"
+        ],
+        "validation_note": "execution 级字段缺失时不得执行；按 how_to_obtain 先获取真实值。"
+      },
+      {
+        "name": "region",
+        "type": "string_or_array",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "图片中的目标区域，可用 [x1,y1,x2,y2]、命名区域或可复现的区域描述表示。",
+        "how_to_obtain": "在当前图片上明确裁剪框或可复现的目标区域描述。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "bridge_tower_top",
+        "aliases": [
+          "区域",
+          "裁剪区域",
+          "目标区域",
+          "roi",
+          "bbox",
+          "crop_region"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "code_types",
+        "type": "array",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "允许识别的编码类型。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 code_types；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": [
+          "qr",
+          "barcode"
+        ],
+        "aliases": [
+          "编码类型",
+          "types"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      }
+    ]
+  },
+  "implementation_research": {
+    "architecture": "local_ocr_and_code_decoder",
+    "backends": [
+      {
+        "name": "PaddleOCR",
+        "kind": "local_model",
+        "role": "中英文字检测、识别与框坐标",
+        "official_url": "https://www.paddleocr.ai/main/en/quick_start.html",
+        "authentication": "无",
+        "license_note": "使用前核对软件与数据许可。"
+      },
+      {
+        "name": "OpenCV QRCodeDetector",
+        "kind": "local_library",
+        "role": "二维码检测与解码",
+        "official_url": "https://docs.opencv.org/master/javadoc/org/opencv/objdetect/QRCodeDetector.html",
+        "authentication": "无",
+        "license_note": "使用前核对软件与数据许可。"
+      }
+    ],
+    "execution_flow": [
+      "按 region 裁剪并保留原坐标映射",
+      "选择语言/编码识别器",
+      "返回原始文本、框、分数与候选"
+    ],
+    "limitations": [
+      "模型纠错必须和原始 OCR 分开",
+      "低清文字不得自动补成确定地名",
+      "二维码无结果不代表画面不存在编码"
+    ],
+    "mcp_strategy": "本地服务复用模型进程，MCP 只传 image_id，不传任意文件路径。"
+  },
+  "recommended_executor_contract": {
+    "required_result_fields": [
+      "status",
+      "provider_or_algorithm",
+      "request_parameters_used",
+      "retrieved_at",
+      "source_result_id_or_raw_ref",
+      "provenance",
+      "warnings"
+    ],
+    "status_values": [
+      "success",
+      "no_result",
+      "no_coverage",
+      "parameter_missing",
+      "unsupported",
+      "permission_denied",
+      "provider_error"
+    ],
+    "rules": [
+      "no_result 与 no_coverage、provider_error 必须分开",
+      "任何精确数值必须带单位、方法和源数据",
+      "调用失败不得生成看似成功的 Observation",
+      "密钥、令牌和内部文件系统路径不得进入训练样本"
+    ]
+  },
+  "new_tool_review_hint": {
+    "covered_execution_boundary": "ocr_engine",
+    "do_not_create_when": [
+      "只是对象、地区、查询词或参数不同",
+      "现有 Tool 的某个 operation 与本次动作共享同一执行器",
+      "只是基于已有结果进行比较、筛选、总结或推理"
+    ],
+    "consider_new_only_when": [
+      "现有31类执行器及所有 operation 均不能执行该动作",
+      "存在独立、可实现、可测试的真实后端边界",
+      "多个独立样本反复出现相同能力缺口",
+      "能够提供完整 schema、许可评估、失败语义和测试证据"
+    ]
+  }
+}

@@ -7,10 +7,86 @@ from typing import Any
 
 import pytest
 
+from pipeline.schemas.audit import GeoTaskSpec, TargetKind
 from pipeline.schemas.clues import BoundKind, ClueExtractionResult, WorkingScope
 from pipeline.schemas.freeform import FreeFormTrajectory
 from pipeline.schemas.transcript import TranscriptSegment
 from pipeline.stage2_freeform_tao import run as stage2
+
+
+def test_task_block_focuses_one_split_without_final_answer_leak() -> None:
+    task = GeoTaskSpec(
+        task_id="video__t03",
+        time_start=60.0,
+        time_end=120.0,
+        target_kind=TargetKind.still_image,
+        visual_evidence_brief="云层上方可见高速公路与田间道路网",
+        final_location_text="不应泄露的最终地点",
+    )
+    block = stage2._format_task_block(task)
+    assert "当前只蒸馏这一道" in block
+    assert "task_time=[60.0, 120.0)" in block
+    assert "高速公路与田间道路网" in block
+    assert "不应泄露的最终地点" not in block
+
+
+def test_split_task_without_selected_image_does_not_fallback_whole_video(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    video = tmp_path / "multi.mp4"
+    video.write_bytes(b"x")
+    monkeypatch.setenv("INTERMEDIATE_DIR", str(tmp_path / "intermediate"))
+    monkeypatch.setenv("STAGE2_ACTION_COVERAGE_REVIEW", "false")
+    from pipeline.config import clear_settings_cache
+
+    clear_settings_cache()
+    monkeypatch.setattr(
+        stage2,
+        "extract_keyframes",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("split task 不得回退整视频概览帧")
+        ),
+    )
+    monkeypatch.setattr(
+        stage2,
+        "extract_working_scope",
+        lambda _t: ClueExtractionResult(working_scope=None),
+    )
+
+    class _Final:
+        event_type = "final"
+        thought = "依据字幕中已有结论提交"
+        tool = "final_answer"
+        params = {"location": "某地"}
+        observation = None
+
+    class _Result:
+        steps = [_Final()]
+        notes = None
+
+    captured: dict[str, Any] = {}
+
+    def _fake_call(_prompt: str, *_a: Any, **kwargs: Any) -> _Result:
+        captured.update(kwargs)
+        return _Result()
+
+    monkeypatch.setattr(stage2, "call_structured", _fake_call)
+    task = GeoTaskSpec(
+        task_id="multi__t03",
+        time_start=60,
+        time_end=120,
+        target_kind=TargetKind.still_image,
+        image_paths=[],
+    )
+    result = stage2.run_stage2(
+        str(video),
+        [TranscriptSegment(start=60, end=90, text="本题结论")],
+        task=task,
+        image_paths=[],
+    )
+    assert result.steps[-1].params["location"] == "某地"
+    assert captured.get("images") is None
+    clear_settings_cache()
 
 
 def test_run_stage2_mock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

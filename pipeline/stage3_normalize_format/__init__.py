@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+from pipeline.stage3_normalize_format.compile_params import (
+    ParamCompilerFn,
+    apply_compile_and_revalidate,
+    build_compile_request,
+    compile_params_batch,
+)
 from pipeline.stage3_normalize_format.format_jsonl import (
     format_dataset_entry,
     remap_trajectory,
@@ -12,6 +18,7 @@ from pipeline.stage3_normalize_format.map_tools import ensure_tool_trees
 from pipeline.stage3_normalize_format.trees import load_forest, save_forest
 
 __all__ = [
+    "ParamCompilerFn",
     "ensure_tool_trees",
     "format_dataset_entry",
     "load_forest",

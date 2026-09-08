@@ -1,0 +1,680 @@
+{
+  "schema_version": "geoagent_tool_implementation_spec_v1",
+  "ordinal": 27,
+  "research_date": "2026-08-31",
+  "research_status": "design_researched_not_runtime_verified",
+  "catalog_source": "canonical_tool_catalog_v2.json",
+  "canonical_tool": {
+    "canonical": {
+      "name": "administrative_registry",
+      "description": "查询行政归属、标准地名和对象名录。",
+      "executor": "administrative_registry",
+      "usage": "仅在需要访问该真实执行器并获得新证据时调用；先选择 operation，再按其 input_schema 填 inputs。缺少执行级参数时按 acquisition_hint 获取，不得编造坐标、文件、会话或前置结果。",
+      "operations": [
+        {
+          "name": "administrative",
+          "description": "查询地点的行政归属、标准地名或水体名称",
+          "aliases": [],
+          "input_schema": {
+            "description": "查询结构化档案中的行政归属、标准地名或水体名称。",
+            "fields": [
+              {
+                "name": "query",
+                "type": "string_or_array",
+                "required": true,
+                "requirement_level": "semantic",
+                "description": "提交给该服务的检索词、自然语言查询或明确对象描述。",
+                "acquisition_hint": "从本步 purpose/Thought 中提取明确检索对象和约束，不得只写“查询一下”。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "关键词",
+                  "检索词",
+                  "查询词",
+                  "检索对象",
+                  "对象",
+                  "目标",
+                  "特征组合",
+                  "筛选条件",
+                  "material",
+                  "keywords",
+                  "问题",
+                  "q",
+                  "search_query"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "铁路桥 石栏 历史照片"
+              },
+              {
+                "name": "area",
+                "type": "location",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+                "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+                "context_sources": [
+                  "active_area"
+                ],
+                "context_default": "$active_area",
+                "aliases": [
+                  "区域",
+                  "地区",
+                  "地点",
+                  "候选区域",
+                  "检索范围",
+                  "搜索区域",
+                  "省域范围",
+                  "region",
+                  "target_area",
+                  "search_area",
+                  "sample_area",
+                  "location",
+                  "cities"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "郑州附近黄河沿线"
+              },
+              {
+                "name": "time_range",
+                "type": "string_or_object",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。",
+                "acquisition_hint": "从字幕、task 或已有结果提取真实时间范围；来源没有时不得猜测。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "时期",
+                  "时间",
+                  "年份",
+                  "年代",
+                  "年代范围",
+                  "日期",
+                  "影像时期",
+                  "影像年份",
+                  "date_range",
+                  "year"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "1980-1995"
+              },
+              {
+                "name": "registry",
+                "type": "string",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "指定官方或行业档案来源。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 registry；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "档案",
+                  "名录",
+                  "数据源",
+                  "source"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "fields",
+                "type": "string_or_array",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "需要返回的字段。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 fields；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "字段",
+                  "返回项"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              }
+            ],
+            "required_any": [],
+            "mutually_exclusive": [],
+            "allow_extra": true,
+            "examples": []
+          }
+        },
+        {
+          "name": "directory",
+          "description": "查询特定类别设施、机构或对象名录",
+          "aliases": [],
+          "input_schema": {
+            "description": "查询结构化档案中的指定类别对象名录。",
+            "fields": [
+              {
+                "name": "query",
+                "type": "string_or_array",
+                "required": true,
+                "requirement_level": "semantic",
+                "description": "提交给该服务的检索词、自然语言查询或明确对象描述。",
+                "acquisition_hint": "从本步 purpose/Thought 中提取明确检索对象和约束，不得只写“查询一下”。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "关键词",
+                  "检索词",
+                  "查询词",
+                  "检索对象",
+                  "对象",
+                  "目标",
+                  "特征组合",
+                  "筛选条件",
+                  "material",
+                  "keywords",
+                  "问题",
+                  "q",
+                  "search_query"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "铁路桥 石栏 历史照片"
+              },
+              {
+                "name": "area",
+                "type": "location",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+                "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+                "context_sources": [
+                  "active_area"
+                ],
+                "context_default": "$active_area",
+                "aliases": [
+                  "区域",
+                  "地区",
+                  "地点",
+                  "候选区域",
+                  "检索范围",
+                  "搜索区域",
+                  "省域范围",
+                  "region",
+                  "target_area",
+                  "search_area",
+                  "sample_area",
+                  "location",
+                  "cities"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "郑州附近黄河沿线"
+              },
+              {
+                "name": "time_range",
+                "type": "string_or_object",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。",
+                "acquisition_hint": "从字幕、task 或已有结果提取真实时间范围；来源没有时不得猜测。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "时期",
+                  "时间",
+                  "年份",
+                  "年代",
+                  "年代范围",
+                  "日期",
+                  "影像时期",
+                  "影像年份",
+                  "date_range",
+                  "year"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "1980-1995"
+              },
+              {
+                "name": "registry",
+                "type": "string",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "指定官方或行业档案来源。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 registry；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "档案",
+                  "名录",
+                  "数据源",
+                  "source"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "fields",
+                "type": "string_or_array",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "需要返回的字段。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 fields；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "字段",
+                  "返回项"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              }
+            ],
+            "required_any": [],
+            "mutually_exclusive": [],
+            "allow_extra": true,
+            "examples": []
+          }
+        }
+      ],
+      "params": [
+        {
+          "name": "operation",
+          "type": "string",
+          "required": true,
+          "description": "本次调用执行的 operation",
+          "allowed_values": [
+            "administrative",
+            "directory"
+          ]
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "required": true,
+          "description": "本次调用要补齐的证据缺口，不得伪装成工具返回",
+          "allowed_values": []
+        },
+        {
+          "name": "inputs",
+          "type": "object",
+          "required": true,
+          "description": "严格按 operation.input_schema 传给执行器的真实输入",
+          "allowed_values": []
+        }
+      ],
+      "observation_fields": [
+        {
+          "name": "result",
+          "type": "object",
+          "nullable": true,
+          "description": "执行器实际返回；不得写入假设、计划或模型自行补全的数据"
+        }
+      ],
+      "is_terminal": false
+    },
+    "variants": [
+      "admin_hydronym_lookup"
+    ],
+    "variant_operations": {
+      "admin_hydronym_lookup": "administrative"
+    }
+  },
+  "parameter_guide": {
+    "administrative": [
+      {
+        "name": "query",
+        "type": "string_or_array",
+        "required": true,
+        "requirement_level": "semantic",
+        "purpose": "提交给该服务的检索词、自然语言查询或明确对象描述。",
+        "how_to_obtain": "从本步 purpose/Thought 中提取明确检索对象和约束，不得只写“查询一下”。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "铁路桥 石栏 历史照片",
+        "aliases": [
+          "关键词",
+          "检索词",
+          "查询词",
+          "检索对象",
+          "对象",
+          "目标",
+          "特征组合",
+          "筛选条件",
+          "material",
+          "keywords",
+          "问题",
+          "q",
+          "search_query"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "area",
+        "type": "location",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+        "how_to_obtain": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+        "context_sources": [
+          "active_area"
+        ],
+        "context_default": "$active_area",
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "郑州附近黄河沿线",
+        "aliases": [
+          "区域",
+          "地区",
+          "地点",
+          "候选区域",
+          "检索范围",
+          "搜索区域",
+          "省域范围",
+          "region",
+          "target_area",
+          "search_area",
+          "sample_area",
+          "location",
+          "cities"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "time_range",
+        "type": "string_or_object",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。",
+        "how_to_obtain": "从字幕、task 或已有结果提取真实时间范围；来源没有时不得猜测。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "1980-1995",
+        "aliases": [
+          "时期",
+          "时间",
+          "年份",
+          "年代",
+          "年代范围",
+          "日期",
+          "影像时期",
+          "影像年份",
+          "date_range",
+          "year"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "registry",
+        "type": "string",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "指定官方或行业档案来源。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 registry；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "档案",
+          "名录",
+          "数据源",
+          "source"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "fields",
+        "type": "string_or_array",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "需要返回的字段。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 fields；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "字段",
+          "返回项"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      }
+    ],
+    "directory": [
+      {
+        "name": "query",
+        "type": "string_or_array",
+        "required": true,
+        "requirement_level": "semantic",
+        "purpose": "提交给该服务的检索词、自然语言查询或明确对象描述。",
+        "how_to_obtain": "从本步 purpose/Thought 中提取明确检索对象和约束，不得只写“查询一下”。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "铁路桥 石栏 历史照片",
+        "aliases": [
+          "关键词",
+          "检索词",
+          "查询词",
+          "检索对象",
+          "对象",
+          "目标",
+          "特征组合",
+          "筛选条件",
+          "material",
+          "keywords",
+          "问题",
+          "q",
+          "search_query"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "area",
+        "type": "location",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+        "how_to_obtain": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+        "context_sources": [
+          "active_area"
+        ],
+        "context_default": "$active_area",
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "郑州附近黄河沿线",
+        "aliases": [
+          "区域",
+          "地区",
+          "地点",
+          "候选区域",
+          "检索范围",
+          "搜索区域",
+          "省域范围",
+          "region",
+          "target_area",
+          "search_area",
+          "sample_area",
+          "location",
+          "cities"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "time_range",
+        "type": "string_or_object",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。",
+        "how_to_obtain": "从字幕、task 或已有结果提取真实时间范围；来源没有时不得猜测。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "1980-1995",
+        "aliases": [
+          "时期",
+          "时间",
+          "年份",
+          "年代",
+          "年代范围",
+          "日期",
+          "影像时期",
+          "影像年份",
+          "date_range",
+          "year"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "registry",
+        "type": "string",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "指定官方或行业档案来源。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 registry；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "档案",
+          "名录",
+          "数据源",
+          "source"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "fields",
+        "type": "string_or_array",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "需要返回的字段。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 fields；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "字段",
+          "返回项"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      }
+    ]
+  },
+  "implementation_research": {
+    "architecture": "gazetteer_plus_official_regional_sources",
+    "backends": [
+      {
+        "name": "GeoNames",
+        "kind": "external_api_or_offline_dump",
+        "role": "全球地名、别名和行政层级",
+        "official_url": "https://www.geonames.org/export/ws-overview.html",
+        "authentication": "GeoNames username",
+        "license_note": "使用前核对软件与数据许可。"
+      },
+      {
+        "name": "国家地名信息库/地方民政资料",
+        "kind": "official_web_or_import",
+        "role": "中国标准地名与行政资料",
+        "official_url": "https://app.www.gov.cn/govdata/gov/202212/25/495555/article.html",
+        "authentication": "按具体来源",
+        "license_note": "很多来源没有统一公开 API，需要人工导入与逐来源许可。"
+      }
+    ],
+    "execution_flow": [
+      "按 registry 和 area 选数据源",
+      "查询标准名、别名和层级",
+      "保留有效时间与官方出处"
+    ],
+    "limitations": [
+      "当前行政归属不能自动外推到历史年份",
+      "地名库质量与覆盖不同",
+      "未查到不能证明名称不存在"
+    ],
+    "mcp_strategy": "按国家/地区做 connector，统一输出 provenance 和 validity interval。"
+  },
+  "recommended_executor_contract": {
+    "required_result_fields": [
+      "status",
+      "provider_or_algorithm",
+      "request_parameters_used",
+      "retrieved_at",
+      "source_result_id_or_raw_ref",
+      "provenance",
+      "warnings"
+    ],
+    "status_values": [
+      "success",
+      "no_result",
+      "no_coverage",
+      "parameter_missing",
+      "unsupported",
+      "permission_denied",
+      "provider_error"
+    ],
+    "rules": [
+      "no_result 与 no_coverage、provider_error 必须分开",
+      "任何精确数值必须带单位、方法和源数据",
+      "调用失败不得生成看似成功的 Observation",
+      "密钥、令牌和内部文件系统路径不得进入训练样本"
+    ]
+  },
+  "new_tool_review_hint": {
+    "covered_execution_boundary": "administrative_registry",
+    "do_not_create_when": [
+      "只是对象、地区、查询词或参数不同",
+      "现有 Tool 的某个 operation 与本次动作共享同一执行器",
+      "只是基于已有结果进行比较、筛选、总结或推理"
+    ],
+    "consider_new_only_when": [
+      "现有31类执行器及所有 operation 均不能执行该动作",
+      "存在独立、可实现、可测试的真实后端边界",
+      "多个独立样本反复出现相同能力缺口",
+      "能够提供完整 schema、许可评估、失败语义和测试证据"
+    ]
+  }
+}

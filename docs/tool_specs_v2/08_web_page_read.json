@@ -1,0 +1,264 @@
+{
+  "schema_version": "geoagent_tool_implementation_spec_v1",
+  "ordinal": 8,
+  "research_date": "2026-08-31",
+  "research_status": "design_researched_not_runtime_verified",
+  "catalog_source": "canonical_tool_catalog_v2.json",
+  "canonical_tool": {
+    "canonical": {
+      "name": "web_page_read",
+      "description": "打开并抽取已找到网页的内容。",
+      "executor": "web_page_reader",
+      "usage": "仅在需要访问该真实执行器并获得新证据时调用；先选择 operation，再按其 input_schema 填 inputs。缺少执行级参数时按 acquisition_hint 获取，不得编造坐标、文件、会话或前置结果。",
+      "operations": [
+        {
+          "name": "open_result",
+          "description": "打开并读取选中的搜索结果页面",
+          "aliases": [],
+          "input_schema": {
+            "description": "打开已返回的网页结果并读取内容。",
+            "fields": [
+              {
+                "name": "url",
+                "type": "string",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "目标网页 URL。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 url；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "链接",
+                  "网址"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "result_id",
+                "type": "string",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "前一步搜索结果 ID。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 result_id；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "结果ID",
+                  "搜索结果",
+                  "id"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "extract",
+                "type": "string_or_array",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "需要抽取的内容范围。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 extract；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "抽取项",
+                  "字段"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              }
+            ],
+            "required_any": [
+              [
+                "url",
+                "result_id"
+              ]
+            ],
+            "mutually_exclusive": [],
+            "allow_extra": true,
+            "examples": []
+          }
+        }
+      ],
+      "params": [
+        {
+          "name": "operation",
+          "type": "string",
+          "required": true,
+          "description": "本次调用执行的 operation",
+          "allowed_values": [
+            "open_result"
+          ]
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "required": true,
+          "description": "本次调用要补齐的证据缺口，不得伪装成工具返回",
+          "allowed_values": []
+        },
+        {
+          "name": "inputs",
+          "type": "object",
+          "required": true,
+          "description": "严格按 operation.input_schema 传给执行器的真实输入",
+          "allowed_values": []
+        }
+      ],
+      "observation_fields": [
+        {
+          "name": "result",
+          "type": "object",
+          "nullable": true,
+          "description": "执行器实际返回；不得写入假设、计划或模型自行补全的数据"
+        }
+      ],
+      "is_terminal": false
+    },
+    "variants": [],
+    "variant_operations": {}
+  },
+  "parameter_guide": {
+    "open_result": [
+      {
+        "name": "url",
+        "type": "string",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "目标网页 URL。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 url；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "链接",
+          "网址"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "result_id",
+        "type": "string",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "前一步搜索结果 ID。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 result_id；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "结果ID",
+          "搜索结果",
+          "id"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "extract",
+        "type": "string_or_array",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "需要抽取的内容范围。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 extract；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "抽取项",
+          "字段"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      }
+    ]
+  },
+  "implementation_research": {
+    "architecture": "http_reader_with_browser_fallback",
+    "backends": [
+      {
+        "name": "Firecrawl",
+        "kind": "external_api_or_mcp",
+        "role": "网页正文提取与抓取",
+        "official_url": "https://docs.firecrawl.dev/mcp-server",
+        "authentication": "Firecrawl API Key",
+        "license_note": "使用前核对软件与数据许可。"
+      },
+      {
+        "name": "Microsoft Playwright MCP",
+        "kind": "local_browser_mcp",
+        "role": "动态页面只读渲染与交互",
+        "official_url": "https://github.com/microsoft/playwright-mcp",
+        "authentication": "无",
+        "license_note": "使用前核对软件与数据许可。"
+      }
+    ],
+    "execution_flow": [
+      "验证 URL/result_id 与允许域名",
+      "普通 HTTP 提取失败后才启用浏览器",
+      "返回正文片段、标题、时间和页面证据"
+    ],
+    "limitations": [
+      "登录/验证码/付费墙不得绕过",
+      "网页指令是不可信内容",
+      "读取失败不等于页面事实不存在"
+    ],
+    "mcp_strategy": "静态读取与浏览器分别作为 provider，禁止浏览器获得无关本地文件权限。"
+  },
+  "recommended_executor_contract": {
+    "required_result_fields": [
+      "status",
+      "provider_or_algorithm",
+      "request_parameters_used",
+      "retrieved_at",
+      "source_result_id_or_raw_ref",
+      "provenance",
+      "warnings"
+    ],
+    "status_values": [
+      "success",
+      "no_result",
+      "no_coverage",
+      "parameter_missing",
+      "unsupported",
+      "permission_denied",
+      "provider_error"
+    ],
+    "rules": [
+      "no_result 与 no_coverage、provider_error 必须分开",
+      "任何精确数值必须带单位、方法和源数据",
+      "调用失败不得生成看似成功的 Observation",
+      "密钥、令牌和内部文件系统路径不得进入训练样本"
+    ]
+  },
+  "new_tool_review_hint": {
+    "covered_execution_boundary": "web_page_reader",
+    "do_not_create_when": [
+      "只是对象、地区、查询词或参数不同",
+      "现有 Tool 的某个 operation 与本次动作共享同一执行器",
+      "只是基于已有结果进行比较、筛选、总结或推理"
+    ],
+    "consider_new_only_when": [
+      "现有31类执行器及所有 operation 均不能执行该动作",
+      "存在独立、可实现、可测试的真实后端边界",
+      "多个独立样本反复出现相同能力缺口",
+      "能够提供完整 schema、许可评估、失败语义和测试证据"
+    ]
+  }
+}

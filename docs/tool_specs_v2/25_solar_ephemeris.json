@@ -1,0 +1,438 @@
+{
+  "schema_version": "geoagent_tool_implementation_spec_v1",
+  "ordinal": 25,
+  "research_date": "2026-08-31",
+  "research_status": "design_researched_not_runtime_verified",
+  "catalog_source": "canonical_tool_catalog_v2.json",
+  "canonical_tool": {
+    "canonical": {
+      "name": "solar_ephemeris",
+      "description": "计算日落时间和太阳位置。",
+      "executor": "solar_ephemeris_calculator",
+      "usage": "仅在需要访问该真实执行器并获得新证据时调用；先选择 operation，再按其 input_schema 填 inputs。缺少执行级参数时按 acquisition_hint 获取，不得编造坐标、文件、会话或前置结果。",
+      "operations": [
+        {
+          "name": "sunset_time",
+          "description": "查询一个或多个地点的日落和暮光时间",
+          "aliases": [],
+          "input_schema": {
+            "description": "计算一个或多个地点在指定日期的日落和暮光时间。",
+            "fields": [
+              {
+                "name": "locations",
+                "type": "string_or_array",
+                "required": true,
+                "requirement_level": "execution",
+                "description": "一个或多个地点或坐标。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 locations；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "地点",
+                  "区域",
+                  "候选地点",
+                  "location"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "time_range",
+                "type": "string_or_object",
+                "required": true,
+                "requirement_level": "semantic",
+                "description": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。",
+                "acquisition_hint": "从字幕、task 或已有结果提取真实时间范围；来源没有时不得猜测。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "时期",
+                  "时间",
+                  "年份",
+                  "年代",
+                  "年代范围",
+                  "日期",
+                  "影像时期",
+                  "影像年份",
+                  "date_range",
+                  "year"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "1980-1995"
+              },
+              {
+                "name": "timezone",
+                "type": "string",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "输出时区；缺省时使用地点当地时区。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 timezone；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "时区",
+                  "tz"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              }
+            ],
+            "required_any": [],
+            "mutually_exclusive": [],
+            "allow_extra": true,
+            "examples": []
+          }
+        },
+        {
+          "name": "sun_position",
+          "description": "计算太阳高度角和方位角",
+          "aliases": [],
+          "input_schema": {
+            "description": "计算指定地点和时刻的太阳高度角与方位角。",
+            "fields": [
+              {
+                "name": "area",
+                "type": "location",
+                "required": true,
+                "requirement_level": "semantic",
+                "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+                "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+                "context_sources": [
+                  "active_area"
+                ],
+                "context_default": "$active_area",
+                "aliases": [
+                  "区域",
+                  "地区",
+                  "地点",
+                  "候选区域",
+                  "检索范围",
+                  "搜索区域",
+                  "省域范围",
+                  "region",
+                  "target_area",
+                  "search_area",
+                  "sample_area",
+                  "location",
+                  "cities"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": "郑州附近黄河沿线"
+              },
+              {
+                "name": "datetime",
+                "type": "string",
+                "required": true,
+                "requirement_level": "semantic",
+                "description": "带日期和时间的时刻。",
+                "acquisition_hint": "组合来源中明确给出的日期、时间和时区；缺任一关键项时标记待补充。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "时间",
+                  "日期时间",
+                  "timestamp"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "timezone",
+                "type": "string",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "时区。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 timezone；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "时区",
+                  "tz"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              }
+            ],
+            "required_any": [],
+            "mutually_exclusive": [],
+            "allow_extra": true,
+            "examples": []
+          }
+        }
+      ],
+      "params": [
+        {
+          "name": "operation",
+          "type": "string",
+          "required": true,
+          "description": "本次调用执行的 operation",
+          "allowed_values": [
+            "sunset_time",
+            "sun_position"
+          ]
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "required": true,
+          "description": "本次调用要补齐的证据缺口，不得伪装成工具返回",
+          "allowed_values": []
+        },
+        {
+          "name": "inputs",
+          "type": "object",
+          "required": true,
+          "description": "严格按 operation.input_schema 传给执行器的真实输入",
+          "allowed_values": []
+        }
+      ],
+      "observation_fields": [
+        {
+          "name": "result",
+          "type": "object",
+          "nullable": true,
+          "description": "执行器实际返回；不得写入假设、计划或模型自行补全的数据"
+        }
+      ],
+      "is_terminal": false
+    },
+    "variants": [
+      "compare_regional_sunset_times",
+      "sunset_time_lookup",
+      "solar_position_calculator",
+      "sun_elevation_calculator"
+    ],
+    "variant_operations": {
+      "compare_regional_sunset_times": "sunset_time",
+      "sunset_time_lookup": "sunset_time",
+      "solar_position_calculator": "sun_position",
+      "sun_elevation_calculator": "sun_position"
+    }
+  },
+  "parameter_guide": {
+    "sunset_time": [
+      {
+        "name": "locations",
+        "type": "string_or_array",
+        "required": true,
+        "requirement_level": "execution",
+        "purpose": "一个或多个地点或坐标。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 locations；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "地点",
+          "区域",
+          "候选地点",
+          "location"
+        ],
+        "validation_note": "execution 级字段缺失时不得执行；按 how_to_obtain 先获取真实值。"
+      },
+      {
+        "name": "time_range",
+        "type": "string_or_object",
+        "required": true,
+        "requirement_level": "semantic",
+        "purpose": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。",
+        "how_to_obtain": "从字幕、task 或已有结果提取真实时间范围；来源没有时不得猜测。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "1980-1995",
+        "aliases": [
+          "时期",
+          "时间",
+          "年份",
+          "年代",
+          "年代范围",
+          "日期",
+          "影像时期",
+          "影像年份",
+          "date_range",
+          "year"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "timezone",
+        "type": "string",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "输出时区；缺省时使用地点当地时区。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 timezone；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "时区",
+          "tz"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      }
+    ],
+    "sun_position": [
+      {
+        "name": "area",
+        "type": "location",
+        "required": true,
+        "requirement_level": "semantic",
+        "purpose": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+        "how_to_obtain": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+        "context_sources": [
+          "active_area"
+        ],
+        "context_default": "$active_area",
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": "郑州附近黄河沿线",
+        "aliases": [
+          "区域",
+          "地区",
+          "地点",
+          "候选区域",
+          "检索范围",
+          "搜索区域",
+          "省域范围",
+          "region",
+          "target_area",
+          "search_area",
+          "sample_area",
+          "location",
+          "cities"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "datetime",
+        "type": "string",
+        "required": true,
+        "requirement_level": "semantic",
+        "purpose": "带日期和时间的时刻。",
+        "how_to_obtain": "组合来源中明确给出的日期、时间和时区；缺任一关键项时标记待补充。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "时间",
+          "日期时间",
+          "timestamp"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "timezone",
+        "type": "string",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "时区。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 timezone；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "时区",
+          "tz"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      }
+    ]
+  },
+  "implementation_research": {
+    "architecture": "local_astronomy_math",
+    "backends": [
+      {
+        "name": "pvlib",
+        "kind": "local_library",
+        "role": "太阳高度、方位和日出日落",
+        "official_url": "https://pvlib-python.readthedocs.io/en/stable/reference/generated/pvlib.solarposition.get_solarposition.html",
+        "authentication": "无",
+        "license_note": "使用前核对软件与数据许可。"
+      }
+    ],
+    "execution_flow": [
+      "解析候选地点、日期时间和时区",
+      "计算太阳位置或日落",
+      "返回算法、角度、时间和输入假设"
+    ],
+    "limitations": [
+      "时区错误会直接改变结论",
+      "候选地点计算不能反向证明地点",
+      "历史历法/地平线遮挡需另行处理"
+    ],
+    "mcp_strategy": "纯本地函数；无需外部 API。"
+  },
+  "recommended_executor_contract": {
+    "required_result_fields": [
+      "status",
+      "provider_or_algorithm",
+      "request_parameters_used",
+      "retrieved_at",
+      "source_result_id_or_raw_ref",
+      "provenance",
+      "warnings"
+    ],
+    "status_values": [
+      "success",
+      "no_result",
+      "no_coverage",
+      "parameter_missing",
+      "unsupported",
+      "permission_denied",
+      "provider_error"
+    ],
+    "rules": [
+      "no_result 与 no_coverage、provider_error 必须分开",
+      "任何精确数值必须带单位、方法和源数据",
+      "调用失败不得生成看似成功的 Observation",
+      "密钥、令牌和内部文件系统路径不得进入训练样本"
+    ]
+  },
+  "new_tool_review_hint": {
+    "covered_execution_boundary": "solar_ephemeris_calculator",
+    "do_not_create_when": [
+      "只是对象、地区、查询词或参数不同",
+      "现有 Tool 的某个 operation 与本次动作共享同一执行器",
+      "只是基于已有结果进行比较、筛选、总结或推理"
+    ],
+    "consider_new_only_when": [
+      "现有31类执行器及所有 operation 均不能执行该动作",
+      "存在独立、可实现、可测试的真实后端边界",
+      "多个独立样本反复出现相同能力缺口",
+      "能够提供完整 schema、许可评估、失败语义和测试证据"
+    ]
+  }
+}

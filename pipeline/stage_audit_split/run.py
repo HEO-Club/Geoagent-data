@@ -8,7 +8,7 @@ import re
 from enum import Enum
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from pipeline.config import get_settings
 from pipeline.llm import call_structured
@@ -28,16 +28,68 @@ from pipeline.schemas.transcript import TranscriptSegment
 
 logger = logging.getLogger(__name__)
 
+
+def _unwrap_structured_enum(value: object) -> object:
+    """兼容部分 Anthropic relay 把枚举值包装成 type/primary 对象。"""
+
+    if not isinstance(value, dict):
+        return value
+    for key in (
+        "value",
+        "type",
+        "primary",
+        "role",
+        "kind",
+        "name",
+        "relation",
+        "containment",
+        "status",
+        "decision",
+        "category",
+        "label",
+        "classification",
+        "result",
+        "relationship",
+    ):
+        candidate = value.get(key)
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+        if isinstance(candidate, dict):
+            unwrapped = _unwrap_structured_enum(candidate)
+            if isinstance(unwrapped, str) and unwrapped.strip():
+                return unwrapped.strip()
+    scored = [
+        (str(key), float(score))
+        for key, score in value.items()
+        if isinstance(score, (int, float)) and not isinstance(score, bool)
+    ]
+    if scored:
+        return max(scored, key=lambda item: item[1])[0]
+    return value
+
 AUDIT_SYSTEM_HINT = (
     "你审核讲解视频是否适合蒸馏为「图片/静帧地理定位」训练样本。"
     "输入为带时间戳字幕与若干稀疏审计帧（仅供审核，不是训练图）；"
     "禁止使用 groundtruth；禁止按固定词表或渠道特判。\n"
     "拒识主问句：若去掉讲解/旁白/答案，是否仍存在需 agent 定位的图或场景？\n"
-    "- has_unresolved_target=false → decision=reject："
+    "本项目的原料本来就是已经给出完整解法和最终答案的讲解视频。判断时必须把时间"
+    "截在每道题的待定位原图首次出示处：假设 Agent 只能看到该原图和题面已知条件，"
+    "是否仍需要推理定位。后续人工解出、AI 已回答、答案已揭晓、视频以对战/复盘形式"
+    "呈现，都绝不能作为 reject 理由；应把后续内容当作要蒸馏的监督链。\n"
+    "定位输入不只限于静态照片：一段连续实拍现场同样是"
+    "有效的 video_derived 输入；只要讲解者正通过这些画面推断拍摄地点，就应 accept，"
+    "不能把被分析的现场画面说成普通素材。任务也不要求仅凭像素孤立求解：题面明确"
+    "给出的时间、属地、活动范围、文字提示等可作为 Agent 已知线索；存在目标实拍"
+    "且这些线索参与定位时仍是有效样本。只有完全不存在待定位视觉目标、地点纯粹是"
+    "文章/科普的讲述对象时才 reject。\n"
+    "- has_unresolved_target=true：去掉讲解/旁白/答案后，仍存在需 Agent 定位的视觉目标"
+    "（与视频后面是否已揭晓无关；本项目原料通常已揭晓）。\n"
+    "- has_unresolved_target=false：完全没有待定位视觉目标（地名科普、历史故事等）。\n"
+    "- decision 必须与 has_unresolved_target 一致："
+    "true→accept，false→reject。\n"
     "地名科普、历史故事、奇观介绍、地点仅为讲述对象、"
     "旁白「打开地图就能看到某某地」≠ 定位题。\n"
-    "- has_unresolved_target=true → decision=accept："
-    "存在一个或多个独立的待定位输入。\n"
+    "存在一个或多个独立的待定位输入时必须 accept。\n"
     "先理解整段定位过程，区分过程角色：\n"
     "- (A) 待定位实拍输入：人眼/相机拍到的、被定位的现场场景或静帧；\n"
     "- (B) 推理工具与核验步骤：用地图或影像底图比对、街景浏览确认等工具画面；\n"
@@ -201,6 +253,11 @@ class _LLMGeoTaskDraft(BaseModel):
     final_location_text: str = ""
     expected_image_count: int = Field(default=1, ge=1)
 
+    @field_validator("target_kind", "answer_status", mode="before")
+    @classmethod
+    def _unwrap_enum_fields(cls, value: object) -> object:
+        return _unwrap_structured_enum(value)
+
 
 class _LLMAuditDraft(BaseModel):
     """LLM 审核草稿。"""
@@ -211,6 +268,11 @@ class _LLMAuditDraft(BaseModel):
     tasks: list[_LLMGeoTaskDraft] = Field(default_factory=list)
     split_confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     needs_split_review: bool = False
+
+    @field_validator("decision", mode="before")
+    @classmethod
+    def _unwrap_decision(cls, value: object) -> object:
+        return _unwrap_structured_enum(value)
 
 
 class _LLMFrameVerdict(BaseModel):
@@ -224,6 +286,26 @@ class _LLMFrameVerdict(BaseModel):
     evidence_role: EvidenceRole = EvidenceRole.unknown
     chain_support_score: float = Field(default=0.5, ge=0.0, le=1.0)
     reason: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _recover_wrapped_json(cls, value: object) -> object:
+        if not isinstance(value, dict) or "kind" in value or len(value) != 1:
+            return value
+        key, payload = next(iter(value.items()))
+        if key == "{" and isinstance(payload, str):
+            try:
+                recovered = json.loads("{" + payload)
+            except json.JSONDecodeError:
+                return value
+            if isinstance(recovered, dict):
+                return recovered
+        return value
+
+    @field_validator("kind", "evidence_role", mode="before")
+    @classmethod
+    def _unwrap_enum_fields(cls, value: object) -> object:
+        return _unwrap_structured_enum(value)
 
 
 class _LLMEvidenceBrief(BaseModel):
@@ -239,6 +321,35 @@ class _LLMProcessInterval(BaseModel):
     end: float
     role: ProcessRole
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_time_aliases(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        copied = dict(value)
+        if "start" not in copied:
+            for alias in (
+                "start_s",
+                "start_sec",
+                "start_time",
+                "begin",
+                "begin_s",
+            ):
+                if alias in copied:
+                    copied["start"] = copied[alias]
+                    break
+        if "end" not in copied:
+            for alias in ("end_s", "end_sec", "end_time", "stop", "stop_s"):
+                if alias in copied:
+                    copied["end"] = copied[alias]
+                    break
+        return copied
+
+    @field_validator("role", mode="before")
+    @classmethod
+    def _unwrap_role(cls, value: object) -> object:
+        return _unwrap_structured_enum(value)
 
 
 class _LLMProcessTimeline(BaseModel):
@@ -278,6 +389,11 @@ class _LLMContainmentVerdict(BaseModel):
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     reason: str = ""
 
+    @field_validator("containment", mode="before")
+    @classmethod
+    def _unwrap_containment(cls, value: object) -> object:
+        return _unwrap_structured_enum(value)
+
 
 class PhotoRelation(str, Enum):
     """两帧是否同一张照片。"""
@@ -296,6 +412,11 @@ class _LLMPhotoRelationVerdict(BaseModel):
     relation: PhotoRelation = PhotoRelation.same_photo
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     reason: str = ""
+
+    @field_validator("relation", mode="before")
+    @classmethod
+    def _unwrap_relation(cls, value: object) -> object:
+        return _unwrap_structured_enum(value)
 
 
 class _LLMTaskMergeResult(BaseModel):
@@ -688,6 +809,52 @@ def _normalize_task_window(
     return t0, t1
 
 
+def _expand_window_to_explicit_answer_segment(
+    raw: _LLMGeoTaskDraft,
+    *,
+    time_start: float,
+    time_end: float,
+    final_location_text: str,
+    transcript: list[TranscriptSegment],
+    duration: float,
+) -> tuple[float, float, int | None, int | None]:
+    """确保蒸馏窗包含字幕中明确写出最终地点的揭晓段。
+
+    这里只接受去标点后的完整地点字符串包含关系，不做模糊猜测；找不到时
+    保持模型边界，避免把相邻题答案扩进来。
+    """
+    compact_location = re.sub(r"[\W_]+", "", final_location_text, flags=re.UNICODE)
+    seg0 = getattr(raw, "segment_start_idx", None)
+    seg1 = getattr(raw, "segment_end_idx", None)
+    resolved0 = int(seg0) if isinstance(seg0, int) and 0 <= seg0 < len(transcript) else None
+    resolved1 = int(seg1) if isinstance(seg1, int) and 0 <= seg1 < len(transcript) else None
+    if len(compact_location) < 4:
+        return time_start, time_end, resolved0, resolved1
+    matches = [
+        index
+        for index, segment in enumerate(transcript)
+        if compact_location
+        in re.sub(r"[\W_]+", "", segment.text, flags=re.UNICODE)
+    ]
+    if not matches:
+        return time_start, time_end, resolved0, resolved1
+    # 优先选择离当前蒸馏窗最近的完整答案段。
+    index = min(
+        matches,
+        key=lambda item: min(
+            abs(transcript[item].start - time_end),
+            abs(transcript[item].end - time_start),
+        ),
+    )
+    segment = transcript[index]
+    max_time = max(0.0, float(duration) - 0.001) if duration > 0 else segment.end
+    expanded_start = min(time_start, max(0.0, float(segment.start)))
+    expanded_end = max(time_end, min(max_time, float(segment.end)))
+    resolved0 = index if resolved0 is None else min(resolved0, index)
+    resolved1 = index if resolved1 is None else max(resolved1, index)
+    return expanded_start, expanded_end, resolved0, resolved1
+
+
 def _resolve_display_window(
     raw: _LLMGeoTaskDraft,
     *,
@@ -812,6 +979,27 @@ def _resolve_sample_windows(
         raw, distill_start=distill_start, distill_end=distill_end
     )
     return [fallback], clipped
+
+
+def _prepend_boundary_lookback_window(
+    sample_windows: list[tuple[float, float]],
+    *,
+    task_start: float,
+    display_time_start: float | None,
+    tolerance: float,
+) -> list[tuple[float, float]]:
+    """在 ASR/task 起点前补一个仅供视觉验收的候选窗。"""
+    lookback = max(0.0, float(tolerance))
+    start = max(0.0, float(task_start))
+    if (
+        display_time_start is not None
+        or lookback <= 0
+        or start <= 0
+        or not sample_windows
+        or min(window[0] for window in sample_windows) < start - 1e-6
+    ):
+        return sample_windows
+    return [(max(0.0, start - lookback), start), *sample_windows]
 
 
 def _dense_sample_windows(
@@ -1181,9 +1369,9 @@ def _promote_selected_images(
             else f"{task_id}_{src.name}"
         )
         dest = dest_dir / name
-        if src.is_file() and dest.resolve() != src.resolve():
-            dest.write_bytes(src.read_bytes())
-        elif not dest.is_file() and src.is_file():
+        if src.is_file() and (
+            dest.resolve() != src.resolve() or not dest.is_file()
+        ):
             dest.write_bytes(src.read_bytes())
         final = str(dest.resolve()) if dest.is_file() else str(src.resolve())
         item.image_path = final
@@ -1470,6 +1658,16 @@ def _materialize_task_images(
         distill_start=t0,
         distill_end=t1,
         intervals=process_intervals,
+    )
+    # ASR 段落常在原图已经出现数秒后才开始。模型没有给出更早 display
+    # window、且首个 show_source 紧贴蒸馏窗起点时，把前置容差区仅作为
+    # 候选窗交给同一视觉 brief 验收；它不是强制选图，也不能绕过泄露/
+    # process_tool 过滤。这样可找回 892s 已全屏出现、900s 才开始旁白的原图。
+    sample_windows = _prepend_boundary_lookback_window(
+        sample_windows,
+        task_start=t0,
+        display_time_start=getattr(raw, "display_time_start", None),
+        tolerance=float(settings.AUDIT_TASK_BOUNDARY_TOLERANCE_SEC),
     )
     sample_stamps = _dense_sample_windows(
         sample_windows,
@@ -1777,6 +1975,37 @@ def _materialize_task_images(
         process_intervals,
     )
 
+
+def compose_image_selection_note(
+    *,
+    status: TaskStatus,
+    status_reason: str = "",
+    assessments: list[KeyframeAssessment] | None = None,
+) -> str:
+    """程序化组装选图评价 note（质量等级 + 选中帧明细）。
+
+    ``accepted`` / ``needs_review`` 都必须有非空 note；不另调 VLM。
+    """
+    grade = status.value
+    selected = [item for item in (assessments or []) if item.selected]
+    parts: list[str] = [f"选图质量等级={grade}", f"选中张数={len(selected)}"]
+    reason = (status_reason or "").strip()
+    if reason:
+        parts.append(f"选图原因: {reason}")
+    if not selected:
+        parts.append("选中帧: 无")
+    else:
+        parts.append("选中帧明细:")
+        for idx, item in enumerate(selected, start=1):
+            frame_reason = (item.reason or "").strip() or "（无逐帧理由）"
+            parts.append(
+                f"- [{idx}] t={item.timestamp:.3f}s quality={item.quality_score:.2f} "
+                f"overlay={item.tutorial_overlay} clean={item.clean_source} "
+                f"support={item.chain_support_score:.2f} reason={frame_reason}"
+            )
+    return "\n".join(parts)
+
+
 def slice_transcript_for_task(
     transcript: list[TranscriptSegment],
     task: GeoTaskSpec,
@@ -1794,7 +2023,7 @@ def slice_transcript_for_task(
     sliced = [
         seg
         for seg in transcript
-        if seg.end >= task.time_start - 1e-6 and seg.start <= task.time_end + 1e-6
+        if seg.end > task.time_start + 1e-6 and seg.start < task.time_end - 1e-6
     ]
     return sliced if sliced else list(transcript)
 
@@ -1916,7 +2145,21 @@ def run_audit_split(
             lane="vlm",
         )
 
+    # 字段名易被模型理解成「视频未揭晓」；若 decision=accept 且已给 tasks，
+    # 以 decision/tasks 为准，不因 has_unresolved_target=false 整片强制拒识。
     force_reject = not bool(draft.has_unresolved_target)
+    accept_with_tasks = (
+        draft.decision == AuditDecision.accept and bool(getattr(draft, "tasks", None))
+    )
+    if force_reject and accept_with_tasks:
+        logger.warning(
+            "ignore has_unresolved_target=false for %s: decision=accept with %d tasks",
+            video_id,
+            len(draft.tasks),
+        )
+        force_reject = False
+        draft.has_unresolved_target = True
+
     if draft.decision == AuditDecision.reject or force_reject:
         reason = draft.reason.strip() or "非地理定位任务"
         if force_reject and draft.decision != AuditDecision.reject:
@@ -1987,6 +2230,19 @@ def run_audit_split(
             if not isinstance(answer_status, AnswerStatus):
                 answer_status = AnswerStatus(str(answer_status))
             final_location = str(getattr(raw, "final_location_text", "") or "").strip()
+            resolved_seg0 = getattr(raw, "segment_start_idx", None)
+            resolved_seg1 = getattr(raw, "segment_end_idx", None)
+            if answer_status == AnswerStatus.resolved and final_location:
+                t0, t1, resolved_seg0, resolved_seg1 = (
+                    _expand_window_to_explicit_answer_segment(
+                        raw,
+                        time_start=t0,
+                        time_end=t1,
+                        final_location_text=final_location,
+                        transcript=transcript,
+                        duration=duration,
+                    )
+                )
             hard_cap = max_kf_cfg
             status = TaskStatus.accepted
             status_reason = ""
@@ -2039,6 +2295,14 @@ def run_audit_split(
 
             # multi_target / expected_image_count 记录实选结果，不作预定配额
             multi = len(paths) > 1
+            # rejected（答案歧义/无解）仍可不写选图明细；其余均写评价 note
+            selection_note = ""
+            if status != TaskStatus.rejected:
+                selection_note = compose_image_selection_note(
+                    status=status,
+                    status_reason=status_reason,
+                    assessments=assessments,
+                )
             task = GeoTaskSpec(
                 task_id=task_id,
                 time_start=t0,
@@ -2047,8 +2311,8 @@ def run_audit_split(
                 keyframe_timestamps=stamps,
                 image_paths=paths,
                 multi_target_images=multi,
-                segment_start_idx=getattr(raw, "segment_start_idx", None),
-                segment_end_idx=getattr(raw, "segment_end_idx", None),
+                segment_start_idx=resolved_seg0,
+                segment_end_idx=resolved_seg1,
                 task_summary=str(getattr(raw, "task_summary", "") or "").strip(),
                 visual_evidence_brief=visual_brief,
                 process_intervals=process_intervals,
@@ -2058,6 +2322,7 @@ def run_audit_split(
                 final_location_text=final_location,
                 expected_image_count=max(1, len(paths)) if paths else 1,
                 frame_assessments=assessments,
+                image_selection_note=selection_note,
             )
             tasks.append(task)
             _write_json(task_checkpoint, task)

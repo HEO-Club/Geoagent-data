@@ -436,7 +436,7 @@ def _validate_anthropic_tool_payload(
                 return response_model.model_validate(candidate)
             except ValidationError:
                 pass
-        raise direct_error
+        raise direct_error  # noqa: TRY201
 
 
 def _create_anthropic_structured(
@@ -449,19 +449,19 @@ def _create_anthropic_structured(
 ) -> T:
     """直接调用 Anthropic Messages，并自行解析 relay ToolUseBlock。"""
     tool_name = response_model.__name__
-    kwargs = dict(
-        model=endpoint.model,
-        max_tokens=endpoint.max_output_tokens,
-        messages=[{"role": "user", "content": content}],
-        tools=[
+    kwargs = {
+        "model": endpoint.model,
+        "max_tokens": endpoint.max_output_tokens,
+        "messages": [{"role": "user", "content": content}],
+        "tools": [
             {
                 "name": tool_name,
                 "description": "Return the requested structured result.",
                 "input_schema": response_model.model_json_schema(),
             }
         ],
-        tool_choice={"type": "tool", "name": tool_name},
-    )
+        "tool_choice": {"type": "tool", "name": tool_name},
+    }
     use_stream = (
         get_settings().LLM_ANTHROPIC_STREAM
         if stream_override is None
@@ -497,10 +497,22 @@ def _create_anthropic_structured(
                 f"after {float(endpoint.timeout_sec):.1f}s"
             )
         if errors:
-            raise errors[0]
-        if not responses:
+            stream_error = errors[0]
+            if isinstance(stream_error, AssertionError):
+                # 部分 Anthropic relay 会正常发送 tool_use，却缺少 SDK 用于构造
+                # final_message_snapshot 的最后一个流事件。该错误不是业务 Schema
+                # 错误；在同一已授权端点做一次非流式重试，避免 Stage 3/4 失败开放。
+                logger.warning(
+                    "Anthropic SSE missing final snapshot; retrying non-stream "
+                    "on the same endpoint"
+                )
+                response = client.messages.create(**kwargs)
+            else:
+                raise stream_error
+        elif not responses:
             raise RuntimeError("Anthropic SSE 未返回最终消息")
-        response = responses[0]
+        else:
+            response = responses[0]
     else:
         response = client.messages.create(**kwargs)
     for block in response.content:

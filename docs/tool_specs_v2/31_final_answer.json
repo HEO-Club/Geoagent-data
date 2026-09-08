@@ -1,0 +1,156 @@
+{
+  "schema_version": "geoagent_tool_implementation_spec_v1",
+  "ordinal": 31,
+  "research_date": "2026-08-31",
+  "research_status": "design_researched_not_runtime_verified",
+  "catalog_source": "canonical_tool_catalog_v2.json",
+  "canonical_tool": {
+    "canonical": {
+      "name": "final_answer",
+      "description": "提交最终地点。",
+      "executor": "agent_runtime",
+      "usage": "仅作为末步提交；params 必须且只能包含 location，Observation 为 null。",
+      "operations": [
+        {
+          "name": "submit",
+          "description": "提交最终地点字符串或地点数组",
+          "aliases": [
+            "answer"
+          ],
+          "input_schema": {
+            "description": "提交最终地点；单题为字符串，多题为按讲解顺序排列的字符串数组。",
+            "fields": [
+              {
+                "name": "location",
+                "type": "string_or_array",
+                "required": true,
+                "requirement_level": "execution",
+                "description": "最终地点字符串或地点数组，不得使用 result/site 等替代字段。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 location；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "地点",
+                  "答案"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              }
+            ],
+            "required_any": [],
+            "mutually_exclusive": [],
+            "allow_extra": true,
+            "examples": [
+              {
+                "location": "上海市杨浦大桥"
+              }
+            ]
+          }
+        }
+      ],
+      "params": [
+        {
+          "name": "location",
+          "type": "string_or_string_array",
+          "required": true,
+          "description": "最终地点；多题按讲解顺序使用字符串数组",
+          "allowed_values": []
+        }
+      ],
+      "observation_fields": [],
+      "is_terminal": true
+    },
+    "variants": [],
+    "variant_operations": {}
+  },
+  "parameter_guide": {
+    "submit": [
+      {
+        "name": "location",
+        "type": "string_or_array",
+        "required": true,
+        "requirement_level": "execution",
+        "purpose": "最终地点字符串或地点数组，不得使用 result/site 等替代字段。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 location；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "地点",
+          "答案"
+        ],
+        "validation_note": "execution 级字段缺失时不得执行；按 how_to_obtain 先获取真实值。"
+      }
+    ]
+  },
+  "implementation_research": {
+    "architecture": "local_contract_validator",
+    "backends": [
+      {
+        "name": "GeoAgent local validator",
+        "kind": "local_code",
+        "role": "校验并提交 location 字符串或有序数组",
+        "official_url": "https://github.com/kesizar/Geoagent-data",
+        "authentication": "无",
+        "license_note": "使用前核对软件与数据许可。"
+      }
+    ],
+    "execution_flow": [
+      "确认它是末步且 observation=null",
+      "校验 location 类型、非空和题目数量",
+      "记录最终答案，不做新的地理推理"
+    ],
+    "limitations": [
+      "格式通过不等于地点正确",
+      "不得补造精细坐标",
+      "多题答案必须保持讲解顺序"
+    ],
+    "mcp_strategy": "保留为本地终端 Tool，不需要外部 API 或 MCP。"
+  },
+  "recommended_executor_contract": {
+    "required_result_fields": [
+      "status",
+      "provider_or_algorithm",
+      "request_parameters_used",
+      "retrieved_at",
+      "source_result_id_or_raw_ref",
+      "provenance",
+      "warnings"
+    ],
+    "status_values": [
+      "success",
+      "no_result",
+      "no_coverage",
+      "parameter_missing",
+      "unsupported",
+      "permission_denied",
+      "provider_error"
+    ],
+    "rules": [
+      "no_result 与 no_coverage、provider_error 必须分开",
+      "任何精确数值必须带单位、方法和源数据",
+      "调用失败不得生成看似成功的 Observation",
+      "密钥、令牌和内部文件系统路径不得进入训练样本"
+    ]
+  },
+  "new_tool_review_hint": {
+    "covered_execution_boundary": "agent_runtime",
+    "do_not_create_when": [
+      "只是对象、地区、查询词或参数不同",
+      "现有 Tool 的某个 operation 与本次动作共享同一执行器",
+      "只是基于已有结果进行比较、筛选、总结或推理"
+    ],
+    "consider_new_only_when": [
+      "现有31类执行器及所有 operation 均不能执行该动作",
+      "存在独立、可实现、可测试的真实后端边界",
+      "多个独立样本反复出现相同能力缺口",
+      "能够提供完整 schema、许可评估、失败语义和测试证据"
+    ]
+  }
+}

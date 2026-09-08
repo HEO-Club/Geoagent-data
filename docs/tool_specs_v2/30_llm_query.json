@@ -1,0 +1,438 @@
+{
+  "schema_version": "geoagent_tool_implementation_spec_v1",
+  "ordinal": 30,
+  "research_date": "2026-08-31",
+  "research_status": "design_researched_not_runtime_verified",
+  "catalog_source": "canonical_tool_catalog_v2.json",
+  "canonical_tool": {
+    "canonical": {
+      "name": "llm_query",
+      "description": "向外部模型咨询或生成候选清单。",
+      "executor": "external_llm_service",
+      "usage": "仅在需要访问该真实执行器并获得新证据时调用；先选择 operation，再按其 input_schema 填 inputs。缺少执行级参数时按 acquisition_hint 获取，不得编造坐标、文件、会话或前置结果。",
+      "operations": [
+        {
+          "name": "consult",
+          "description": "把问题或上下文提交给外部推理模型并取得回答",
+          "aliases": [],
+          "input_schema": {
+            "description": "把明确问题及必要上下文提交给外部模型；当前 Agent 自身思考不得伪装成本调用。",
+            "fields": [
+              {
+                "name": "prompt",
+                "type": "string",
+                "required": true,
+                "requirement_level": "execution",
+                "description": "发送给外部模型的明确问题或指令。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 prompt；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "问题",
+                  "指令",
+                  "query"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "context",
+                "type": "string_or_object",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "允许提供给外部模型的上下文。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 context；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "上下文",
+                  "材料"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "model",
+                "type": "string",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "可选外部模型标识。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 model；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "模型"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              }
+            ],
+            "required_any": [],
+            "mutually_exclusive": [],
+            "allow_extra": true,
+            "examples": []
+          }
+        },
+        {
+          "name": "enumerate",
+          "description": "要求外部模型补充候选、对象清单或结构化条目",
+          "aliases": [],
+          "input_schema": {
+            "description": "要求外部模型生成候选或结构化清单。",
+            "fields": [
+              {
+                "name": "prompt",
+                "type": "string",
+                "required": true,
+                "requirement_level": "execution",
+                "description": "枚举任务的明确指令。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 prompt；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "问题",
+                  "指令",
+                  "query"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "item_type",
+                "type": "string",
+                "required": true,
+                "requirement_level": "execution",
+                "description": "需要枚举的对象类型。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 item_type；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "对象类型",
+                  "候选类型",
+                  "type"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "constraints",
+                "type": "string_or_object",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "候选必须满足的约束。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 constraints；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "约束",
+                  "筛选条件"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "max_items",
+                "type": "integer",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "最多返回条目数。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 max_items；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "数量",
+                  "limit"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": 1.0,
+                "maximum": 500.0,
+                "example": null
+              }
+            ],
+            "required_any": [],
+            "mutually_exclusive": [],
+            "allow_extra": true,
+            "examples": []
+          }
+        }
+      ],
+      "params": [
+        {
+          "name": "operation",
+          "type": "string",
+          "required": true,
+          "description": "本次调用执行的 operation",
+          "allowed_values": [
+            "consult",
+            "enumerate"
+          ]
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "required": true,
+          "description": "本次调用要补齐的证据缺口，不得伪装成工具返回",
+          "allowed_values": []
+        },
+        {
+          "name": "inputs",
+          "type": "object",
+          "required": true,
+          "description": "严格按 operation.input_schema 传给执行器的真实输入",
+          "allowed_values": []
+        }
+      ],
+      "observation_fields": [
+        {
+          "name": "result",
+          "type": "object",
+          "nullable": true,
+          "description": "执行器实际返回；不得写入假设、计划或模型自行补全的数据"
+        }
+      ],
+      "is_terminal": false
+    },
+    "variants": [
+      "AI推理咨询",
+      "ask_external_llm",
+      "consult_reasoning_model"
+    ],
+    "variant_operations": {
+      "ai推理咨询": "consult",
+      "ask_external_llm": "consult",
+      "consult_reasoning_model": "consult"
+    }
+  },
+  "parameter_guide": {
+    "consult": [
+      {
+        "name": "prompt",
+        "type": "string",
+        "required": true,
+        "requirement_level": "execution",
+        "purpose": "发送给外部模型的明确问题或指令。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 prompt；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "问题",
+          "指令",
+          "query"
+        ],
+        "validation_note": "execution 级字段缺失时不得执行；按 how_to_obtain 先获取真实值。"
+      },
+      {
+        "name": "context",
+        "type": "string_or_object",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "允许提供给外部模型的上下文。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 context；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "上下文",
+          "材料"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "model",
+        "type": "string",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "可选外部模型标识。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 model；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "模型"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      }
+    ],
+    "enumerate": [
+      {
+        "name": "prompt",
+        "type": "string",
+        "required": true,
+        "requirement_level": "execution",
+        "purpose": "枚举任务的明确指令。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 prompt；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "问题",
+          "指令",
+          "query"
+        ],
+        "validation_note": "execution 级字段缺失时不得执行；按 how_to_obtain 先获取真实值。"
+      },
+      {
+        "name": "item_type",
+        "type": "string",
+        "required": true,
+        "requirement_level": "execution",
+        "purpose": "需要枚举的对象类型。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 item_type；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "对象类型",
+          "候选类型",
+          "type"
+        ],
+        "validation_note": "execution 级字段缺失时不得执行；按 how_to_obtain 先获取真实值。"
+      },
+      {
+        "name": "constraints",
+        "type": "string_or_object",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "候选必须满足的约束。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 constraints；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "约束",
+          "筛选条件"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "max_items",
+        "type": "integer",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "最多返回条目数。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 max_items；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": 1.0,
+        "maximum": 500.0,
+        "example": null,
+        "aliases": [
+          "数量",
+          "limit"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      }
+    ]
+  },
+  "implementation_research": {
+    "architecture": "existing_model_adapter",
+    "backends": [
+      {
+        "name": "Anthropic Messages API",
+        "kind": "external_api",
+        "role": "外部模型咨询和候选枚举",
+        "official_url": "https://platform.claude.com/docs/en/api/overview",
+        "authentication": "Anthropic API Key 或已授权兼容中转凭证",
+        "license_note": "使用前核对软件与数据许可。"
+      },
+      {
+        "name": "MCP Python SDK",
+        "kind": "local_protocol_sdk",
+        "role": "把受控本地/外部能力暴露为 MCP",
+        "official_url": "https://py.sdk.modelcontextprotocol.io/",
+        "authentication": "无",
+        "license_note": "使用前核对软件与数据许可。"
+      }
+    ],
+    "execution_flow": [
+      "最小化 context 并选择明确模型",
+      "结构化返回建议/候选",
+      "记录 provider、实际模型、请求版本和失败状态"
+    ],
+    "limitations": [
+      "LLM 建议不是搜索或数据库回执",
+      "中转别名不自动证明上游真实模型身份",
+      "普通内部思考不应为凑 Tool 而调用"
+    ],
+    "mcp_strategy": "复用现有 pipeline.llm；密钥仅保存在本地配置，不进入样本。"
+  },
+  "recommended_executor_contract": {
+    "required_result_fields": [
+      "status",
+      "provider_or_algorithm",
+      "request_parameters_used",
+      "retrieved_at",
+      "source_result_id_or_raw_ref",
+      "provenance",
+      "warnings"
+    ],
+    "status_values": [
+      "success",
+      "no_result",
+      "no_coverage",
+      "parameter_missing",
+      "unsupported",
+      "permission_denied",
+      "provider_error"
+    ],
+    "rules": [
+      "no_result 与 no_coverage、provider_error 必须分开",
+      "任何精确数值必须带单位、方法和源数据",
+      "调用失败不得生成看似成功的 Observation",
+      "密钥、令牌和内部文件系统路径不得进入训练样本"
+    ]
+  },
+  "new_tool_review_hint": {
+    "covered_execution_boundary": "external_llm_service",
+    "do_not_create_when": [
+      "只是对象、地区、查询词或参数不同",
+      "现有 Tool 的某个 operation 与本次动作共享同一执行器",
+      "只是基于已有结果进行比较、筛选、总结或推理"
+    ],
+    "consider_new_only_when": [
+      "现有31类执行器及所有 operation 均不能执行该动作",
+      "存在独立、可实现、可测试的真实后端边界",
+      "多个独立样本反复出现相同能力缺口",
+      "能够提供完整 schema、许可评估、失败语义和测试证据"
+    ]
+  }
+}
