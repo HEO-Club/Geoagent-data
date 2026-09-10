@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 import tempfile
 import threading
 from pathlib import Path
@@ -64,6 +65,7 @@ class FilesystemImageStore:
         self._paths: dict[str, Path] = {}
         self._counter = 0
         self._lock = threading.RLock()
+        self._restore_derived_images()
 
     def resolve(self, ref: str) -> Path:
         with self._lock:
@@ -108,6 +110,19 @@ class FilesystemImageStore:
             image_id = f"img_{self._counter:04d}"
             if image_id not in self._paths:
                 return image_id
+
+    def _restore_derived_images(self) -> None:
+        """重启后恢复 img_XXXX 派生图引用，供 harness 断点续跑。"""
+
+        for path in sorted(self.root.glob("img_*.*")):
+            if not path.is_file():
+                continue
+            image_id = path.stem
+            match = re.fullmatch(r"img_(\d+)", image_id)
+            if match is None:
+                continue
+            self._paths[image_id] = path.resolve()
+            self._counter = max(self._counter, int(match.group(1)))
 
 
 def resolve_image_ref(

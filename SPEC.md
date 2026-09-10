@@ -173,6 +173,14 @@ def run_stage4(*, task: GeoTaskSpec, transcript: list[TranscriptSegment],
 - 检测为 `new_operation`：目标 operation 已在父执行器上则按 `map`；否则步骤归到父 canonical、使用临时 operation，不 `add_operation`、不写提案、不改官方目录；mapping 标记 `temporary_operations`，阶段4 `notes` 必须汇报；临时操作不单独压 `decision`。父执行器不在目录时退化为临时 tool
 - 高置信确认没有外部执行器的伪 Tool 可降回 reasoning，并写入 `stage3_tool_mapping.json`；低置信时不得静默丢失
 
+### 6.1 真实 Tool Runtime Harness（非蒸馏 Stage）
+
+`tool/runtime/harness.py` 提供 Stage 3 后可选的真实执行/复核层。它读取标准 `Trajectory`，忽略其中蒸馏 Observation，顺序执行 canonical `tool_call`，并把真实回执写到独立 `data/tool_runs/{safe_trajectory_id}_{id_hash}/harness_report.json`；不得覆盖 Stage 2/3 产物，也不得默认接入 Stage 1–4 数据生成流水线。
+
+Harness 必须在调用前完成外层合同、运行时引用、Canonical input schema 和凭证泄漏检查；支持 `$current_image`、`$previous_tool_result`、`$active_area`、`$active_session` 及 `$step_N_tool_result.path[0]` 等受限引用。每步调用前后均落盘，持久化 `result_id` 和派生图片，按轨迹、目录、执行器代码与运行上下文指纹恢复；同一 trajectory 只允许单 writer。历史数据重放差异只进入审核报告，不能自动改写原 Observation 或训练样本。
+
+详细合同与 CLI 用法见 `docs/TOOL_RUNTIME_HARNESS.md`。
+
 ## 7. 测试
 
 - 全部测试位于 `tests/`
