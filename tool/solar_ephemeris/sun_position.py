@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from tool.contract import Observation, RuntimeContext, not_implemented
+from tool.contract import Observation, RuntimeContext
+from tool.solar_ephemeris._ephemeris import execute_sun_position
 
 
 def execute(
@@ -13,12 +14,6 @@ def execute(
     inputs: dict[str, Any],
     ctx: RuntimeContext | None = None,
 ) -> Observation:
-    """执行 solar_ephemeris.sun_position。尚未接入真实执行器。"""
+    """执行 solar_ephemeris.sun_position：pvlib NREL SPA 本地太阳位置。"""
 
-    return not_implemented(
-        'solar_ephemeris',
-        'sun_position',
-        purpose=purpose,
-        inputs=inputs,
-        ctx=ctx,
-    )
+    return execute_sun_position(purpose=purpose, inputs=inputs, ctx=ctx)

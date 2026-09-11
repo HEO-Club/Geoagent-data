@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from tool.contract import Observation, RuntimeContext, not_implemented
+from tool.contract import Observation, RuntimeContext
+from tool.video_frame_extract._extract import execute_frame_retrieve
 
 
 def execute(
@@ -13,12 +14,6 @@ def execute(
     inputs: dict[str, Any],
     ctx: RuntimeContext | None = None,
 ) -> Observation:
-    """执行 video_frame_extract.frame_retrieve。尚未接入真实执行器。"""
+    """执行 video_frame_extract.frame_retrieve：按时间戳抽帧并登记图片 ID。"""
 
-    return not_implemented(
-        'video_frame_extract',
-        'frame_retrieve',
-        purpose=purpose,
-        inputs=inputs,
-        ctx=ctx,
-    )
+    return execute_frame_retrieve(purpose=purpose, inputs=inputs, ctx=ctx)

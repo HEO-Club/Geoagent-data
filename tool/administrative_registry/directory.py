@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from tool.contract import Observation, RuntimeContext, not_implemented
+from tool.contract import Observation, RuntimeContext
+from tool.administrative_registry._registry import execute_directory
 
 
 def execute(
@@ -13,12 +14,6 @@ def execute(
     inputs: dict[str, Any],
     ctx: RuntimeContext | None = None,
 ) -> Observation:
-    """执行 administrative_registry.directory。尚未接入真实执行器。"""
+    """执行 administrative_registry.directory：GeoNames 对象名录检索。"""
 
-    return not_implemented(
-        'administrative_registry',
-        'directory',
-        purpose=purpose,
-        inputs=inputs,
-        ctx=ctx,
-    )
+    return execute_directory(purpose=purpose, inputs=inputs, ctx=ctx)

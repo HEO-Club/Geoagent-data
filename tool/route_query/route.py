@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from tool.contract import Observation, RuntimeContext, not_implemented
+from tool.contract import Observation, RuntimeContext
+from tool.route_query._route import execute_route
 
 
 def execute(
@@ -13,12 +14,6 @@ def execute(
     inputs: dict[str, Any],
     ctx: RuntimeContext | None = None,
 ) -> Observation:
-    """执行 route_query.route。尚未接入真实执行器。"""
+    """执行 route_query.route：高德路径规划，可选自建 OSRM。"""
 
-    return not_implemented(
-        'route_query',
-        'route',
-        purpose=purpose,
-        inputs=inputs,
-        ctx=ctx,
-    )
+    return execute_route(purpose=purpose, inputs=inputs, ctx=ctx)

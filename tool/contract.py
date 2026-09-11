@@ -40,6 +40,24 @@ class Observation:
     session: str | None = None
     error: str | None = None
     error_code: str | None = None
+    extensions: dict[str, Any] = field(default_factory=dict)
+
+
+def declared_inputs(inputs: dict[str, Any], *names: str) -> dict[str, Any]:
+    """按当前 operation 的声明字段截取 inputs；未声明键放入 extensions。"""
+
+    declared = {name: inputs[name] for name in names if name in inputs}
+    extra: dict[str, Any] = {}
+    existing = inputs.get("extensions")
+    if isinstance(existing, dict):
+        extra.update(existing)
+    for key, value in inputs.items():
+        if key in names or key == "extensions":
+            continue
+        extra[key] = value
+    if extra:
+        declared["extensions"] = extra
+    return declared
 
 
 def not_implemented(

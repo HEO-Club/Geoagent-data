@@ -2984,6 +2984,44 @@
                   "minimum": null,
                   "maximum": null,
                   "example": null
+                },
+                {
+                  "name": "city",
+                  "type": "string",
+                  "required": false,
+                  "requirement_level": "execution",
+                  "description": "起点所在城市；travel_mode 为 transit 时高德公交必填。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 city；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "城市",
+                    "起点城市"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": "郑州"
+                },
+                {
+                  "name": "cityd",
+                  "type": "string",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "跨城公交时的目的地城市编码。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 cityd；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "目的地城市",
+                    "终点城市"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": "洛阳"
                 }
               ],
               "required_any": [],
@@ -7409,6 +7447,26 @@
                   "minimum": null,
                   "maximum": null,
                   "example": null
+                },
+                {
+                  "name": "icao24",
+                  "type": "string",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "飞机 24 位地址，6 位十六进制。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 icao24；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "icao",
+                    "飞机地址",
+                    "transponder"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": "3c675a"
                 }
               ],
               "required_any": [
@@ -7416,7 +7474,8 @@
                   "area",
                   "airports",
                   "route",
-                  "flight_number"
+                  "flight_number",
+                  "icao24"
                 ]
               ],
               "mutually_exclusive": [],
@@ -7522,13 +7581,34 @@
                   "minimum": null,
                   "maximum": null,
                   "example": null
+                },
+                {
+                  "name": "icao24",
+                  "type": "string",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "飞机 24 位地址，6 位十六进制。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 icao24；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "icao",
+                    "飞机地址",
+                    "transponder"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": "3c675a"
                 }
               ],
               "required_any": [
                 [
                   "area",
                   "flight_number",
-                  "airports"
+                  "airports",
+                  "icao24"
                 ]
               ],
               "mutually_exclusive": [],

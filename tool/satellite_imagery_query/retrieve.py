@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from tool.contract import Observation, RuntimeContext, not_implemented
+from tool.contract import Observation, RuntimeContext
+from tool.satellite_imagery_query._query import execute_retrieve
 
 
 def execute(
@@ -13,12 +14,6 @@ def execute(
     inputs: dict[str, Any],
     ctx: RuntimeContext | None = None,
 ) -> Observation:
-    """执行 satellite_imagery_query.retrieve。尚未接入真实执行器。"""
+    """执行 satellite_imagery_query.retrieve：Copernicus 目录检索后取裁剪真彩预览。"""
 
-    return not_implemented(
-        'satellite_imagery_query',
-        'retrieve',
-        purpose=purpose,
-        inputs=inputs,
-        ctx=ctx,
-    )
+    return execute_retrieve(purpose=purpose, inputs=inputs, ctx=ctx)

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from tool.contract import Observation, RuntimeContext, not_implemented
+from tool.contract import Observation, RuntimeContext
+from tool.terrain_analysis._terrain import execute_terrain
 
 
 def execute(
@@ -13,12 +14,6 @@ def execute(
     inputs: dict[str, Any],
     ctx: RuntimeContext | None = None,
 ) -> Observation:
-    """执行 terrain_analysis.terrain。尚未接入真实执行器。"""
+    """执行 terrain_analysis.terrain：Horn DEM 高程/坡度/坡向/剖面。"""
 
-    return not_implemented(
-        'terrain_analysis',
-        'terrain',
-        purpose=purpose,
-        inputs=inputs,
-        ctx=ctx,
-    )
+    return execute_terrain(purpose=purpose, inputs=inputs, ctx=ctx)

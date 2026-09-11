@@ -14,7 +14,8 @@ from typing import Any, Protocol, runtime_checkable
 
 from PIL import Image
 
-from tool.contract import Observation, RuntimeContext
+from tool._gate import load_tool_dotenv as _load_dotenv
+from tool.contract import Observation, RuntimeContext, declared_inputs
 from tool.image_edit._transform import RegionError, _check_pixel_count, _parse_region, _try_json
 from tool.runtime.image_store import ImageResolveError, put_image, resolve_image_ref
 
@@ -56,14 +57,12 @@ _ASSUMPTIONS = [
     "局部搜索先在本地裁剪再提交，未对全网自行建索引",
 ]
 
-
 class SearchInputError(Exception):
     """image / engines / top_k 无法按合同解析。"""
 
     def __init__(self, message: str, error_code: str) -> None:
         super().__init__(message)
         self.error_code = error_code
-
 
 class EngineUnavailableError(Exception):
     """真实搜图引擎未配置、被闸门拒绝或调用失败。"""
@@ -72,14 +71,12 @@ class EngineUnavailableError(Exception):
         super().__init__(message)
         self.error_code = error_code
 
-
 @runtime_checkable
 class ReverseImageSearchEngine(Protocol):
     """可注入的反向搜图引擎；测试用 extras['reverse_image_search_engine'] 替换。"""
 
     def search(self, image_bytes: bytes, *, top_k: int) -> dict[str, Any]:
         """提交图片字节，返回 Web Detection 风格载荷。"""
-
 
 class GoogleVisionWebDetectionEngine:
     """Google Cloud Vision WEB_DETECTION 适配器；密钥与端点只读环境变量。"""
@@ -137,7 +134,6 @@ class GoogleVisionWebDetectionEngine:
                 f"Vision Web Detection 调用失败: {exc}",
             ) from exc
         return _extract_web_detection(raw)
-
 
 class SerpapiGoogleLensEngine:
     """SerpAPI Google Lens 适配器：先上传本地图拿 image_id，再搜视觉匹配。"""
@@ -205,7 +201,6 @@ class SerpapiGoogleLensEngine:
             raise EngineUnavailableError("SerpAPI Google Lens 回执不是 JSON 对象")
         return raw
 
-
 def execute_search(
     *,
     purpose: str,
@@ -216,7 +211,6 @@ def execute_search(
 
     del purpose
     return _run_search("search", inputs, ctx)
-
 
 def execute_search_crop(
     *,
@@ -229,12 +223,15 @@ def execute_search_crop(
     del purpose
     return _run_search("search_crop", inputs, ctx)
 
-
 def _run_search(
     operation: str,
     inputs: dict[str, Any],
     ctx: RuntimeContext | None,
 ) -> Observation:
+    if operation == "search_crop":
+        inputs = declared_inputs(inputs, "image", "region", "engines", "top_k")
+    else:
+        inputs = declared_inputs(inputs, "image", "engines", "top_k")
     try:
         source_id, source = _load_image(inputs, ctx)
         region = _parse_optional_region(operation, inputs, source.size, ctx)
@@ -293,7 +290,6 @@ def _run_search(
         }
     return Observation(ok=True, result=_strip_forbidden(result), artifacts=artifacts)
 
-
 def _load_image(
     inputs: dict[str, Any],
     ctx: RuntimeContext | None,
@@ -310,7 +306,6 @@ def _load_image(
         raise ImageResolveError(f"无法读取图片: {exc}", "image_not_found") from exc
     return source_id, source
 
-
 def _parse_optional_region(
     operation: str,
     inputs: dict[str, Any],
@@ -324,7 +319,6 @@ def _parse_optional_region(
         raise SearchInputError("缺少必填输入 region", "missing_input")
     return _parse_region(raw_region, size[0], size[1], ctx)
 
-
 def _query_image(
     source: Image.Image,
     *,
@@ -337,7 +331,6 @@ def _query_image(
     cropped = source.crop(region).convert("RGB")
     image_id, path = put_image(cropped, source_id=source_id, suffix="jpeg", ctx=ctx)
     return cropped, image_id, path
-
 
 def _parse_engines(raw: Any) -> tuple[list[str], list[str]]:
     values = _parse_string_list(raw, field="engines", error_code="invalid_engines")
@@ -361,7 +354,6 @@ def _parse_engines(raw: Any) -> tuple[list[str], list[str]]:
         )
     return mapped, ignored
 
-
 def _parse_top_k(raw: Any) -> int:
     if raw is None or (isinstance(raw, str) and not raw.strip()):
         return _DEFAULT_TOP_K
@@ -370,7 +362,6 @@ def _parse_top_k(raw: Any) -> int:
     except (TypeError, ValueError) as exc:
         raise SearchInputError("top_k 必须是整数", "invalid_top_k") from exc
     return max(_TOP_K_MIN, min(_TOP_K_MAX, value))
-
 
 def _parse_string_list(raw: Any, *, field: str, error_code: str) -> list[str]:
     value: Any = raw
@@ -391,7 +382,6 @@ def _parse_string_list(raw: Any, *, field: str, error_code: str) -> list[str]:
         if item.strip():
             items.append(item.strip())
     return items
-
 
 def _resolve_engine(
     ctx: RuntimeContext | None,
@@ -422,7 +412,6 @@ def _resolve_engine(
             continue
         return engine, engine.name
     raise last_error or EngineUnavailableError("未配置可用的反向搜图引擎")
-
 
 def _build_engine(name: str) -> ReverseImageSearchEngine:
     timeout_sec = _env_timeout()
@@ -459,7 +448,6 @@ def _build_engine(name: str) -> ReverseImageSearchEngine:
         )
     raise EngineUnavailableError(f"不支持的 engines: {name}")
 
-
 def _allow_real_tool_api() -> bool:
     raw = os.environ.get("ALLOW_REAL_TOOL_API", "false").strip().lower()
     return raw in {"1", "true", "yes", "on"}
@@ -489,17 +477,16 @@ def _validated_endpoint(
     return endpoint
 
 
+
 def _serpapi_api_key() -> str:
     return (
         os.environ.get("SERPAPI_API_KEY", "").strip()
         or os.environ.get("SERPAPI_KEY", "").strip()
     )
 
-
 def _env_value(name: str, default: str) -> str:
     raw = os.environ.get(name, "").strip()
     return raw or default
-
 
 def _env_timeout() -> float:
     for name in ("SERPAPI_TIMEOUT_SEC", "GOOGLE_VISION_TIMEOUT_SEC"):
@@ -514,22 +501,12 @@ def _env_timeout() -> float:
             return value
     return _DEFAULT_TIMEOUT_SEC
 
-
-def _load_dotenv() -> None:
-    try:
-        from dotenv import load_dotenv
-    except ImportError:
-        return
-    load_dotenv(override=False)
-
-
 class _MultipartPayload:
     """multipart/form-data 请求体。"""
 
     def __init__(self, body: bytes, content_type: str) -> None:
         self.body = body
         self.content_type = content_type
-
 
 def _multipart_body(
     *,
@@ -562,7 +539,6 @@ def _multipart_body(
         content_type=f"multipart/form-data; boundary={boundary}",
     )
 
-
 def _http_json(
     url: str,
     *,
@@ -592,11 +568,9 @@ def _http_json(
         raise EngineUnavailableError(f"{error_prefix} 失败: {raw['error']}")
     return raw
 
-
 def _append_query(endpoint: str, query: str) -> str:
     separator = "&" if urllib.parse.urlparse(endpoint).query else "?"
     return f"{endpoint}{separator}{query}"
-
 
 def _cap_jpeg_bytes(image_bytes: bytes, max_bytes: int) -> bytes:
     if len(image_bytes) <= max_bytes:
@@ -618,7 +592,6 @@ def _cap_jpeg_bytes(image_bytes: bytes, max_bytes: int) -> bytes:
             width = max(32, width // 2)
             height = max(32, height // 2)
             rgb = rgb.resize((width, height), Image.Resampling.LANCZOS)
-
 
 def _lens_to_web_detection(raw: dict[str, Any]) -> dict[str, Any]:
     """把 Google Lens JSON 收成现有 Web Detection 形状，供统一归一。"""
@@ -676,7 +649,6 @@ def _lens_to_web_detection(raw: dict[str, Any]) -> dict[str, Any]:
         "bestGuessLabels": labels,
     }
 
-
 def _append_lens_page(
     pages: list[dict[str, Any]],
     seen: set[str],
@@ -699,7 +671,6 @@ def _append_lens_page(
         page[key] = [{"url": image_url}]
     pages.append(page)
 
-
 def _endpoint_with_key(endpoint: str, api_key: str) -> str:
     parsed = urllib.parse.urlparse(endpoint)
     query = dict(urllib.parse.parse_qsl(parsed.query, keep_blank_values=True))
@@ -707,7 +678,6 @@ def _endpoint_with_key(endpoint: str, api_key: str) -> str:
     return urllib.parse.urlunparse(
         parsed._replace(query=urllib.parse.urlencode(query)),
     )
-
 
 def _extract_web_detection(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
@@ -728,7 +698,6 @@ def _extract_web_detection(raw: Any) -> dict[str, Any]:
     if not isinstance(detection, dict):
         raise EngineUnavailableError("webDetection 不是对象")
     return detection
-
 
 def _normalize_payload(
     payload: Any,
@@ -783,10 +752,8 @@ def _normalize_payload(
     ][:top_k]
     return matches, pages, entities, labels
 
-
 def _as_list(raw: Any) -> list[Any]:
     return raw if isinstance(raw, list) else []
-
 
 def _image_match(item: Any, match_type: str, source: str) -> dict[str, Any] | None:
     if not isinstance(item, dict):
@@ -805,7 +772,6 @@ def _image_match(item: Any, match_type: str, source: str) -> dict[str, Any] | No
     _copy_score(item, row)
     return _keep_match_keys(row)
 
-
 def _page_match(item: Any, source: str) -> dict[str, Any] | None:
     page = _page_item(item)
     if page is None:
@@ -823,7 +789,6 @@ def _page_match(item: Any, source: str) -> dict[str, Any] | None:
         "source": source,
     }
     return _keep_match_keys(row)
-
 
 def _page_item(item: Any) -> dict[str, Any] | None:
     if not isinstance(item, dict):
@@ -849,7 +814,6 @@ def _page_item(item: Any) -> dict[str, Any] | None:
         page["image_urls"] = image_urls
     return page
 
-
 def _entity_item(item: Any) -> dict[str, Any] | None:
     if not isinstance(item, dict):
         return None
@@ -865,7 +829,6 @@ def _entity_item(item: Any) -> dict[str, Any] | None:
     _copy_score(item, row)
     return row
 
-
 def _label_item(item: Any) -> dict[str, Any] | None:
     if not isinstance(item, dict):
         return None
@@ -878,28 +841,23 @@ def _label_item(item: Any) -> dict[str, Any] | None:
         row["language"] = str(language)
     return row
 
-
 def _copy_score(src: dict[str, Any], dest: dict[str, Any]) -> None:
     score = src.get("score")
     if isinstance(score, (int, float)) and not isinstance(score, bool):
         dest["score"] = float(score)
-
 
 def _clean_url(raw: Any) -> str:
     if not isinstance(raw, str):
         return ""
     return raw.strip()
 
-
 def _keep_match_keys(row: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in row.items() if key in _MATCH_KEYS}
-
 
 def _jpeg_bytes(image: Image.Image) -> bytes:
     buffer = BytesIO()
     image.convert("RGB").save(buffer, format="JPEG", quality=_JPEG_QUALITY)
     return buffer.getvalue()
-
 
 def _strip_forbidden(value: Any) -> Any:
     if isinstance(value, dict):
@@ -911,7 +869,6 @@ def _strip_forbidden(value: Any) -> Any:
     if isinstance(value, list):
         return [_strip_forbidden(item) for item in value]
     return value
-
 
 def _fail(error: str, error_code: str) -> Observation:
     return Observation(ok=False, result=None, error=error, error_code=error_code)

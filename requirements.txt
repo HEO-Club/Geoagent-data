@@ -8,8 +8,21 @@ pydantic>=2
 pydantic-settings
 python-dotenv
 
+# 网页正文抽取（web_page_read；不用于 Observation 合成）
+trafilatura
+
 # 图像 / 地理辅助（prep_groundtruth 等；不用于 Observation 合成）
 geopy
+pyproj
+shapely
+numpy
+rasterio
+
+# solar_ephemeris：本地 NREL SPA（无 API Key）
+pvlib
+pandas
+tzdata
+timezonefinder
 pillow
 opencv-python
 imageio-ffmpeg

@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any
 
 from tool.contract import Observation, RuntimeContext
-from tool.osm_query._overpass import execute_count
 
 
 def execute(
@@ -16,8 +15,11 @@ def execute(
 ) -> Observation:
     """统计真实 Overpass 回执或 result_store 中已有要素。"""
 
-    return execute_count(
-        purpose=purpose,
-        inputs=inputs,
-        ctx=ctx,
-    )
+    extras = ctx.extras if ctx is not None else {}
+    if extras.get("overpass_client") is not None:
+        from tool.osm_query._overpass import execute_count
+
+        return execute_count(purpose=purpose, inputs=inputs, ctx=ctx)
+    from tool.osm_query._query import execute_count
+
+    return execute_count(purpose=purpose, inputs=inputs, ctx=ctx)

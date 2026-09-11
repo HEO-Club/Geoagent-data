@@ -1,13 +1,14 @@
 """按 canonical_tool_catalog_v2.json 落地的真实 Tool 执行器包。
 
 每个子目录对应一个 canonical tool；每个 operation 一个模块，暴露 `execute`。
-图像六类工具以及 `geocode`、`osm_query`、`poi_search` 已接入执行器；其余 tool 仍为占位。
+`image_edit`、`image_measure`、`image_compare`、`ocr_read`、`reverse_image_search`、`media_metadata_read`、`web_search`、`web_page_read`、`media_search`、`video_frame_extract`、`poi_search`、`geocode`、`route_query`、`map_layer_query`、`osm_query`、`osm_result_process`、`streetview_query`、`satellite_imagery_query`、`satellite_imagery_compare`、`distance_bearing_calculator`、`visibility_analysis`、`terrain_analysis`、`spatial_filter`、`weather_archive_query`、`solar_ephemeris`、`shadow_analysis`、`administrative_registry`、`infrastructure_registry`、`flight_data_query`、`llm_query` 与 `final_answer` 已接入执行器；其余 tool 仍为占位，不调用外部付费 API。
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from tool._catalog import undeclared_input_extensions
 from tool.contract import Observation, RuntimeContext
 
 from tool import image_edit
@@ -101,7 +102,11 @@ def execute(
             error=f"未知 operation: {tool}.{operation}",
             error_code="unknown_operation",
         )
-    return handler(purpose=purpose, inputs=inputs, ctx=ctx)
+    observation = handler(purpose=purpose, inputs=inputs, ctx=ctx)
+    extra = undeclared_input_extensions(tool, operation, inputs)
+    if extra:
+        observation.extensions = extra
+    return observation
 
 
 __all__ = ["TOOLS", "Observation", "RuntimeContext", "execute"]

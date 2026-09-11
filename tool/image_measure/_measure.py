@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 from PIL import Image, ImageStat
 
-from tool.contract import Observation, RuntimeContext
+from tool.contract import Observation, RuntimeContext, declared_inputs
 from tool.image_edit._transform import (
     RegionError,
     _check_pixel_count,
@@ -20,6 +20,7 @@ from tool.runtime.image_store import ImageResolveError, resolve_image_ref
 
 _MEASUREMENTS = frozenset({"distance", "angle", "ratio", "area", "color"})
 _AXES = frozenset({"horizontal", "vertical", "diagonal"})
+_MEASURE_FIELDS = ("image", "region", "measurement", "axis", "reference")
 Axis = Literal["horizontal", "vertical", "diagonal"]
 
 
@@ -76,6 +77,7 @@ def execute_measure(
     """按 measurement 计算像素量，仅在 reference 可解析时换算实尺。"""
 
     del purpose
+    inputs = declared_inputs(inputs, *_MEASURE_FIELDS)
     image_ref = inputs.get("image")
     if not isinstance(image_ref, str) or not image_ref.strip():
         return _fail("缺少必填输入 image", "missing_input")
@@ -106,7 +108,6 @@ def execute_measure(
         return _fail(f"无法读取图片: {exc}", "image_not_found")
 
     try:
-        axis = _parse_axis(inputs.get("axis"))
         geoms = _parse_region_geoms(
             inputs.get("region"),
             width,
@@ -114,7 +115,11 @@ def execute_measure(
             ctx,
             required=measurement != "color",
         )
-        parsed_ref = _parse_reference(inputs.get("reference"), width, height, ctx, axis)
+        top_axis = _parse_axis(inputs.get("axis"))
+        parsed_ref = _parse_reference(
+            inputs.get("reference"), width, height, ctx, top_axis
+        )
+        axis = parsed_ref.scale.axis if parsed_ref.scale is not None else top_axis
         return _compute(
             measurement=measurement,
             geoms=geoms,

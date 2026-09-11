@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from tool.contract import Observation, RuntimeContext, not_implemented
+from tool.contract import Observation, RuntimeContext
+from tool.administrative_registry._registry import execute_administrative
 
 
 def execute(
@@ -13,12 +14,6 @@ def execute(
     inputs: dict[str, Any],
     ctx: RuntimeContext | None = None,
 ) -> Observation:
-    """执行 administrative_registry.administrative。尚未接入真实执行器。"""
+    """执行 administrative_registry.administrative：GeoNames 标准地名与行政层级。"""
 
-    return not_implemented(
-        'administrative_registry',
-        'administrative',
-        purpose=purpose,
-        inputs=inputs,
-        ctx=ctx,
-    )
+    return execute_administrative(purpose=purpose, inputs=inputs, ctx=ctx)
