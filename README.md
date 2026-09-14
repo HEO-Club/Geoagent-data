@@ -55,3 +55,7 @@ uv run pytest tests -q
 - Tool 真实执行报告：`data/tool_runs/{safe_trajectory_id}_{id_hash}/harness_report.json`
 
 Harness 的引用、恢复、安全和失败语义见 [docs/TOOL_RUNTIME_HARNESS.md](docs/TOOL_RUNTIME_HARNESS.md)，最终设计与实测结论见 [docs/TOOL_RUNTIME_HARNESS_FINAL_AUDIT_20260910.md](docs/TOOL_RUNTIME_HARNESS_FINAL_AUDIT_20260910.md)。
+
+最新的 31 类 Tool API/凭证需求、官方申请入口和交接模板见 [docs/API_CREDENTIAL_APPLICATION_GUIDE_20260911.md](docs/API_CREDENTIAL_APPLICATION_GUIDE_20260911.md)。
+
+三个本地地理后处理 Tool 的合同、问题修复和完整 Harness 链测试见 [docs/LOCAL_GEO_POSTPROCESS_TOOLS_REPORT_20260911.md](docs/LOCAL_GEO_POSTPROCESS_TOOLS_REPORT_20260911.md)。

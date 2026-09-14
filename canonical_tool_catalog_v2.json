@@ -3782,7 +3782,7 @@
                   "type": "string",
                   "required": true,
                   "requirement_level": "execution",
-                  "description": "导出格式。",
+                  "description": "可忠实表达规范化结果的导出格式；不支持丢失 relation members/node refs 后伪造 osm_xml。",
                   "acquisition_hint": "根据下游用途选择明确输出格式；无法判断时由调用计划显式指定。",
                   "context_sources": [],
                   "context_default": null,
@@ -3794,8 +3794,7 @@
                     "geojson",
                     "json",
                     "csv",
-                    "kml",
-                    "osm_xml"
+                    "kml"
                   ],
                   "item_type": null,
                   "minimum": null,

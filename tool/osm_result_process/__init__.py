@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from tool.osm_result_process.filter import execute as filter
 from tool.osm_result_process.export import execute as export
+from tool.osm_result_process.filter import execute as filter
 
 OPERATIONS = {
     'filter': filter,
@@ -12,6 +12,6 @@ OPERATIONS = {
 
 __all__ = [
     "OPERATIONS",
-    'filter',
     'export',
+    'filter',
 ]

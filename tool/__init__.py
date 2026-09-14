@@ -1,7 +1,7 @@
 """按 canonical_tool_catalog_v2.json 落地的真实 Tool 执行器包。
 
 每个子目录对应一个 canonical tool；每个 operation 一个模块，暴露 `execute`。
-图像六类工具以及 `geocode`、`osm_query`、`poi_search` 已接入执行器；其余 tool 仍为占位。
+图像六类工具、三类基础查询工具以及三类本地地理后处理工具已接入执行器；其余 tool 仍为占位。
 """
 
 from __future__ import annotations

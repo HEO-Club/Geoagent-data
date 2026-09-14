@@ -905,7 +905,7 @@ def _operation_schemas() -> dict[tuple[str, str], ToolInputSchema]:
     )
     schemas[("osm_query", "export")] = _schema(
         "把已有 OSM 结果导出为指定格式。",
-        [_source_result(), _field("format", "导出格式。", required=True, aliases=["格式", "输出格式"], allowed_values=["geojson", "json", "csv", "kml", "osm_xml"]), _field("include_geometry", "是否保留几何。", type="boolean", aliases=["包含几何", "geometry"], example=True)],
+        [_source_result(), _field("format", "可忠实表达规范化结果的导出格式；不支持丢失 relation members/node refs 后伪造 osm_xml。", required=True, aliases=["格式", "输出格式"], allowed_values=["geojson", "json", "csv", "kml"]), _field("include_geometry", "是否保留几何。", type="boolean", aliases=["包含几何", "geometry"], example=True)],
     )
     schemas[("osm_query", "count")] = _schema(
         "统计已有结果或指定结构化查询范围内的 OSM 要素数量。",

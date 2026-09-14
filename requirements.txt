@@ -10,6 +10,8 @@ python-dotenv
 
 # 图像 / 地理辅助（prep_groundtruth 等；不用于 Observation 合成）
 geopy
+pyproj
+shapely
 pillow
 opencv-python
 imageio-ffmpeg

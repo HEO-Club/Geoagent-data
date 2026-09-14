@@ -10,7 +10,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-
 ROOT = Path(__file__).resolve().parents[1]
 CATALOG_PATH = ROOT / "canonical_tool_catalog_v2.json"
 OUT_DIR = ROOT / "docs" / "tool_specs_v2"
@@ -25,6 +24,9 @@ RUNTIME_STATUS = {
     "geocode": "runtime_implemented_provider_mock_verified_live_service_pending",
     "osm_query": "runtime_implemented_provider_mock_verified_live_service_pending",
     "poi_search": "runtime_implemented_provider_mock_verified_live_service_pending",
+    "osm_result_process": "runtime_implemented_local_verified",
+    "distance_bearing_calculator": "runtime_implemented_local_verified",
+    "spatial_filter": "runtime_implemented_local_verified",
 }
 
 
@@ -189,9 +191,12 @@ PROFILES: dict[str, dict[str, Any]] = {
     },
     "osm_result_process": {
         "architecture": "local_geodata_processing",
-        "backends": [_backend("GeoPandas", "local_library", "过滤、去重和导出 GeoJSON/GPKG/Parquet", "https://docs.geopandas.org/en/latest/docs/user_guide/io.html")],
-        "execution_flow": ["解析真实 source_result", "执行属性或空间过滤", "返回新结果 ID、保留/剔除数量与导出文件"],
-        "limitations": ["不得把查询与后处理混为一个外部回执", "缺少属性时应报无法筛选", "必须保留源结果和过滤表达式"],
+        "backends": [
+            _backend("Shapely", "local_library", "WGS84 几何构造与空间关系", "https://shapely.readthedocs.io/"),
+            _backend("Python stdlib", "local_library", "JSON/GeoJSON/CSV/KML 原子导出", "https://docs.python.org/3/library/"),
+        ],
+        "execution_flow": ["解析真实 source_result 并验证 CRS", "先执行属性和空间过滤，再应用最终 limit", "返回新 result_id、保留/剔除数量与带哈希导出文件"],
+        "limitations": ["不得把查询与后处理混为一个外部回执", "缺少属性或几何时不进行猜测", "规范化结果不伪造已丢失成员关系的 osm_xml"],
         "mcp_strategy": "本地 executor，source_result 使用不可伪造的运行时句柄。",
     },
     "streetview_query": {
@@ -246,9 +251,9 @@ PROFILES: dict[str, dict[str, Any]] = {
         "mcp_strategy": "本地 GDAL worker；数据下载由独立受控 provider 完成。",
     },
     "spatial_filter": {
-        "architecture": "local_geopandas_or_postgis",
+        "architecture": "local_shapely_pyproj_or_postgis",
         "backends": [
-            _backend("GeoPandas", "local_library", "小规模相交、包含、缓冲和筛选", "https://docs.geopandas.org/en/latest/docs/user_guide/io.html"),
+            _backend("Shapely + pyproj", "local_library", "小规模相交、包含、穿越和 AEQD 米制近邻筛选", "https://shapely.readthedocs.io/"),
             _backend("PostGIS ST_DWithin", "database", "大规模索引距离过滤", "https://postgis.net/docs/ST_DWithin.html", "数据库凭证"),
         ],
         "execution_flow": ["解析 source_result 与 geometry", "统一 CRS 并验证 distance_m 单位", "执行 relation 并返回保留对象与关系证据"],

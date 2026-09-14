@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from tool.contract import Observation, RuntimeContext, not_implemented
+from tool.contract import Observation, RuntimeContext
+from tool.osm_result_process._processor import execute_filter
 
 
 def execute(
@@ -13,11 +14,9 @@ def execute(
     inputs: dict[str, Any],
     ctx: RuntimeContext | None = None,
 ) -> Observation:
-    """执行 osm_result_process.filter。尚未接入真实执行器。"""
+    """在已返回 OSM payload 上执行本地属性与可选空间筛选。"""
 
-    return not_implemented(
-        'osm_result_process',
-        'filter',
+    return execute_filter(
         purpose=purpose,
         inputs=inputs,
         ctx=ctx,

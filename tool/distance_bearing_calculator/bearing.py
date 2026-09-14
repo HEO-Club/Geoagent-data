@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from tool.contract import Observation, RuntimeContext, not_implemented
+from tool.contract import Observation, RuntimeContext
+from tool.distance_bearing_calculator._calculator import execute_bearing
 
 
 def execute(
@@ -13,11 +14,9 @@ def execute(
     inputs: dict[str, Any],
     ctx: RuntimeContext | None = None,
 ) -> Observation:
-    """执行 distance_bearing_calculator.bearing。尚未接入真实执行器。"""
+    """计算起点到终点相对真北的 WGS84 初始方位角。"""
 
-    return not_implemented(
-        'distance_bearing_calculator',
-        'bearing',
+    return execute_bearing(
         purpose=purpose,
         inputs=inputs,
         ctx=ctx,

@@ -55,6 +55,11 @@ IMPLEMENTED_OPERATIONS = {
     ("osm_query", "count"),
     ("poi_search", "poi_search"),
     ("poi_search", "browse"),
+    ("osm_result_process", "filter"),
+    ("osm_result_process", "export"),
+    ("distance_bearing_calculator", "distance"),
+    ("distance_bearing_calculator", "bearing"),
+    ("spatial_filter", "geometry_filter"),
 }
 
 

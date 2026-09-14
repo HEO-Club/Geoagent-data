@@ -293,3 +293,7 @@ geocode
 ## 8. 最终建议
 
 冻结当前 Harness v1 的核心合同。下一次开发直接从 `osm_result_process.filter/export` 开始，同时复用当前 ResultStore、引用解析、失败分类和恢复能力；完成三类本地地理 Tool 后再做第一条完整真实地理链验收。这样可以用最少外部依赖验证 Harness 的长期接口是否真正适合后续 31 类 Tool。
+
+## 9. 2026-09-11 后续进展
+
+本报告建议的第一阶段已完成：`osm_result_process.filter/export`、`distance_bearing_calculator.distance/bearing` 和 `spatial_filter.geometry_filter` 已接入本地执行器。当前累计实现 12 类 Tool、21 个 operation；完整链 `geocode → osm_query → filter → distance/bearing/spatial → export → final` 已通过 Harness 首次执行和零 Provider 重调的检查点恢复测试。API/凭证状态见 `docs/API_CREDENTIAL_APPLICATION_GUIDE_20260911.md`。
