@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from tool.satellite_imagery_compare.compare_candidates import execute as compare_candidates
+from tool.satellite_imagery_compare.compare_candidates import (
+    execute as compare_candidates,
+)
 from tool.satellite_imagery_compare.compare_time import execute as compare_time
 
 OPERATIONS = {

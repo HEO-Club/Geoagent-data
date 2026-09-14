@@ -12,7 +12,12 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from tool.contract import Observation, RuntimeContext
-from tool.image_edit._transform import RegionError, _check_pixel_count, _parse_region, _try_json
+from tool.image_edit._transform import (
+    RegionError,
+    _check_pixel_count,
+    _parse_region,
+    _try_json,
+)
 from tool.runtime.image_store import ImageResolveError, put_image, resolve_image_ref
 
 _TEXT_KINDS = frozenset({"natural_text", "number", "road_sign", "address", "auto"})

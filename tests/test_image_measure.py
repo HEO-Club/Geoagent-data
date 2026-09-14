@@ -73,6 +73,22 @@ def test_bbox_distance_axis_override(tmp_path: Path) -> None:
     assert observation.result["applied"]["axis"] == "horizontal"
 
 
+def test_undeclared_extra_is_preserved_in_extensions(tmp_path: Path) -> None:
+    observation = _measure(
+        tmp_path,
+        inputs={
+            "measurement": "distance",
+            "region": [10, 4, 20, 20],
+            "note": "想横着量",
+        },
+    )
+    assert observation.ok is True
+    assert observation.result is not None
+    assert observation.result["method"] == "bbox_longer_side"
+    assert observation.extensions == {"note": "想横着量"}
+    assert "note" not in observation.result
+
+
 def test_reference_scale_converts_distance(tmp_path: Path) -> None:
     source = _solid(tmp_path / "wide.png", (10, 20, 30), width=100, height=24)
     observation = _measure(
@@ -81,7 +97,6 @@ def test_reference_scale_converts_distance(tmp_path: Path) -> None:
         inputs={
             "measurement": "distance",
             "region": [0, 0, 80, 10],
-            "axis": "horizontal",
             "reference": {"region": [0, 0, 40, 8], "known_length": 10, "unit": "m", "axis": "horizontal"},
         },
     )
@@ -348,7 +363,6 @@ def test_json_string_reference(tmp_path: Path) -> None:
         inputs={
             "measurement": "distance",
             "region": [0, 0, 40, 6],
-            "axis": "horizontal",
             "reference": '{"region":[0,0,20,4],"known_length":8,"unit":"m","axis":"horizontal"}',
         },
     )

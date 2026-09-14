@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from tool.contract import Observation, RuntimeContext
-from tool.distance_bearing_calculator._calculator import execute_bearing
+from tool.distance_bearing_calculator._geodesic import execute_bearing
 
 
 def execute(
@@ -14,10 +14,6 @@ def execute(
     inputs: dict[str, Any],
     ctx: RuntimeContext | None = None,
 ) -> Observation:
-    """计算起点到终点相对真北的 WGS84 初始方位角。"""
+    """执行 distance_bearing_calculator.bearing：WGS84 椭球真北方位角。"""
 
-    return execute_bearing(
-        purpose=purpose,
-        inputs=inputs,
-        ctx=ctx,
-    )
+    return execute_bearing(purpose=purpose, inputs=inputs, ctx=ctx)

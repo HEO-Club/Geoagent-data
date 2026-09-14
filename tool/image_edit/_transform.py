@@ -7,7 +7,7 @@ from typing import Any
 
 from PIL import Image, ImageEnhance
 
-from tool.contract import Observation, RuntimeContext
+from tool.contract import Observation, RuntimeContext, declared_inputs
 from tool.runtime.image_store import ImageResolveError, put_image, resolve_image_ref
 
 _ENHANCE_KEYS = frozenset({"brightness", "contrast", "sharpness", "shadows"})
@@ -68,6 +68,14 @@ def _run_edit(
     inputs: dict[str, Any],
     ctx: RuntimeContext | None,
 ) -> Observation:
+    if operation == "crop":
+        inputs = declared_inputs(
+            inputs, "image", "region", "padding", "padding_mode", "output_format"
+        )
+    elif operation == "zoom":
+        inputs = declared_inputs(inputs, "image", "region", "scale", "output_format")
+    else:
+        inputs = declared_inputs(inputs, "image", "region", "adjustments", "output_format")
     image_ref = inputs.get("image")
     if not isinstance(image_ref, str) or not image_ref.strip():
         return _fail("缺少必填输入 image", "missing_input")
@@ -153,11 +161,14 @@ def _run_edit(
         if extra:
             ignored.update(extra)
 
-    suffix = _parse_output_format(inputs.get("output_format"))
-    if suffix is None:
-        return _fail("output_format 必须是 png、jpeg 或 webp", "invalid_adjustments")
-    if inputs.get("output_format") is not None:
-        applied["output_format"] = suffix
+    if operation == "enhance":
+        suffix = _parse_output_format(inputs.get("output_format"))
+        if suffix is None:
+            return _fail("output_format 必须是 png、jpeg 或 webp", "invalid_adjustments")
+        if inputs.get("output_format") is not None:
+            applied["output_format"] = suffix
+    else:
+        suffix = "png"
     if ignored:
         applied["ignored"] = ignored
 

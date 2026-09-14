@@ -53,6 +53,12 @@ def _parse_args() -> argparse.Namespace:
         default="",
         help="非密钥 Provider/数据配置版本；变化时使旧检查点失效",
     )
+    parser.add_argument(
+        "--max-attempts",
+        type=int,
+        default=1,
+        help="单个 Tool 步骤的最大尝试次数；默认 1，仅重试可重试错误码",
+    )
     return parser.parse_args()
 
 
@@ -73,6 +79,7 @@ def main() -> int:
                 stop_on_error=args.stop_on_error,
                 allowed_file_roots=[Path(item) for item in args.allow_root],
                 provider_revision=args.provider_revision,
+                max_attempts=args.max_attempts,
             )
         )
         report = harness.run(trajectory)

@@ -18,9 +18,9 @@
 
 ```bash
 # 依赖
-uv sync   # 或 pip install -r requirements.txt
+uv pip install -r requirements.txt   # 或 python -m pip install -r requirements.txt
 
-# 配置：复制 .env.example → .env，填入密钥；测试保持 ALLOW_REAL_API=false
+# 配置：复制 .env.example → .env，填入密钥；真实 Tool 需单独设置 ALLOW_REAL_TOOL_API=true
 
 # 单阶段
 python run_stage1.py --video data/raw_videos/DEMO.mp4

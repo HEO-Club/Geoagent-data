@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from tool.weather_archive_query._archive import restore_runtime_context
 from tool.weather_archive_query.cloud_cover import execute as cloud_cover
-from tool.weather_archive_query.weather import execute as weather
-from tool.weather_archive_query.snow_cover import execute as snow_cover
 from tool.weather_archive_query.refine_range import execute as refine_range
+from tool.weather_archive_query.snow_cover import execute as snow_cover
+from tool.weather_archive_query.weather import execute as weather
 
 OPERATIONS = {
     'cloud_cover': cloud_cover,
@@ -17,7 +18,8 @@ OPERATIONS = {
 __all__ = [
     "OPERATIONS",
     'cloud_cover',
-    'weather',
-    'snow_cover',
     'refine_range',
+    "restore_runtime_context",
+    'snow_cover',
+    'weather',
 ]

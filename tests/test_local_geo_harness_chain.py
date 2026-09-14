@@ -224,14 +224,19 @@ def test_complete_local_geo_chain_and_resume(tmp_path: Path) -> None:
     )
     first_harness = ToolHarness(config, context=context)
     first = first_harness.run(_trajectory())
-    assert first.status == "completed"
+    details = "\n".join(
+        f"{record.step_index}: {record.tool}.{record.operation} "
+        f"{record.status} {record.error_code}: {record.error}"
+        for record in first.records
+    )
+    assert first.status == "completed", details
     assert first.counts == {"total": 8, "succeeded": 7, "terminal": 1}
-    assert first.records[3].observation.result["total"] == pytest.approx(1.437, rel=1e-3)
-    assert first.records[4].observation.result["compass_direction"] == "NE"
-    assert first.records[5].observation.result["matched_count"] == 2
+    assert first.records[3].observation.result["value"] == pytest.approx(1.437, rel=1e-3)
+    assert first.records[4].observation.result["compass"] == "NE"
+    assert first.records[5].observation.result["kept"] == 2
     export_path = Path(first.records[6].observation.artifacts["export_path"])
     assert export_path.is_file()
-    assert len(list((first_harness.last_run_dir / "results").glob("*.json"))) == 6
+    assert len(list((first_harness.last_run_dir / "results").glob("*.json"))) == 5
     assert geocoder.calls == 1
     assert overpass.calls == 1
 

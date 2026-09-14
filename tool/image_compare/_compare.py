@@ -10,7 +10,12 @@ import numpy as np
 from PIL import Image
 
 from tool.contract import Observation, RuntimeContext
-from tool.image_edit._transform import RegionError, _check_pixel_count, _parse_region, _try_json
+from tool.image_edit._transform import (
+    RegionError,
+    _check_pixel_count,
+    _parse_region,
+    _try_json,
+)
 from tool.runtime.image_store import ImageResolveError, put_image, resolve_image_ref
 
 CURRENT_IMAGES_REF = "$current_images"

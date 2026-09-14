@@ -13,7 +13,13 @@ from PIL import Image
 from pipeline.schemas.trajectory import Action, Trajectory, TrajectoryStep
 from tool import execute as real_execute
 from tool.contract import Observation, RuntimeContext
-from tool.runtime import HarnessError, ToolHarness, ToolHarnessConfig
+from tool.runtime import (
+    HarnessError,
+    HarnessObservation,
+    ToolExecutionRecord,
+    ToolHarness,
+    ToolHarnessConfig,
+)
 from tool.runtime import harness as harness_module
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -407,6 +413,39 @@ def test_credentials_in_executor_output_are_failed_and_redacted(tmp_path: Path) 
     assert secret not in harness.last_report_path.read_text(encoding="utf-8")
 
 
+def test_observation_extensions_survive_harness_snapshot(tmp_path: Path) -> None:
+    def dispatcher(*_args: Any, **_kwargs: Any) -> Observation:
+        return Observation(ok=True, result={"value": 1}, extensions={"note": "横向量测"})
+
+    report = ToolHarness(
+        _config(tmp_path),
+        context=_context(),
+        dispatcher=dispatcher,
+    ).run(_geo_trajectory(trajectory_id="observation-extensions"))
+    first_call = report.records[1]
+    assert first_call.observation is not None
+    assert first_call.observation.extensions == {"note": "横向量测"}
+
+
+def test_credentials_in_observation_extensions_are_blocked(tmp_path: Path) -> None:
+    secret = "sk-abcdefghijklmnopqrstuvwxyz"
+
+    def dispatcher(*_args: Any, **_kwargs: Any) -> Observation:
+        return Observation(ok=True, result={"value": 1}, extensions={"api_key": secret})
+
+    harness = ToolHarness(
+        _config(tmp_path, stop_on_error=True),
+        context=_context(),
+        dispatcher=dispatcher,
+    )
+    report = harness.run(_geo_trajectory(trajectory_id="credential-extensions"))
+    first_call = report.records[1]
+    assert first_call.error_code == "credential_in_observation"
+    assert first_call.observation is not None
+    assert first_call.observation.extensions["api_key"] == "***REDACTED***"
+    assert secret not in harness.last_report_path.read_text(encoding="utf-8")
+
+
 def test_executor_exception_is_isolated_and_stop_policy_is_explicit(tmp_path: Path) -> None:
     calls: list[str] = []
 
@@ -430,6 +469,95 @@ def test_executor_exception_is_isolated_and_stop_policy_is_explicit(tmp_path: Pa
     assert report.records[3].status == "blocked"
     assert report.records[4].status == "terminal"
     assert calls == ["geocode.geocode"]
+
+
+def test_transient_tool_failure_is_retried_with_attempt_audit(tmp_path: Path) -> None:
+    calls = 0
+
+    def flaky_dispatcher(*_args: Any, **_kwargs: Any) -> Observation:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return Observation(ok=False, error="temporary outage", error_code="provider_error")
+        return Observation(ok=True, result={"location": "郑州市"})
+
+    report = ToolHarness(
+        _config(
+            tmp_path,
+            max_attempts=3,
+            retry_initial_backoff_sec=0,
+            retry_jitter_ratio=0,
+        ),
+        context=_context(),
+        dispatcher=flaky_dispatcher,
+    ).run(_geo_trajectory(trajectory_id="retry-transient"))
+    first_call = report.records[1]
+    assert first_call.status == "succeeded"
+    assert calls == 2  # geocode retries once; later reference-dependent steps are blocked
+    assert [attempt.status for attempt in first_call.attempts] == ["failed", "succeeded"]
+    assert first_call.attempts[0].error_code == "provider_error"
+
+
+def test_permanent_tool_failure_is_not_retried(tmp_path: Path) -> None:
+    calls = 0
+
+    def invalid_dispatcher(*_args: Any, **_kwargs: Any) -> Observation:
+        nonlocal calls
+        calls += 1
+        return Observation(ok=False, error="bad input", error_code="missing_input")
+
+    report = ToolHarness(
+        _config(
+            tmp_path,
+            max_attempts=3,
+            retry_initial_backoff_sec=0,
+        ),
+        context=_context(),
+        dispatcher=invalid_dispatcher,
+    ).run(_geo_trajectory(trajectory_id="no-retry-permanent"))
+    first_call = report.records[1]
+    assert len(first_call.attempts) == 1
+    assert first_call.attempts[0].error_code == "missing_input"
+    assert calls == 1  # permanent first-step failure blocks dependent calls
+
+
+def test_retry_config_rejects_invalid_values(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="max_attempts"):
+        _config(tmp_path, max_attempts=0)
+    with pytest.raises(ValueError, match="jitter"):
+        _config(tmp_path, retry_jitter_ratio=1.1)
+
+
+def test_checkpoint_restore_rehydrates_tool_specific_session() -> None:
+    result = {
+        "operation": "weather",
+        "result_id": "weather_0001",
+        "location": {"lat": 34.8, "lon": 113.6},
+        "time_range": {"start": "2020-01-01", "end": "2020-01-01"},
+        "series": {"times": ["2020-01-01"], "values": {"precipitation_sum": [3.2]}},
+        "applied": {},
+    }
+    record = ToolExecutionRecord(
+        step_index=1,
+        event_type="tool_call",
+        status="succeeded",
+        thought="restore weather",
+        call_id="restore-weather",
+        tool="weather_archive_query",
+        operation="weather",
+        observation=HarnessObservation(
+            ok=True,
+            result=result,
+            session="weather_0001",
+        ),
+        reused_from_checkpoint=True,
+    )
+    ctx = RuntimeContext()
+    step_results: dict[int, dict[str, Any]] = {}
+    ToolHarness._restore_context(record, ctx, step_results)
+    assert ctx.active_session == "weather_0001"
+    assert "weather_0001" in ctx.extras["weather_archive_sessions"]
+    assert step_results[1] == result
 
 
 @pytest.mark.parametrize("bad_value", [object(), float("nan"), float("inf")])
@@ -921,6 +1049,6 @@ def test_harness_controls_mixed_tool_chain_and_isolates_failed_branch(
         "height",
     ]
     assert report.records[7].observation.result["count"] == 1
-    assert report.records[8].error_code == "not_implemented"
+    assert report.records[8].error_code == "engine_unavailable"
     assert report.records[9].error_code == "unresolved_reference"
     assert report.final_location == "郑州市"

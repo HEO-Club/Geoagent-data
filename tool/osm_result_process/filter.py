@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from tool.contract import Observation, RuntimeContext
-from tool.osm_result_process._processor import execute_filter
+from tool.osm_result_process._process import execute_filter
 
 
 def execute(
@@ -14,10 +14,6 @@ def execute(
     inputs: dict[str, Any],
     ctx: RuntimeContext | None = None,
 ) -> Observation:
-    """在已返回 OSM payload 上执行本地属性与可选空间筛选。"""
+    """执行 osm_result_process.filter：本地筛选已有 OSM 要素。"""
 
-    return execute_filter(
-        purpose=purpose,
-        inputs=inputs,
-        ctx=ctx,
-    )
+    return execute_filter(purpose=purpose, inputs=inputs, ctx=ctx)

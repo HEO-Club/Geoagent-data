@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 from tool.runtime.harness import HarnessError, ToolHarness, ToolHarnessConfig
-from tool.runtime.harness_models import HarnessReport, ToolExecutionRecord
+from tool.runtime.harness_models import (
+    HarnessObservation,
+    HarnessReport,
+    ToolAttemptRecord,
+    ToolExecutionRecord,
+)
 from tool.runtime.image_store import (
     FilesystemImageStore,
     ImageResolveError,
@@ -21,11 +26,13 @@ __all__ = [
     "FilesystemImageStore",
     "FilesystemResultStore",
     "HarnessError",
+    "HarnessObservation",
     "HarnessReport",
     "ImageResolveError",
     "ImageStore",
     "InMemoryResultStore",
     "ResultStore",
+    "ToolAttemptRecord",
     "ToolExecutionRecord",
     "ToolHarness",
     "ToolHarnessConfig",

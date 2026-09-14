@@ -1,262 +1,397 @@
-"""OSM 本地结果筛选与导出测试；禁止真实网络。"""
+"""osm_result_process 执行器测试；禁止真实付费 API 与网络。"""
 
 from __future__ import annotations
 
-import csv
 import json
 from pathlib import Path
-from xml.etree import ElementTree
-
-import pytest
+from typing import Any
+from xml.etree import ElementTree as ET
 
 from tool import execute
-from tool.contract import RuntimeContext
-from tool.runtime import InMemoryResultStore
+from tool.contract import Observation, RuntimeContext
 
 
-def _source() -> dict:
-    return {
-        "crs": "EPSG:4326",
-        "attribution": "© OpenStreetMap contributors",
+def _sample_elements() -> list[dict[str, Any]]:
+    return [
+        {
+            "result_id": "osm_1",
+            "osm_type": "way",
+            "osm_id": 123,
+            "tags": {
+                "bridge": "yes",
+                "name": "黄河铁路桥",
+                "railway": "rail",
+                "confirmed_location": "MUST NOT LEAK",
+            },
+            "geometry": {
+                "type": "LineString",
+                "coordinates": [[113.67, 34.89], [113.68, 34.90]],
+            },
+        },
+        {
+            "result_id": "osm_2",
+            "osm_type": "node",
+            "osm_id": 456,
+            "tags": {"power": "tower", "bridge": "no"},
+            "geometry": {"type": "Point", "coordinates": [113.66, 34.88]},
+        },
+        {
+            "result_id": "osm_3",
+            "osm_type": "way",
+            "osm_id": 123,
+            "tags": {"bridge": "yes", "name": "黄河铁路桥"},
+            "geometry": {
+                "type": "LineString",
+                "coordinates": [[113.67, 34.89], [113.68, 34.90]],
+            },
+        },
+    ]
+
+
+def _source(*, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "operation": "query",
+        "elements": _sample_elements(),
+        "count": 3,
+        "data_timestamp": "2026-09-10T00:00:00Z",
+        "confirmed_location": "MUST NOT LEAK",
+    }
+    if extra:
+        payload.update(extra)
+    return payload
+
+
+def _nested_keys(value: Any) -> set[str]:
+    found: set[str] = set()
+    if isinstance(value, dict):
+        found.update(value)
+        for item in value.values():
+            found.update(_nested_keys(item))
+    elif isinstance(value, list):
+        for item in value:
+            found.update(_nested_keys(item))
+    return found
+
+
+def _filter(
+    *,
+    inputs: dict[str, Any] | None = None,
+    ctx: RuntimeContext | None = None,
+) -> Observation:
+    payload: dict[str, Any] = {
+        "source_result": _source(),
+        "filters": {"tags": {"bridge": "yes"}},
+    }
+    if inputs:
+        payload.update(inputs)
+    return execute(
+        "osm_result_process",
+        "filter",
+        purpose="筛选 OSM 结果",
+        inputs=payload,
+        ctx=ctx if ctx is not None else RuntimeContext(),
+    )
+
+
+def _export(
+    *,
+    inputs: dict[str, Any] | None = None,
+    ctx: RuntimeContext | None = None,
+) -> Observation:
+    payload: dict[str, Any] = {
+        "source_result": _source(),
+        "format": "geojson",
+    }
+    if inputs:
+        payload.update(inputs)
+    return execute(
+        "osm_result_process",
+        "export",
+        purpose="导出 OSM 结果",
+        inputs=payload,
+        ctx=ctx if ctx is not None else RuntimeContext(),
+    )
+
+
+def test_empty_inputs_are_missing_input() -> None:
+    observation = execute("osm_result_process", "filter", purpose="scaffold", inputs={})
+    assert observation.ok is False
+    assert observation.error_code == "missing_input"
+
+
+def test_natural_language_source_result_is_invalid() -> None:
+    observation = _filter(inputs={"source_result": "刚查到的那些桥"})
+    assert observation.ok is False
+    assert observation.error_code == "invalid_input"
+    assert observation.error is not None
+    assert "自然语言" in observation.error
+
+
+def test_unknown_result_id_is_missing_input() -> None:
+    observation = _filter(inputs={"source_result": "osm_result_01"}, ctx=RuntimeContext())
+    assert observation.ok is False
+    assert observation.error_code == "missing_input"
+
+
+def test_previous_tool_result_filters_tags() -> None:
+    ctx = RuntimeContext(previous_tool_result=_source())
+    observation = _filter(
+        inputs={"source_result": "$previous_tool_result", "filters": {"bridge": "yes"}},
+        ctx=ctx,
+    )
+    assert observation.ok is True
+    assert observation.result is not None
+    assert observation.result["kept"] == 1
+    assert observation.result["removed"] == 2
+    assert observation.result["count"] == 1
+    assert observation.result["elements"][0]["osm_id"] == 123
+    assert observation.result["applied"]["provider"] == "local"
+    assert observation.result["applied"]["filters"]["tags"]["bridge"] == "yes"
+    assert observation.result["applied"]["filters"]["dedupe"] is True
+    assert observation.result["data_timestamp"] == "2026-09-10T00:00:00Z"
+    assert observation.result["result_id"] == "osm_processed_1"
+    assert any("未回源 OSM" in item for item in observation.result["assumptions"])
+
+
+def test_inline_elements_and_shorthand_tags() -> None:
+    observation = _filter(inputs={"filters": {"bridge": "yes", "osm_type": "way"}})
+    assert observation.ok is True
+    assert observation.result is not None
+    assert observation.result["kept"] == 1
+    assert observation.result["elements"][0]["osm_type"] == "way"
+
+
+def test_legacy_overpass_geometry_and_latlon_are_normalized() -> None:
+    source = {
+        "elements": [
+            {
+                "osm_type": "way",
+                "osm_id": 10,
+                "tags": {"bridge": "yes"},
+                "geometry": [[113.0, 34.0], [113.1, 34.1]],
+            },
+            {
+                "osm_type": "node",
+                "osm_id": 11,
+                "tags": {"bridge": "yes"},
+                "longitude": 113.2,
+                "latitude": 34.2,
+            },
+        ]
+    }
+    observation = _filter(
+        inputs={"source_result": source, "filters": {"tags": {"bridge": "yes"}}}
+    )
+    assert observation.ok is True
+    assert observation.result is not None
+    elements = observation.result["elements"]
+    assert elements[0]["geometry"]["type"] == "LineString"
+    assert elements[1]["geometry"] == {
+        "type": "Point",
+        "coordinates": [113.2, 34.2],
+    }
+
+
+def test_missing_attribute_is_unsupported_filter() -> None:
+    observation = _filter(inputs={"filters": {"tags": {"layer": "1"}}})
+    assert observation.ok is False
+    assert observation.error_code == "unsupported_filter"
+    assert observation.error is not None
+    assert "layer" in observation.error
+
+
+def test_star_tag_means_key_exists() -> None:
+    observation = _filter(inputs={"filters": {"tags": {"railway": "*"}}})
+    assert observation.ok is True
+    assert observation.result is not None
+    assert observation.result["kept"] == 1
+    assert observation.result["elements"][0]["tags"]["railway"] == "rail"
+
+
+def test_dedupe_can_be_disabled() -> None:
+    observation = _filter(inputs={"filters": {"tags": {"bridge": "yes"}, "dedupe": False}})
+    assert observation.ok is True
+    assert observation.result is not None
+    assert observation.result["kept"] == 2
+    assert [item["osm_id"] for item in observation.result["elements"]] == [123, 123]
+
+
+def test_empty_filters_without_spatial_are_missing_input() -> None:
+    observation = _filter(inputs={"filters": {}})
+    assert observation.ok is False
+    assert observation.error_code == "missing_input"
+
+
+def test_spatial_intersects_keeps_crossing_way() -> None:
+    river = {
+        "type": "LineString",
+        "coordinates": [[113.65, 34.895], [113.70, 34.895]],
+    }
+    observation = _filter(
+        inputs={
+            "filters": {"osm_type": "way"},
+            "spatial_filter": {"relation": "intersects", "geometry": river},
+        }
+    )
+    assert observation.ok is True
+    assert observation.result is not None
+    assert observation.result["kept"] == 1
+    assert observation.result["applied"]["spatial_filter"]["relation"] == "intersects"
+
+
+def test_spatial_near_keeps_nearby_point() -> None:
+    river = {
+        "type": "LineString",
+        "coordinates": [[113.65, 34.89], [113.70, 34.89]],
+    }
+    observation = _filter(
+        inputs={
+            "filters": {"osm_type": "node"},
+            "spatial_filter": {"relation": "near", "geometry": river, "distance_m": 2000},
+        }
+    )
+    assert observation.ok is True
+    assert observation.result is not None
+    assert observation.result["kept"] == 1
+    assert observation.result["elements"][0]["osm_id"] == 456
+
+
+def test_spatial_place_name_is_invalid() -> None:
+    observation = _filter(
+        inputs={
+            "filters": {"osm_type": "way"},
+            "spatial_filter": {"relation": "near", "geometry": "黄河", "distance_m": 100},
+        }
+    )
+    assert observation.ok is False
+    assert observation.error_code == "invalid_input"
+    assert observation.error is not None
+    assert "地名" in observation.error
+
+
+def test_spatial_without_geometry_on_elements_is_unsupported() -> None:
+    source = {
+        "elements": [
+            {"osm_type": "way", "osm_id": 1, "tags": {"bridge": "yes"}},
+        ]
+    }
+    observation = _filter(
+        inputs={
+            "source_result": source,
+            "filters": {"bridge": "yes"},
+            "spatial_filter": {
+                "relation": "intersects",
+                "geometry": {"type": "LineString", "coordinates": [[0.0, 0.0], [1.0, 1.0]]},
+            },
+        }
+    )
+    assert observation.ok is False
+    assert observation.error_code == "unsupported_filter"
+
+
+def test_export_formats_and_include_geometry_false(tmp_path: Path) -> None:
+    ctx = RuntimeContext(extras={"artifact_dir": str(tmp_path)})
+    geojson = _export(inputs={"format": "geojson"}, ctx=ctx)
+    assert geojson.ok is True
+    assert geojson.result is not None
+    assert geojson.result["format"] == "geojson"
+    assert geojson.result["geojson"]["type"] == "FeatureCollection"
+    assert len(geojson.result["geojson"]["features"]) == 3
+    parsed = json.loads(geojson.result["payload"])
+    assert parsed["features"][0]["geometry"]["type"] == "LineString"
+    export_path = Path(geojson.artifacts["export_path"])
+    assert export_path.is_file()
+    assert json.loads(export_path.read_text(encoding="utf-8"))["type"] == "FeatureCollection"
+
+    as_json = _export(inputs={"format": "json", "include_geometry": False})
+    assert as_json.ok is True
+    assert as_json.result is not None
+    rows = json.loads(as_json.result["payload"])
+    assert "geometry" not in rows[0]
+    assert as_json.result["applied"]["include_geometry"] is False
+
+    csv_obs = _export(inputs={"format": "csv"})
+    assert csv_obs.ok is True
+    assert csv_obs.result is not None
+    assert "bridge" in csv_obs.result["payload"]
+    assert "osm_id" in csv_obs.result["payload"]
+
+    kml_obs = _export(inputs={"format": "kml"})
+    assert kml_obs.ok is True
+    assert kml_obs.result is not None
+    root = ET.fromstring(kml_obs.result["payload"])
+    assert root.tag.endswith("kml")
+
+    osm_obs = _export(inputs={"format": "osm_xml"})
+    assert osm_obs.ok is True
+    assert osm_obs.result is not None
+    osm_root = ET.fromstring(osm_obs.result["payload"])
+    assert osm_root.tag == "osm"
+    assert osm_root.find("way") is not None
+    assert osm_obs.result["warnings"]
+
+
+def test_csv_escapes_formula_like_cells(tmp_path: Path) -> None:
+    source = {
         "elements": [
             {
                 "osm_type": "node",
                 "osm_id": 1,
-                "name": "黄河桥 A",
-                "latitude": 34.9500,
-                "longitude": 113.5000,
-                "tags": {"bridge": "yes", "material": "stone"},
-            },
-            {
-                "osm_type": "node",
-                "osm_id": 2,
-                "name": "黄河桥 B",
-                "latitude": 34.9600,
-                "longitude": 113.5100,
-                "tags": {"bridge": "yes", "material": "steel"},
-            },
-            {
-                "osm_type": "way",
-                "osm_id": 3,
-                "name": "普通道路",
-                "geometry": [[113.49, 34.94], [113.53, 34.98]],
-                "tags": {"highway": "primary"},
-            },
-            {
-                "osm_type": "relation",
-                "osm_id": 4,
-                "name": "无几何对象",
-                "tags": {"type": "site"},
-            },
-        ],
+                "tags": {"name": "=HYPERLINK(\"https://evil.invalid\")"},
+                "geometry": {"type": "Point", "coordinates": [0.0, 0.0]},
+            }
+        ]
     }
-
-
-def _ctx(tmp_path: Path) -> tuple[RuntimeContext, str]:
-    store = InMemoryResultStore()
-    result_id = store.put("osm", _source())
-    return (
-        RuntimeContext(
-            result_store=store,
-            extras={"artifact_dir": str(tmp_path / "artifacts")},
-        ),
-        result_id,
-    )
-
-
-def test_filter_by_tags_name_bbox_and_persists_result(tmp_path: Path) -> None:
-    ctx, result_id = _ctx(tmp_path)
-    observation = execute(
-        "osm_result_process",
-        "filter",
-        purpose="筛选石桥",
-        inputs={
-            "source_result": result_id,
-            "filters": {
-                "tags": {"bridge": "*", "material": "stone"},
-                "name_contains": "黄河",
-                "bbox": [113.49, 34.94, 113.505, 34.955],
-            },
-        },
-        ctx=ctx,
+    observation = _export(
+        inputs={"source_result": source, "format": "csv"},
+        ctx=RuntimeContext(extras={"artifact_dir": str(tmp_path)}),
     )
     assert observation.ok is True
-    result = observation.result
-    assert result["input_count"] == 4
-    assert result["output_count"] == 1
-    assert result["elements"][0]["osm_id"] == 1
-    assert result["result_id"].startswith("osm_filtered_")
-    stored = ctx.result_store.get(result["result_id"])
-    assert stored["elements"][0]["name"] == "黄河桥 A"
+    assert observation.result is not None
+    assert "'=HYPERLINK" in observation.result["payload"]
 
 
-def test_filter_spatial_and_missing_geometry_accounting(tmp_path: Path) -> None:
-    ctx, result_id = _ctx(tmp_path)
-    observation = execute(
-        "osm_result_process",
-        "filter",
-        purpose="筛选范围内对象",
-        inputs={
-            "source_result": result_id,
-            "filters": {},
-            "spatial_filter": {
-                "relation": "within",
-                "geometry": {"bbox": [113.49, 34.94, 113.52, 34.97]},
-            },
-        },
-        ctx=ctx,
-    )
+def test_unsupported_format_is_invalid_input() -> None:
+    observation = _export(inputs={"format": "gpkg"})
+    assert observation.ok is False
+    assert observation.error_code == "invalid_input"
+
+
+def test_allow_real_api_false_still_runs_locally(monkeypatch: Any) -> None:
+    monkeypatch.setenv("ALLOW_REAL_TOOL_API", "false")
+    observation = _filter()
     assert observation.ok is True
-    assert observation.result["output_count"] == 2
-    assert observation.result["spatial_filter"]["missing_geometry_count"] == 1
-    assert {item["osm_id"] for item in observation.result["elements"]} == {1, 2}
+    assert observation.result is not None
+    assert observation.result["applied"]["provider"] == "local"
 
 
-def test_limit_is_applied_after_spatial_filter(tmp_path: Path) -> None:
-    ctx, result_id = _ctx(tmp_path)
-    observation = execute(
-        "osm_result_process",
-        "filter",
-        purpose="先空间筛选再限量",
-        inputs={
-            "source_result": result_id,
-            "filters": {"limit": 1},
-            "spatial_filter": {
-                "relation": "within",
-                "geometry": {"bbox": [113.505, 34.955, 113.515, 34.965]},
-            },
-        },
-        ctx=ctx,
-    )
+def test_forbidden_keys_are_stripped() -> None:
+    observation = _filter()
     assert observation.ok is True
-    assert [item["osm_id"] for item in observation.result["elements"]] == [2]
+    assert observation.result is not None
+    dumped = str(observation.result)
+    assert "MUST NOT LEAK" not in dumped
+    keys = _nested_keys(observation.result)
+    assert "confirmed_location" not in keys
+    assert "raw_content" not in keys
 
 
-@pytest.mark.parametrize("export_format", ["json", "geojson", "csv", "kml"])
-def test_export_supported_formats(tmp_path: Path, export_format: str) -> None:
-    ctx, result_id = _ctx(tmp_path)
-    observation = execute(
-        "osm_result_process",
-        "export",
-        purpose="导出已有结果",
-        inputs={"source_result": result_id, "format": export_format},
-        ctx=ctx,
-    )
+def test_filter_result_id_can_be_exported() -> None:
+    ctx = RuntimeContext()
+    filtered = _filter(ctx=ctx)
+    assert filtered.ok is True
+    assert filtered.result is not None
+    result_id = filtered.result["result_id"]
+    exported = _export(inputs={"source_result": result_id, "format": "json"}, ctx=ctx)
+    assert exported.ok is True
+    assert exported.result is not None
+    rows = json.loads(exported.result["payload"])
+    assert len(rows) == 1
+    assert rows[0]["osm_id"] == 123
+
+
+def test_nested_result_unwrap() -> None:
+    observation = _filter(inputs={"source_result": {"result": _source()}})
     assert observation.ok is True
-    path = Path(observation.artifacts["export_path"])
-    assert path.is_file()
-    assert observation.result["exported_count"] == 4
-    assert observation.result["sha256"]
-    if export_format == "json":
-        assert len(json.loads(path.read_text(encoding="utf-8"))["elements"]) == 4
-    elif export_format == "geojson":
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        assert payload["type"] == "FeatureCollection"
-        assert len(payload["features"]) == 4
-    elif export_format == "csv":
-        with path.open(encoding="utf-8-sig", newline="") as handle:
-            assert len(list(csv.DictReader(handle))) == 4
-    else:
-        root = ElementTree.parse(path).getroot()
-        assert root.tag.endswith("kml")
-
-
-def test_export_without_geometry_and_refuses_lossy_osm_xml(tmp_path: Path) -> None:
-    ctx, result_id = _ctx(tmp_path)
-    plain = execute(
-        "osm_result_process",
-        "export",
-        purpose="仅导出属性",
-        inputs={"source_result": result_id, "format": "geojson", "include_geometry": False},
-        ctx=ctx,
-    )
-    payload = json.loads(Path(plain.artifacts["export_path"]).read_text(encoding="utf-8"))
-    assert all(feature["geometry"] is None for feature in payload["features"])
-
-    lossy = execute(
-        "osm_result_process",
-        "export",
-        purpose="拒绝伪造 OSM XML",
-        inputs={"source_result": result_id, "format": "osm_xml"},
-        ctx=ctx,
-    )
-    assert lossy.ok is False
-    assert lossy.error_code == "lossy_format_unsupported"
-
-
-def test_filter_rejects_unknown_condition_and_missing_source(tmp_path: Path) -> None:
-    ctx, result_id = _ctx(tmp_path)
-    unknown = execute(
-        "osm_result_process",
-        "filter",
-        purpose="未知条件",
-        inputs={"source_result": result_id, "filters": {"guess": "yes"}},
-        ctx=ctx,
-    )
-    assert unknown.error_code == "unsupported_filter"
-
-    missing = execute(
-        "osm_result_process",
-        "filter",
-        purpose="缺结果",
-        inputs={"source_result": "osm_missing", "filters": {}},
-        ctx=ctx,
-    )
-    assert missing.error_code == "needs_acquisition"
-
-    mercator_id = ctx.result_store.put(
-        "mercator",
-        {"crs": "EPSG:3857", "elements": [{"latitude": 1, "longitude": 1}]},
-    )
-    wrong_crs = execute(
-        "osm_result_process",
-        "filter",
-        purpose="拒绝静默坐标系误读",
-        inputs={"source_result": mercator_id, "filters": {}},
-        ctx=ctx,
-    )
-    assert wrong_crs.error_code == "unsupported_crs"
-
-    unsafe_regex = execute(
-        "osm_result_process",
-        "filter",
-        purpose="拒绝高风险正则",
-        inputs={"source_result": result_id, "filters": {"name_regex": "(a+)+$"}},
-        ctx=ctx,
-    )
-    assert unsafe_regex.error_code == "unsafe_regex"
-
-
-def test_csv_escapes_formula_like_names(tmp_path: Path) -> None:
-    store = InMemoryResultStore()
-    result_id = store.put(
-        "osm",
-        {
-            "elements": [
-                {
-                    "osm_type": "node",
-                    "osm_id": 1,
-                    "name": "=HYPERLINK(\"https://example.invalid\")",
-                    "latitude": 0,
-                    "longitude": 0,
-                }
-            ]
-        },
-    )
-    ctx = RuntimeContext(
-        result_store=store,
-        extras={"artifact_dir": str(tmp_path / "artifacts")},
-    )
-    observation = execute(
-        "osm_result_process",
-        "export",
-        purpose="安全 CSV",
-        inputs={"source_result": result_id, "format": "csv"},
-        ctx=ctx,
-    )
-    with Path(observation.artifacts["export_path"]).open(
-        encoding="utf-8-sig",
-        newline="",
-    ) as handle:
-        row = next(csv.DictReader(handle))
-    assert row["name"].startswith("'=")
+    assert observation.result is not None
+    assert observation.result["kept"] == 1

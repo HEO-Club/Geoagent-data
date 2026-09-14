@@ -24,6 +24,12 @@ _SECRET_VALUE_RE = re.compile(
 )
 
 
+def is_persistent_result_id(result_id: str) -> bool:
+    """Return whether an ID belongs to ``FilesystemResultStore``."""
+
+    return bool(_RESULT_ID_RE.fullmatch(result_id.strip()))
+
+
 @runtime_checkable
 class ResultStore(Protocol):
     """保存和读取结构化 Tool 结果。"""
@@ -208,6 +214,7 @@ __all__ = [
     "FilesystemResultStore",
     "InMemoryResultStore",
     "ResultStore",
+    "is_persistent_result_id",
     "resolve_result",
     "store_result",
 ]

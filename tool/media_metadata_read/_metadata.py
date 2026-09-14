@@ -15,7 +15,7 @@ from typing import Any, Protocol, runtime_checkable
 
 import cv2
 from PIL import Image, UnidentifiedImageError
-from PIL.ExifTags import IFD, Base, GPS
+from PIL.ExifTags import GPS, IFD, Base
 
 from tool.contract import Observation, RuntimeContext
 from tool.runtime.image_store import ImageResolveError, resolve_image_ref

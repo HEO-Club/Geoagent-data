@@ -29,6 +29,20 @@ class HarnessObservation(BaseModel):
     session: str | None = None
     error: str | None = None
     error_code: str | None = None
+    extensions: dict[str, Any] = Field(default_factory=dict)
+
+
+class ToolAttemptRecord(BaseModel):
+    """One physical dispatcher attempt inside a logical Tool step."""
+
+    attempt: int = Field(ge=1)
+    status: Literal["succeeded", "failed"]
+    started_at: str
+    finished_at: str
+    duration_ms: float = Field(ge=0)
+    error_code: str | None = None
+    error: str | None = None
+    retry_delay_ms: float | None = Field(default=None, ge=0)
 
 
 class ToolExecutionRecord(BaseModel):
@@ -58,6 +72,7 @@ class ToolExecutionRecord(BaseModel):
     observation: HarnessObservation | None = None
     observation_fingerprint: str | None = None
     artifact_fingerprints: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    attempts: list[ToolAttemptRecord] = Field(default_factory=list)
     final_location: str | list[str] | None = None
     started_at: str = ""
     finished_at: str = ""
@@ -95,5 +110,6 @@ __all__ = [
     "HarnessObservation",
     "HarnessReport",
     "ReferenceBinding",
+    "ToolAttemptRecord",
     "ToolExecutionRecord",
 ]

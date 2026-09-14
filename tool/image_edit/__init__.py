@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from tool.image_edit.enhance import execute as enhance
 from tool.image_edit.crop import execute as crop
+from tool.image_edit.enhance import execute as enhance
 from tool.image_edit.zoom import execute as zoom
 
 OPERATIONS = {
@@ -14,7 +14,7 @@ OPERATIONS = {
 
 __all__ = [
     "OPERATIONS",
-    'enhance',
     'crop',
+    'enhance',
     'zoom',
 ]

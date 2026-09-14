@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from tool.contract import Observation, RuntimeContext, not_implemented
+from tool.contract import Observation, RuntimeContext
+from tool.final_answer._submit import execute_submit
 
 
 def execute(
@@ -13,12 +14,6 @@ def execute(
     inputs: dict[str, Any],
     ctx: RuntimeContext | None = None,
 ) -> Observation:
-    """执行 final_answer.submit。尚未接入真实执行器。"""
+    """执行 final_answer.submit：校验并登记已有地点，不补造答案。"""
 
-    return not_implemented(
-        'final_answer',
-        'submit',
-        purpose=purpose,
-        inputs=inputs,
-        ctx=ctx,
-    )
+    return execute_submit(purpose=purpose, inputs=inputs, ctx=ctx)

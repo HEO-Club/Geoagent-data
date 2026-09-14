@@ -25,6 +25,7 @@ from tool.contract import Observation, RuntimeContext
 from tool.runtime.harness_models import (
     HarnessObservation,
     HarnessReport,
+    ToolAttemptRecord,
     ToolExecutionRecord,
 )
 from tool.runtime.image_store import FilesystemImageStore
@@ -34,12 +35,21 @@ from tool.runtime.references import (
     redact_credentials,
     resolve_inputs,
 )
-from tool.runtime.result_store import FilesystemResultStore
+from tool.runtime.result_store import FilesystemResultStore, is_persistent_result_id
 
 Dispatcher = Callable[..., Observation]
 _OUTER_KEYS = {"operation", "purpose", "inputs"}
 _REUSABLE_STATUSES = {"skipped_reasoning", "succeeded", "terminal"}
 _SAFE_ID_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+_DEFAULT_RETRYABLE_ERROR_CODES = (
+    "executor_exception",
+    "fetch_failed",
+    "network_error",
+    "provider_error",
+    "provider_unavailable",
+    "rate_limited",
+    "timeout",
+)
 
 
 class HarnessError(Exception):
@@ -61,6 +71,19 @@ class ToolHarnessConfig:
     stop_on_error: bool = False
     allowed_file_roots: list[Path] = field(default_factory=list)
     provider_revision: str = ""
+    max_attempts: int = 1
+    retryable_error_codes: tuple[str, ...] = _DEFAULT_RETRYABLE_ERROR_CODES
+    retry_initial_backoff_sec: float = 1.0
+    retry_max_backoff_sec: float = 30.0
+    retry_jitter_ratio: float = 0.2
+
+    def __post_init__(self) -> None:
+        if self.max_attempts < 1:
+            raise ValueError("max_attempts 必须至少为 1")
+        if self.retry_initial_backoff_sec < 0 or self.retry_max_backoff_sec < 0:
+            raise ValueError("retry backoff 不能为负数")
+        if not 0 <= self.retry_jitter_ratio <= 1:
+            raise ValueError("retry_jitter_ratio 必须在 0 到 1 之间")
 
 
 class ToolHarness:
@@ -116,7 +139,14 @@ class ToolHarness:
         trajectory_fingerprint = _fingerprint(trajectory.model_dump(mode="json"))
         catalog_fingerprint = _file_fingerprint(catalog_path)
         executor_fingerprint = _executor_fingerprint(self.dispatcher)
-        execution_policy = {"stop_on_error": self.config.stop_on_error}
+        execution_policy = {
+            "stop_on_error": self.config.stop_on_error,
+            "max_attempts": self.config.max_attempts,
+            "retryable_error_codes": sorted(set(self.config.retryable_error_codes)),
+            "retry_initial_backoff_sec": self.config.retry_initial_backoff_sec,
+            "retry_max_backoff_sec": self.config.retry_max_backoff_sec,
+            "retry_jitter_ratio": self.config.retry_jitter_ratio,
+        }
         runtime_fingerprint = _fingerprint(
             _runtime_identity(
                 self.base_context,
@@ -349,7 +379,11 @@ class ToolHarness:
                     return False
         result = observation.result or {}
         result_id = result.get("result_id")
-        if isinstance(result_id, str) and ctx.result_store is not None:
+        if (
+            isinstance(result_id, str)
+            and is_persistent_result_id(result_id)
+            and ctx.result_store is not None
+        ):
             try:
                 stored = ctx.result_store.get(result_id)
             except (KeyError, TypeError, ValueError):
@@ -582,20 +616,66 @@ class ToolHarness:
         previous_step_index = ctx.extras.get("harness_step_index")
         ctx.extras["harness_call_id"] = call_id
         ctx.extras["harness_step_index"] = step_index
+        attempts: list[ToolAttemptRecord] = []
+        observation = Observation(
+            ok=False,
+            error="Tool 未执行",
+            error_code="executor_exception",
+        )
+        retryable_codes = set(self.config.retryable_error_codes)
         try:
-            observation = self._dispatch(
-                audit.tool,
-                audit.operation,
-                purpose=safe_purpose,
-                inputs=audit.normalized_inputs,
-                ctx=ctx,
-            )
-        except Exception as exc:  # noqa: BLE001 - harness 必须隔离任意第三方异常
-            observation = Observation(
-                ok=False,
-                error=f"{type(exc).__name__}: {_safe_text(str(exc))}",
-                error_code="executor_exception",
-            )
+            for attempt_number in range(1, self.config.max_attempts + 1):
+                attempt_started_at = _utcnow()
+                attempt_clock = time.perf_counter()
+                try:
+                    observation = self._dispatch(
+                        audit.tool,
+                        audit.operation,
+                        purpose=safe_purpose,
+                        inputs=audit.normalized_inputs,
+                        ctx=ctx,
+                    )
+                except Exception as exc:  # noqa: BLE001 - 隔离第三方异常后再按错误码决策
+                    observation = Observation(
+                        ok=False,
+                        error=f"{type(exc).__name__}: {_safe_text(str(exc))}",
+                        error_code="executor_exception",
+                    )
+                should_retry = (
+                    not observation.ok
+                    and observation.error_code in retryable_codes
+                    and attempt_number < self.config.max_attempts
+                )
+                retry_delay = (
+                    _retry_delay_sec(
+                        call_id,
+                        attempt_number,
+                        initial=self.config.retry_initial_backoff_sec,
+                        maximum=self.config.retry_max_backoff_sec,
+                        jitter_ratio=self.config.retry_jitter_ratio,
+                    )
+                    if should_retry
+                    else None
+                )
+                attempts.append(
+                    ToolAttemptRecord(
+                        attempt=attempt_number,
+                        status="succeeded" if observation.ok else "failed",
+                        started_at=attempt_started_at,
+                        finished_at=_utcnow(),
+                        duration_ms=_elapsed_ms(attempt_clock),
+                        error_code=observation.error_code if not observation.ok else None,
+                        error=_safe_text(observation.error) if observation.error else None,
+                        retry_delay_ms=(
+                            retry_delay * 1000 if retry_delay is not None else None
+                        ),
+                    )
+                )
+                if not should_retry:
+                    break
+                _append_event(events_path, "step_retry_scheduled", running)
+                if retry_delay:
+                    time.sleep(retry_delay)
         finally:
             _restore_extra(ctx.extras, "harness_call_id", previous_call_id)
             _restore_extra(ctx.extras, "harness_step_index", previous_step_index)
@@ -606,6 +686,7 @@ class ToolHarness:
             )
             or contains_credential_fields(observation.artifacts)
             or contains_credential_fields(observation.session)
+            or contains_credential_fields(observation.extensions)
         )
         try:
             snapshot = _observation_snapshot(observation)
@@ -639,6 +720,7 @@ class ToolHarness:
                 "artifact_fingerprints": _artifact_file_identities(
                     snapshot.artifacts
                 ),
+                "attempts": attempts,
                 "finished_at": _utcnow(),
                 "duration_ms": _elapsed_ms(started_clock),
                 "error_code": snapshot.error_code if not snapshot.ok else None,
@@ -766,6 +848,16 @@ class ToolHarness:
         if session:
             ctx.active_session = session
             ctx.extras["_active_session_step"] = record.step_index
+        if record.reused_from_checkpoint and record.tool:
+            try:
+                from tool import restore_runtime_context
+
+                restore_runtime_context(record.tool, result, ctx)
+            except Exception as exc:  # 恢复错误必须显式中止，不能静默污染上下文
+                raise HarnessError(
+                    f"步骤 {record.step_index} 的 Tool 会话上下文恢复失败: {exc}",
+                    "context_rehydration_failed",
+                ) from exc
 
 
 def _validate_trajectory_contract(trajectory: Trajectory) -> None:
@@ -890,6 +982,7 @@ def _observation_snapshot(observation: Observation) -> HarnessObservation:
         ),
         error=_safe_text(observation.error) if observation.error else None,
         error_code=observation.error_code,
+        extensions=redact_credentials(observation.extensions),
     )
 
 
@@ -1158,6 +1251,23 @@ def _unique_paths(paths: list[Path]) -> list[Path]:
             seen.add(key)
             result.append(resolved)
     return result
+
+
+def _retry_delay_sec(
+    call_id: str,
+    attempt_number: int,
+    *,
+    initial: float,
+    maximum: float,
+    jitter_ratio: float,
+) -> float:
+    base = min(initial * (2 ** max(attempt_number - 1, 0)), maximum)
+    if base <= 0 or jitter_ratio <= 0:
+        return max(base, 0.0)
+    digest = hashlib.sha256(f"{call_id}:{attempt_number}".encode()).digest()
+    unit = int.from_bytes(digest[:8], "big") / ((1 << 64) - 1)
+    factor = (1 - jitter_ratio) + (2 * jitter_ratio * unit)
+    return max(base * factor, 0.0)
 
 
 def _elapsed_ms(started: float) -> float:
