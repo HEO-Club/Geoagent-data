@@ -1,5 +1,7 @@
 # GeoAgent Tool API 申请、购买与许可清单
 
+> 更新提示：本文件保留为 2026-09-14 审计快照。当前更完整且按实际代码后端重新核对的权威版本是 `docs/API_PROCUREMENT_AND_APPLICATION_GUIDE_20260915.md`；新版本已将当前未接入的 ORS、YouTube、Firecrawl、Europeana 等候选服务移出本轮采购单。
+
 日期：2026-09-14
 范围：`canonical_tool_catalog_v2.json` 中 31 tool / 57 operation 的当前实现
 
