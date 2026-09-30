@@ -54,7 +54,7 @@
 | `image_edit` | `enhance/crop/zoom` | Pillow/OpenCV | 否 | 本地图片变换 |
 | `image_measure` | `measure` | Pillow/OpenCV | 否 | 没有真实比例尺时只应输出像素或相对量 |
 | `image_compare` | `compare` | OpenCV | 否 | 本地图像比较 |
-| `ocr_read` | `recognize/decode` | RapidOCR/OpenCV QR | 否 | 本地 OCR/二维码；语言模型不是事实来源 |
+| `ocr_read` | `recognize/decode` | RapidOCR/OpenCV QR与EAN/UPC | 否 | 本地 OCR、二维码和常见商品一维码；语言模型不是事实来源 |
 | `reverse_image_search` | `search/search_crop` | SerpApi Google Lens；Google Vision 备用 | 是 | 图片会上传第三方，必须审查数据许可和隐私 |
 | `media_metadata_read` | `exif/file` | Pillow/OpenCV/FFmpeg | 否 | 本地 EXIF、媒体属性 |
 | `web_search` | `keyword_search/site_search` | Brave Search API | 是 | 只返回标题、URL、摘要；正文再由 `web_page_read` 获取 |
@@ -71,7 +71,7 @@
 | `satellite_imagery_query` | `retrieve/change_time/oblique_view` | Copernicus Data Space Sentinel Hub APIs | 是 | OAuth client；`oblique_view` 不是真斜摄影，只是正射预览的参数化视图 |
 | `satellite_imagery_compare` | `compare_candidates/compare_time` | Rasterio/OpenCV | 计算无需 | 上游影像仍需合法取得 |
 | `distance_bearing_calculator` | `distance/bearing` | pyproj.Geod | 否 | 本地 WGS84 椭球测地计算 |
-| `visibility_analysis` | `sightline` | 本地 DEM 采样 | 计算无需 | DEM 可来自本地或上游 OpenTopography/CDSE |
+| `visibility_analysis` | `sightline` | terrain_analysis GeoTIFF artifact + 本地 DEM 采样 | 计算无需 | 本地无 DEM 时由 terrain_analysis 用 OpenTopography Key 获取并保存 terrain_ref，visibility 不重复下载 |
 | `terrain_analysis` | `terrain` | Rasterio/Horn；OpenTopography 下载 | 本地 DEM 时否；下载时要 Key | 纯地名不能执行，需 bbox 或中心点加半径 |
 | `spatial_filter` | `geometry_filter` | Shapely/pyproj | 否 | 本地几何过滤，近距离使用局部投影 |
 | `weather_archive_query` | `cloud_cover/weather/snow_cover/refine_range` | Open-Meteo Archive + NASA GIBS | 研发通常免 Key；商业需 Open-Meteo计划 | GIBS 图层只作为图像证据，不能凭像素伪造百分比 |

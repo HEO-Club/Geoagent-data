@@ -294,6 +294,40 @@ def test_page_instructions_stay_inside_untrusted_excerpt() -> None:
     assert "admin password" not in (observation.error or "")
 
 
+def test_playwright_route_blocks_private_subrequests(monkeypatch: Any) -> None:
+    class _Request:
+        def __init__(self, url: str) -> None:
+            self.url = url
+
+    class _Route:
+        def __init__(self) -> None:
+            self.action: tuple[str, str | None] | None = None
+
+        def abort(self, code: str) -> None:
+            self.action = ("abort", code)
+
+        def continue_(self) -> None:
+            self.action = ("continue", None)
+
+    def _validate(url: str) -> str:
+        if url.startswith("http://127.0.0.1"):
+            raise read_mod.UnsafeHttpUrlError("private")
+        return url
+
+    monkeypatch.setattr(read_mod, "require_public_http_url", _validate)
+    blocked = _Route()
+    read_mod._guard_playwright_route(blocked, _Request("http://127.0.0.1/admin"))
+    assert blocked.action == ("abort", "blockedbyclient")
+
+    allowed = _Route()
+    read_mod._guard_playwright_route(allowed, _Request("https://example.com/app.js"))
+    assert allowed.action == ("continue", None)
+
+    inline = _Route()
+    read_mod._guard_playwright_route(inline, _Request("data:text/plain,ok"))
+    assert inline.action == ("continue", None)
+
+
 def test_http_reader_extracts_article_and_strips_html(monkeypatch: Any) -> None:
     html = """
     <html>

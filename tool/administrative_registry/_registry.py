@@ -215,7 +215,21 @@ class GeoNamesProvider:
         status = raw.get("status")
         if isinstance(status, dict):
             message = _text(status.get("message")) or "unknown"
-            raise EngineUnavailableError(f"GeoNames 失败: {message}")
+            code = _as_int(status.get("value"))
+            if code == 15:
+                return {"geonames": []}
+            if code == 10:
+                raise EngineUnavailableError(
+                    f"GeoNames 认证失败: {message}",
+                    "authentication_failed",
+                )
+            if code in {18, 19, 20}:
+                raise EngineUnavailableError(
+                    f"GeoNames 配额已耗尽: {message}",
+                    "rate_limited",
+                )
+            provider_code = "provider_error" if code in {13, 22} else "engine_unavailable"
+            raise EngineUnavailableError(f"GeoNames 失败: {message}", provider_code)
         return raw
 
 class OfficialDumpProvider:
@@ -875,8 +889,9 @@ def _resolve_providers(
     if want_geo:
         geo = injected_primary or injected_geo
         if geo is None:
-            geo = _build_geonames()
-        providers.append(geo)
+            geo = _build_geonames(required=kind == "geonames")
+        if geo is not None:
+            providers.append(geo)
     used_official = False
     if want_official:
         official = injected_official
@@ -888,6 +903,12 @@ def _resolve_providers(
             providers.append(official)
             used_official = True
     if not providers:
+        if want_geo and not _allow_real_api():
+            raise EngineUnavailableError(
+                "ALLOW_REAL_TOOL_API=false，禁止调用真实地名档案 API"
+            )
+        if want_geo and not os.environ.get("GEONAMES_USERNAME", "").strip():
+            raise EngineUnavailableError("未配置 GEONAMES_USERNAME 或本地官方地名档案")
         raise EngineUnavailableError("未配置可用的地名档案后端")
     return providers, used_official
 
@@ -895,13 +916,17 @@ def _ensure_provider(raw: Any, label: str) -> None:
     if not isinstance(raw, GazetteerProvider):
         raise EngineUnavailableError(f"{label} 必须提供 search(request) 与 hierarchy(provider_id)")
 
-def _build_geonames() -> GeoNamesProvider:
+def _build_geonames(*, required: bool) -> GeoNamesProvider | None:
     _load_dotenv()
     if not _allow_real_api():
-        raise EngineUnavailableError("ALLOW_REAL_TOOL_API=false，禁止调用真实地名档案 API")
+        if required:
+            raise EngineUnavailableError("ALLOW_REAL_TOOL_API=false，禁止调用真实地名档案 API")
+        return None
     username = os.environ.get("GEONAMES_USERNAME", "").strip()
     if not username:
-        raise EngineUnavailableError("未配置 GEONAMES_USERNAME")
+        if required:
+            raise EngineUnavailableError("未配置 GEONAMES_USERNAME")
+        return None
     return GeoNamesProvider(
         username=username,
         endpoint=_env_value("GEONAMES_ENDPOINT", _DEFAULT_GEONAMES_ENDPOINT),
@@ -1029,11 +1054,24 @@ def _http_json(
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace") if exc.fp else str(exc)
-        raise EngineUnavailableError(f"{error_prefix} HTTP {exc.code}: {detail[:200]}") from exc
+        error_code = {
+            401: "authentication_failed",
+            403: "permission_denied",
+            429: "rate_limited",
+        }.get(exc.code, "provider_error" if exc.code >= 500 else "engine_unavailable")
+        raise EngineUnavailableError(
+            f"{error_prefix} HTTP {exc.code}: {detail[:200]}",
+            error_code,
+        ) from exc
     except urllib.error.URLError as exc:
-        raise EngineUnavailableError(f"{error_prefix} 网络失败: {exc.reason}") from exc
-    except (json.JSONDecodeError, TimeoutError, OSError) as exc:
-        raise EngineUnavailableError(f"{error_prefix} 调用失败: {exc}") from exc
+        raise EngineUnavailableError(
+            f"{error_prefix} 网络失败: {exc.reason}",
+            "network_error",
+        ) from exc
+    except TimeoutError as exc:
+        raise EngineUnavailableError(f"{error_prefix} 超时: {exc}", "timeout") from exc
+    except (json.JSONDecodeError, OSError) as exc:
+        raise EngineUnavailableError(f"{error_prefix} 调用失败: {exc}", "provider_error") from exc
 
 def _append_query(endpoint: str, query: str) -> str:
     separator = "&" if urllib.parse.urlparse(endpoint).query else "?"
@@ -1064,6 +1102,15 @@ def _as_float(raw: Any) -> float | None:
         except ValueError:
             return None
     return None
+
+
+def _as_int(raw: Any) -> int | None:
+    if isinstance(raw, bool) or raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
 
 def _fmt_coord(value: float) -> str:
     return f"{value:.6f}"

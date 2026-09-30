@@ -5401,8 +5401,8 @@
                   "type": "string_or_object",
                   "required": false,
                   "requirement_level": "optional",
-                  "description": "使用的高程/地形数据引用。",
-                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 terrain；来源没有时不得编造。",
+                  "description": "本地高程栅格、内存网格或 terrain_analysis 返回的 terrain_ref；缺少时先显式获取 DEM。",
+                  "acquisition_hint": "优先引用 terrain_analysis 返回的 terrain_ref；没有本地 DEM 时先让 terrain_analysis 使用 OpenTopography 获取，禁止编造路径或在本 Tool 内隐藏下载。",
                   "context_sources": [],
                   "context_default": null,
                   "aliases": [

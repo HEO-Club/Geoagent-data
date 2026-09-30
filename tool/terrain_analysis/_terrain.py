@@ -9,6 +9,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -343,7 +344,81 @@ def _run(inputs: dict[str, Any], ctx: RuntimeContext | None) -> Observation:
     }
     if profile is not None:
         result["profile"] = profile
-    return _ok(result)
+    observation = _ok(result)
+    terrain_path = _persist_dem_artifact(dem, ctx)
+    if terrain_path is not None:
+        assert observation.result is not None
+        observation.result["terrain_ref"] = str(terrain_path)
+        observation.artifacts = {
+            "terrain_path": str(terrain_path),
+            "dataset": dem.dataset,
+            "kind": dem.kind,
+        }
+    if ctx is not None:
+        ctx.extras["visibility_terrain"] = (
+            str(terrain_path) if terrain_path is not None else dem
+        )
+    return observation
+
+
+def restore_runtime_context(result: dict[str, Any], ctx: RuntimeContext) -> None:
+    """从持久化 terrain_ref 恢复后续 visibility_analysis 所需的 DEM。"""
+
+    terrain_ref = result.get("terrain_ref")
+    if not isinstance(terrain_ref, str) or not terrain_ref.strip():
+        return
+    path = Path(terrain_ref).resolve()
+    if not path.is_file():
+        raise EngineUnavailableError(f"恢复 terrain artifact 失败，文件不存在: {path}")
+    ctx.extras["visibility_terrain"] = str(path)
+
+
+def _persist_dem_artifact(dem: DemGrid, ctx: RuntimeContext | None) -> Path | None:
+    """在 Harness artifact 目录保存可供 visibility_analysis 复用的 GeoTIFF。"""
+
+    raw_dir = ctx.extras.get("artifact_dir") if ctx is not None else None
+    if not isinstance(raw_dir, str) or not raw_dir.strip():
+        return None
+    try:
+        import rasterio
+        from rasterio.crs import CRS
+        from rasterio.transform import Affine
+    except ImportError as exc:
+        raise EngineUnavailableError("保存 DEM artifact 需要 rasterio") from exc
+
+    root = Path(raw_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    call_id = ctx.extras.get("harness_call_id") if ctx is not None else None
+    stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(call_id or uuid.uuid4().hex))[:100]
+    path = root / f"terrain_{stem}.tif"
+    temp = root / f".{path.stem}.{uuid.uuid4().hex}.tmp.tif"
+    crs_text = dem.crs.strip() if isinstance(dem.crs, str) else ""
+    if crs_text.lower() in {_CRS_WGS84, "4326", "crs84"}:
+        crs_text = "EPSG:4326"
+    try:
+        crs = CRS.from_user_input(crs_text or "EPSG:4326")
+        values = np.asarray(dem.values, dtype=np.float32)
+        with rasterio.open(
+            temp,
+            "w",
+            driver="GTiff",
+            height=int(values.shape[0]),
+            width=int(values.shape[1]),
+            count=1,
+            dtype="float32",
+            crs=crs,
+            transform=Affine(*dem.transform),
+            nodata=dem.nodata,
+            compress="deflate",
+        ) as dataset:
+            dataset.write(values, 1)
+        os.replace(temp, path)
+    except Exception as exc:
+        raise EngineUnavailableError(f"无法保存 DEM artifact: {exc}") from exc
+    finally:
+        if temp.exists():
+            temp.unlink()
+    return path
 
 def _merge_extensions(raw: dict[str, Any]) -> dict[str, Any]:
     extensions = raw.get("extensions")

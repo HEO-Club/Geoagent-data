@@ -24,7 +24,7 @@ pandas
 tzdata
 timezonefinder
 pillow
-opencv-python
+opencv-python>=4.8
 imageio-ffmpeg
 rapidocr
 onnxruntime

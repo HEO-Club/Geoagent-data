@@ -604,7 +604,8 @@ def test_overpass_http_posts_ql(monkeypatch: Any) -> None:
         return _FakeHttpResponse(_sample_elements())
 
     monkeypatch.setenv("ALLOW_REAL_TOOL_API", "true")
-    monkeypatch.setenv("OSM_QUERY_OVERPASS_ENDPOINT", "http://127.0.0.1:12345/api/interpreter")
+    monkeypatch.setenv("OSM_QUERY_OVERPASS_ENDPOINT", "https://127.0.0.1:12345/api/interpreter")
+    monkeypatch.setenv("ALLOW_CUSTOM_TOOL_ENDPOINTS", "true")
     monkeypatch.setenv("OSM_QUERY_OVERPASS_USER_AGENT", "geoagent-dataset/1.0 (osm_query; test)")
     monkeypatch.setattr(osm_mod.urllib.request, "urlopen", fake_urlopen)
 
@@ -620,6 +621,24 @@ def test_overpass_http_posts_ql(monkeypatch: Any) -> None:
     assert observation.result["applied"]["provider"] == "overpass"
     assert observation.result["elements"][0]["osm_id"] == 123
     assert any("WGS84" in item for item in observation.result["assumptions"])
+
+
+def test_custom_overpass_endpoint_requires_explicit_opt_in(monkeypatch: Any) -> None:
+    monkeypatch.setenv("ALLOW_REAL_TOOL_API", "true")
+    monkeypatch.setenv("ALLOW_CUSTOM_TOOL_ENDPOINTS", "false")
+    monkeypatch.setenv(
+        "OSM_QUERY_OVERPASS_ENDPOINT",
+        "https://overpass.example.test/api/interpreter",
+    )
+    observation = execute(
+        "osm_query",
+        "query",
+        purpose="拒绝未批准端点",
+        inputs={"bbox": [113.5, 34.7, 113.8, 34.9], "tags": {"bridge": "yes"}},
+        ctx=RuntimeContext(),
+    )
+    assert observation.ok is False
+    assert observation.error_code == "invalid_provider"
 
 
 def test_active_area_context_default() -> None:

@@ -1302,11 +1302,19 @@ def _http_bytes(
             return b""
         detail = exc.read()[:200] if exc.fp else b""
         text = detail.decode("utf-8", errors="replace")
-        raise EngineUnavailableError(f"{error_prefix} HTTP {exc.code}: {text}") from exc
+        raise EngineUnavailableError(
+            f"{error_prefix} HTTP {exc.code}: {text}",
+            _provider_http_error_code(exc.code),
+        ) from exc
     except urllib.error.URLError as exc:
-        raise EngineUnavailableError(f"{error_prefix} 网络失败: {exc.reason}") from exc
-    except (TimeoutError, OSError) as exc:
-        raise EngineUnavailableError(f"{error_prefix} 调用失败: {exc}") from exc
+        raise EngineUnavailableError(
+            f"{error_prefix} 网络失败: {exc.reason}",
+            "network_error",
+        ) from exc
+    except TimeoutError as exc:
+        raise EngineUnavailableError(f"{error_prefix} 超时: {exc}", "timeout") from exc
+    except OSError as exc:
+        raise EngineUnavailableError(f"{error_prefix} 调用失败: {exc}", "network_error") from exc
 
 def _http_post_form(
     url: str,
@@ -1327,12 +1335,35 @@ def _http_post_form(
     except urllib.error.HTTPError as exc:
         detail = exc.read()[:200] if exc.fp else b""
         text = detail.decode("utf-8", errors="replace")
-        raise EngineUnavailableError(f"{error_prefix} HTTP {exc.code}: {text}") from exc
+        raise EngineUnavailableError(
+            f"{error_prefix} HTTP {exc.code}: {text}",
+            _provider_http_error_code(exc.code),
+        ) from exc
     except urllib.error.URLError as exc:
-        raise EngineUnavailableError(f"{error_prefix} 网络失败: {exc.reason}") from exc
-    except (TimeoutError, OSError) as exc:
-        raise EngineUnavailableError(f"{error_prefix} 调用失败: {exc}") from exc
+        raise EngineUnavailableError(
+            f"{error_prefix} 网络失败: {exc.reason}",
+            "network_error",
+        ) from exc
+    except TimeoutError as exc:
+        raise EngineUnavailableError(f"{error_prefix} 超时: {exc}", "timeout") from exc
+    except OSError as exc:
+        raise EngineUnavailableError(f"{error_prefix} 调用失败: {exc}", "network_error") from exc
     try:
         return json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise EngineUnavailableError(f"{error_prefix} 回执不是 JSON: {exc}") from exc
+        raise EngineUnavailableError(
+            f"{error_prefix} 回执不是 JSON: {exc}",
+            "provider_error",
+        ) from exc
+
+
+def _provider_http_error_code(status: int) -> str:
+    if status == 401:
+        return "authentication_failed"
+    if status == 403:
+        return "permission_denied"
+    if status == 429:
+        return "rate_limited"
+    if status >= 500:
+        return "provider_error"
+    return "engine_unavailable"

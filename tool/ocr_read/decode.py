@@ -14,6 +14,6 @@ def execute(
     inputs: dict[str, Any],
     ctx: RuntimeContext | None = None,
 ) -> Observation:
-    """执行 ocr_read.decode：解码二维码；一维条码本阶段返回 unsupported。"""
+    """执行 ocr_read.decode：本地解码二维码与 OpenCV 支持的一维商品条码。"""
 
     return execute_decode(purpose=purpose, inputs=inputs, ctx=ctx)

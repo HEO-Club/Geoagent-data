@@ -247,17 +247,27 @@ class PlaywrightPageReader:
             with sync_playwright() as playwright:
                 browser = playwright.chromium.launch(headless=True)
                 try:
-                    page = browser.new_page()
+                    context = browser.new_context(
+                        accept_downloads=False,
+                        service_workers="block",
+                    )
+                    context.route("**/*", _guard_playwright_route)
+                    page = context.new_page()
                     page.set_default_timeout(self._timeout_ms)
                     response = page.goto(
                         request.url,
                         wait_until="domcontentloaded",
                         timeout=self._timeout_ms,
                     )
+                    try:
+                        require_public_http_url(page.url)
+                    except UnsafeHttpUrlError as exc:
+                        raise FetchError(str(exc), "unsafe_url") from exc
                     html = page.content()
                     title = page.title()
                     screenshot = page.screenshot() if request.want_screenshot else None
                     status = response.status if response is not None else None
+                    final_url = page.url
                 finally:
                     browser.close()
         except EngineUnavailableError:
@@ -274,7 +284,7 @@ class PlaywrightPageReader:
             html=html,
         )
         return PageReadResult(
-            url=request.url,
+            url=final_url,
             renderer=self.name,
             fetched_at=fetched_at,
             title=page_title,
@@ -286,6 +296,22 @@ class PlaywrightPageReader:
             needs_js=False,
             status=status,
         )
+
+
+def _guard_playwright_route(route: Any, request: Any) -> None:
+    """阻止 JS 页面把无头浏览器当作内网 HTTP 客户端。"""
+
+    url = str(getattr(request, "url", "") or "")
+    scheme = urllib.parse.urlsplit(url).scheme.lower()
+    if scheme in {"about", "blob", "data"}:
+        route.continue_()
+        return
+    try:
+        require_public_http_url(url)
+    except UnsafeHttpUrlError:
+        route.abort("blockedbyclient")
+        return
+    route.continue_()
 
 def execute_open_result(
     *,

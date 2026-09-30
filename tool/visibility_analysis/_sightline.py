@@ -15,6 +15,7 @@ import numpy as np
 from pyproj import Geod, Transformer
 
 from tool.contract import Observation, RuntimeContext, declared_inputs
+from tool.runtime.result_store import resolve_result
 
 _OP = "sightline"
 _ELLIPSOID = "WGS84"
@@ -592,11 +593,13 @@ def _resolve_sampler(
     raw: Any,
     ctx: RuntimeContext | None,
 ) -> tuple[TerrainSampler, str]:
-    injected = None if ctx is None else ctx.extras.get("visibility_terrain")
+    injected = None
+    if ctx is not None:
+        injected = ctx.extras.get("visibility_terrain")
+        if injected is None:
+            injected = ctx.extras.get("terrain_analysis_dem")
     if injected is not None:
-        if not isinstance(injected, TerrainSampler):
-            raise SightlineInputError("visibility_terrain 注入对象必须实现 TerrainSampler", "invalid_input")
-        return injected, "injected"
+        return _sampler_from_shared(injected)
     if raw is None or raw == "":
         raise SightlineInputError("缺少必填输入 terrain", "missing_input")
     resolved = _resolve_ref(raw, ctx, field="terrain")
@@ -613,7 +616,12 @@ def _resolve_sampler(
                 return _grid_from_mapping(inner), "grid"
         if _looks_like_grid(resolved):
             return _grid_from_mapping(resolved), "grid"
-        path = resolved.get("path") or resolved.get("uri") or resolved.get("file")
+        path = (
+            resolved.get("terrain_ref")
+            or resolved.get("path")
+            or resolved.get("uri")
+            or resolved.get("file")
+        )
         if isinstance(path, str) and path.strip():
             kind = _normalize_kind(resolved.get("kind") or resolved.get("type"))
             sampler, _source = _sampler_from_path(path.strip(), kind=kind)
@@ -621,6 +629,46 @@ def _resolve_sampler(
     if _looks_like_place_name(raw) or _looks_like_place_name(resolved):
         raise SightlineInputError("terrain 必须是地形网格或本地栅格，不能用地名替代", "invalid_input")
     raise SightlineInputError("terrain 无法解析为地形网格或栅格路径", "invalid_input")
+
+
+def _sampler_from_shared(raw: Any) -> tuple[TerrainSampler, str]:
+    if isinstance(raw, str):
+        return _sampler_from_path(raw)
+    if isinstance(raw, GridTerrainSampler):
+        return raw, "injected"
+    if isinstance(raw, dict):
+        if _looks_like_grid(raw):
+            return _grid_from_mapping(raw), "injected"
+        path = raw.get("terrain_ref") or raw.get("path") or raw.get("uri") or raw.get("file")
+        if isinstance(path, str) and path.strip():
+            return _sampler_from_path(
+                path.strip(),
+                kind=_normalize_kind(raw.get("kind")),
+            )
+    values = getattr(raw, "values", None)
+    transform = getattr(raw, "transform", None)
+    if values is not None and transform is not None:
+        array = np.asarray(values, dtype=float)
+        affine = tuple(float(item) for item in transform[:6])
+        if array.ndim != 2 or len(affine) != 6:
+            raise SightlineInputError("共享 terrain 必须是二维高程网格", "invalid_input")
+        return (
+            GridTerrainSampler(
+                values=array,
+                transform=(affine[0], affine[1], affine[2], affine[3], affine[4], affine[5]),
+                kind=_normalize_kind(getattr(raw, "kind", _KIND_UNKNOWN)),
+                crs=str(getattr(raw, "crs", _CRS_WGS84) or _CRS_WGS84),
+                nodata=_as_float(getattr(raw, "nodata", None)),
+                to_raster=getattr(raw, "to_raster", None),
+            ),
+            "injected",
+        )
+    if isinstance(raw, TerrainSampler):
+        return raw, "injected"
+    raise SightlineInputError(
+        "visibility_terrain 注入对象必须是地形网格、栅格路径或 TerrainSampler",
+        "invalid_input",
+    )
 
 
 def _sampler_from_path(raw: str, *, kind: str | None = None) -> tuple[TerrainSampler, str]:
@@ -847,6 +895,9 @@ def _crs_of(raw: dict[str, Any]) -> str | None:
 
 
 def _resolve_ref(raw: Any, ctx: RuntimeContext | None, *, field: str) -> Any:
+    stored = resolve_result(raw, ctx)
+    if stored is not None:
+        return _unwrap_previous(stored)
     if raw != _PREVIOUS:
         return raw
     previous = ctx.previous_tool_result if ctx is not None else None

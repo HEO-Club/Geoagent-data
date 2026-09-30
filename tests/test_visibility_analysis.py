@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pytest
 
-from tool import execute
+from tool import execute, restore_runtime_context
 from tool.contract import Observation, RuntimeContext
 
 _WEST = 0.0
@@ -378,3 +379,40 @@ def test_geotiff_path_roundtrip(tmp_path: Any) -> None:
     assert observation.result is not None
     assert observation.result["visible"] is True
     assert observation.result["applied"]["terrain_source"] == "geotiff"
+
+
+def test_terrain_analysis_artifact_chains_into_visibility(tmp_path: Any) -> None:
+    ctx = RuntimeContext(extras={"artifact_dir": str(tmp_path / "artifacts")})
+    terrain = execute(
+        "terrain_analysis",
+        "terrain",
+        purpose="准备可复用 DEM",
+        inputs={
+            "area": {
+                "west": _WEST,
+                "south": _SOUTH,
+                "east": _EAST,
+                "north": _NORTH,
+            },
+            "metrics": ["elevation"],
+            "terrain": _grid(_flat_values()),
+        },
+        ctx=ctx,
+    )
+    assert terrain.ok is True
+    terrain_path = terrain.artifacts.get("terrain_path")
+    assert isinstance(terrain_path, str)
+    assert Path(terrain_path).is_file()
+
+    ctx.extras.pop("visibility_terrain", None)
+    assert terrain.result is not None
+    restore_runtime_context("terrain_analysis", terrain.result, ctx)
+
+    visibility = _sightline(
+        inputs={"observer": _OBS, "target": _TGT},
+        ctx=ctx,
+    )
+    assert visibility.ok is True
+    assert visibility.result is not None
+    assert visibility.result["visible"] is True
+    assert visibility.result["applied"]["terrain_source"] == "geotiff"

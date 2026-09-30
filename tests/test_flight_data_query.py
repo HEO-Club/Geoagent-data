@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import urllib.error
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
 from typing import Any
 from urllib.parse import parse_qs, urlparse
+
+import pytest
 
 from tool import execute
 from tool.contract import Observation, RuntimeContext
@@ -407,6 +411,27 @@ def test_allow_real_api_false_without_provider_is_unavailable() -> None:
     assert observation.error_code == "engine_unavailable"
     assert observation.error is not None
     assert "ALLOW_REAL_TOOL_API" in observation.error
+
+
+def test_opensky_rate_limit_is_retryable(monkeypatch: Any) -> None:
+    def _limited(*_args: Any, **_kwargs: Any) -> Any:
+        raise urllib.error.HTTPError(
+            "https://opensky-network.org/api/states/all",
+            429,
+            "Too Many Requests",
+            {},
+            BytesIO(b"rate limited"),
+        )
+
+    monkeypatch.setattr(query_mod.urllib.request, "urlopen", _limited)
+    with pytest.raises(query_mod.EngineUnavailableError) as caught:
+        query_mod._http_bytes(
+            "https://opensky-network.org/api/states/all",
+            headers={},
+            timeout_sec=1,
+            error_prefix="OpenSky",
+        )
+    assert caught.value.error_code == "rate_limited"
 
 
 def test_opensky_http_query_shape(monkeypatch: Any) -> None:

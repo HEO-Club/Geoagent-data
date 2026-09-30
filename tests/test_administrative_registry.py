@@ -6,10 +6,12 @@ import json
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+import pytest
+
 from tool import execute
-from tool.contract import Observation, RuntimeContext
 from tool.administrative_registry import _registry as registry_mod
 from tool.administrative_registry._registry import OfficialDumpProvider, RegistryRequest
+from tool.contract import Observation, RuntimeContext
 
 
 class FakeGazetteerProvider:
@@ -155,6 +157,67 @@ def test_allow_real_api_false_without_provider_is_unavailable() -> None:
     assert observation.error_code == "engine_unavailable"
     assert observation.error is not None
     assert "ALLOW_REAL_TOOL_API" in observation.error
+
+
+def test_auto_registry_uses_local_official_dump_without_geonames(
+    tmp_path: Any,
+    monkeypatch: Any,
+) -> None:
+    path = tmp_path / "official.json"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "official-1",
+                    "standard_name": "测试新区",
+                    "aliases": ["旧称"],
+                    "valid_from": "2020-01-01",
+                    "source_url": "https://example.gov.test/record/1",
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ALLOW_REAL_TOOL_API", "false")
+    monkeypatch.delenv("GEONAMES_USERNAME", raising=False)
+    monkeypatch.setenv("ADMINISTRATIVE_REGISTRY_OFFICIAL_PATH", str(path))
+
+    observation = execute(
+        "administrative_registry",
+        "administrative",
+        purpose="仅本地官方档案",
+        inputs={"query": "测试新区"},
+    )
+    assert observation.ok is True
+    assert observation.result is not None
+    assert observation.result["applied"]["providers"] == ["official"]
+    assert observation.result["results"][0]["standard_name"] == "测试新区"
+
+
+def test_geonames_status_codes_keep_no_result_distinct_from_quota(monkeypatch: Any) -> None:
+    provider = registry_mod.GeoNamesProvider(
+        username="test",
+        endpoint="https://secure.geonames.org",
+        timeout_sec=1,
+        user_agent="test",
+    )
+    request = RegistryRequest(operation="administrative", query="none", top_k=1)
+    monkeypatch.setattr(
+        registry_mod,
+        "_http_json",
+        lambda *_args, **_kwargs: {"status": {"value": 15, "message": "no result"}},
+    )
+    assert provider.search(request) == []
+
+    monkeypatch.setattr(
+        registry_mod,
+        "_http_json",
+        lambda *_args, **_kwargs: {"status": {"value": 18, "message": "daily limit"}},
+    )
+    with pytest.raises(registry_mod.EngineUnavailableError) as caught:
+        provider.search(request)
+    assert caught.value.error_code == "rate_limited"
 
 
 def test_administrative_returns_name_hierarchy_aliases_and_wgs84() -> None:

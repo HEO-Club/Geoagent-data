@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from tool.terrain_analysis._terrain import restore_runtime_context
 from tool.terrain_analysis.terrain import execute as terrain
 
 OPERATIONS = {
@@ -10,5 +11,6 @@ OPERATIONS = {
 
 __all__ = [
     "OPERATIONS",
+    'restore_runtime_context',
     'terrain',
 ]

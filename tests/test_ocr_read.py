@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import cv2
+import numpy as np
 import pytest
 from PIL import Image
 
@@ -262,11 +263,21 @@ def test_decode_qr_in_region(tmp_path: Path) -> None:
     assert bbox[1] >= 30
 
 
-def test_decode_barcode_unsupported_and_empty(tmp_path: Path) -> None:
+def test_decode_barcode_and_empty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     blank = _solid(tmp_path / "nocode.png")
+
+    class _FakeBarcodeDetector:
+        def detectAndDecodeWithType(self, _image: Any) -> tuple[Any, ...]:
+            points = np.asarray([[[1, 2], [30, 2], [30, 18], [1, 18]]], dtype=float)
+            return True, ("5901234123457",), ("EAN_13",), points
+
+    monkeypatch.setattr(cv2, "barcode_BarcodeDetector", _FakeBarcodeDetector)
     barcode_only = _decode(tmp_path, source=blank, inputs={"code_types": ["barcode"]})
-    assert barcode_only.ok is False
-    assert barcode_only.error_code == "unsupported_code_type"
+    assert barcode_only.ok is True
+    assert barcode_only.result is not None
+    assert barcode_only.result["items"][0]["payload"] == "5901234123457"
+    assert barcode_only.result["items"][0]["code_type"] == "ean13"
+    assert barcode_only.result["applied"]["engine"] == "opencv_barcode"
 
     empty = _decode(tmp_path, source=blank)
     assert empty.ok is True
@@ -275,11 +286,29 @@ def test_decode_barcode_unsupported_and_empty(tmp_path: Path) -> None:
     assert empty.result["full_text"] == ""
 
     qr = _make_qr(tmp_path / "mixed.png", "keep-qr")
-    mixed = _decode(tmp_path, source=qr, inputs={"code_types": ["qr", "barcode"]})
+    mixed = _decode(
+        tmp_path,
+        source=qr,
+        inputs={"code_types": ["qr", "barcode", "unknown"]},
+    )
     assert mixed.ok is True
     assert mixed.result is not None
-    assert mixed.result["full_text"] == "keep-qr"
-    assert mixed.result["applied"]["unsupported_code_types"] == ["barcode"]
+    assert "keep-qr" in mixed.result["full_text"]
+    assert "5901234123457" in mixed.result["full_text"]
+    assert mixed.result["applied"]["unsupported_code_types"] == ["unknown"]
+
+
+def test_real_opencv_barcode_detector_blank_is_empty(tmp_path: Path) -> None:
+    blank = _solid(tmp_path / "real-barcode-blank.png")
+    observation = _decode(
+        tmp_path,
+        source=blank,
+        inputs={"code_types": ["barcode"]},
+    )
+    assert observation.ok is True
+    assert observation.result is not None
+    assert observation.result["items"] == []
+    assert observation.result["applied"]["engine"] == "opencv_barcode"
 
 
 def test_real_rapidocr_optional(tmp_path: Path) -> None:

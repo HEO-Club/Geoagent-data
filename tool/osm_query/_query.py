@@ -53,6 +53,13 @@ _LIMIT_MIN = 1
 _LIMIT_MAX = 10000
 _DEFAULT_MAXSIZE = 33_554_432
 _HTTP_TIMEOUT_PAD_SEC = 5.0
+_PUBLIC_OVERPASS_HOSTS = frozenset(
+    {
+        "overpass-api.de",
+        "overpass.kumi.systems",
+        "overpass.private.coffee",
+    }
+)
 _COORD_SPLIT_RE = re.compile(r"[,;，、\s]+")
 _TIMEOUT_RE = re.compile(r"\[timeout\s*:\s*(\d+)\s*\]", re.IGNORECASE)
 _MAXSIZE_RE = re.compile(r"\[maxsize\s*:\s*(\d+)\s*\]", re.IGNORECASE)
@@ -1315,10 +1322,30 @@ def _resolve_provider(ctx: RuntimeContext | None) -> OsmQueryProvider:
     if not _allow_real_api():
         raise EngineUnavailableError("ALLOW_REAL_TOOL_API=false，禁止调用真实 OSM 查询 API")
     return OverpassProvider(
-        endpoint=_env_value("OSM_QUERY_OVERPASS_ENDPOINT", _DEFAULT_ENDPOINT),
+        endpoint=_validated_overpass_endpoint(
+            _env_value("OSM_QUERY_OVERPASS_ENDPOINT", _DEFAULT_ENDPOINT)
+        ),
         user_agent=_env_value("OSM_QUERY_OVERPASS_USER_AGENT", _DEFAULT_UA),
         timeout_sec=_env_timeout("OSM_QUERY_TIMEOUT_SEC"),
     )
+
+
+def _validated_overpass_endpoint(raw: str) -> str:
+    endpoint = raw.strip()
+    parsed = urllib.parse.urlparse(endpoint)
+    if parsed.scheme.lower() != "https" or not parsed.hostname:
+        raise EngineUnavailableError(
+            "OSM_QUERY_OVERPASS_ENDPOINT 必须是有效 HTTPS 地址",
+            "invalid_provider",
+        )
+    host = parsed.hostname.rstrip(".").lower()
+    custom = os.environ.get("ALLOW_CUSTOM_TOOL_ENDPOINTS", "false").strip().lower()
+    if host not in _PUBLIC_OVERPASS_HOSTS and custom not in {"1", "true", "yes", "on"}:
+        raise EngineUnavailableError(
+            "自定义 Overpass 主机需显式开启 ALLOW_CUSTOM_TOOL_ENDPOINTS",
+            "invalid_provider",
+        )
+    return endpoint
 
 def _provider_name(provider: OsmQueryProvider) -> str:
     return str(getattr(provider, "name", "injected"))
@@ -1365,13 +1392,24 @@ def _http_post_json(
             raw = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace") if exc.fp else str(exc)
+        error_code = {
+            401: "authentication_failed",
+            403: "permission_denied",
+            429: "rate_limited",
+        }.get(exc.code, "provider_error" if exc.code >= 500 else "engine_unavailable")
         raise EngineUnavailableError(
             f"{error_prefix} HTTP {exc.code}: {detail[:200]}",
+            error_code,
         ) from exc
     except urllib.error.URLError as exc:
-        raise EngineUnavailableError(f"{error_prefix} 网络失败: {exc.reason}") from exc
-    except (json.JSONDecodeError, TimeoutError, OSError) as exc:
-        raise EngineUnavailableError(f"{error_prefix} 调用失败: {exc}") from exc
+        raise EngineUnavailableError(
+            f"{error_prefix} 网络失败: {exc.reason}",
+            "network_error",
+        ) from exc
+    except TimeoutError as exc:
+        raise EngineUnavailableError(f"{error_prefix} 超时: {exc}", "timeout") from exc
+    except (json.JSONDecodeError, OSError) as exc:
+        raise EngineUnavailableError(f"{error_prefix} 调用失败: {exc}", "provider_error") from exc
     return raw
 
 def _ql_escape(value: str) -> str:
