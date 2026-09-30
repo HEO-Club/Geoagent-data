@@ -1,4 +1,4 @@
-"""media_search 共享执行器：Wikimedia Commons，只返回元数据与链接。"""
+"""media_search 共享执行器：Wikimedia Commons，以及显式指定时的 YouTube 视频检索。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from typing import Any, Protocol, runtime_checkable
 
 from tool._gate import allow_real_api as _allow_real_api
@@ -23,12 +23,15 @@ _TOP_K_MIN = 1
 _TOP_K_MAX = 100
 _COMMONS_MAX_TOP_K = 50
 _PROVIDER_COMMONS = "wikimedia_commons"
+_PROVIDER_YOUTUBE = "youtube"
 _KIND_PHOTO = "photo"
 _KIND_VIDEO = "video"
 _PHOTO_FILETYPE = "bitmap|drawing"
 _VIDEO_FILETYPE = "video"
 _FILE_NAMESPACE = "6"
 _DEFAULT_COMMONS_ENDPOINT = "https://commons.wikimedia.org/w/api.php"
+_DEFAULT_YOUTUBE_ENDPOINT = "https://www.googleapis.com/youtube/v3/search"
+_YOUTUBE_MAX_TOP_K = 50
 _DEFAULT_TIMEOUT_SEC = 30.0
 _DEFAULT_USER_AGENT = "geoagent-dataset/1.0 (media_search; local)"
 _GEO_RADIUS_MIN = 10
@@ -55,6 +58,8 @@ _COMMONS_ALIASES = {
     "wikimedia": _PROVIDER_COMMONS,
     "mediawiki": _PROVIDER_COMMONS,
 }
+_YOUTUBE_ALIASES = frozenset({"youtube", "you_tube", "yt"})
+_SECRET_QUERY_RE = re.compile(r"(?i)(key=)[^&\s\"']+")
 _EXT_FILTER = (
     "DateTimeOriginal|LicenseShortName|LicenseUrl|Artist|"
     "ImageDescription|Credit|UsageTerms"
@@ -74,11 +79,12 @@ _FORBIDDEN_KEYS = frozenset(
     }
 )
 _ASSUMPTIONS = [
-    "uploaded_at 是上传时间，不能当作画面发生或拍摄时间",
+    "uploaded_at 是上传或发布时间，不能当作画面发生或拍摄时间",
     "captured_at 仅在来源元数据明确给出时填写，否则为 null",
+    "YouTube 的 time_range 按视频发布时间过滤，不代表拍摄时间",
     "检索命中不授予下载或训练使用权",
     "本步只返回元数据与链接，未下载媒体",
-    "当前仅接入 Wikimedia Commons，未检索 YouTube 等商业平台",
+    "未指定 platforms 时只检索 Wikimedia Commons；YouTube 需在 platforms 中写明",
 ]
 
 class SearchInputError(Exception):
@@ -127,6 +133,17 @@ class MediaSearchRequest:
     media_kind: str
     top_k: int
     geo: GeoArea | None = None
+    published_window: TimeWindow | None = None
+
+
+@dataclass(frozen=True)
+class SourceSelection:
+    """本次要调用的来源；未显式指定时只走 Commons。"""
+
+    commons: bool
+    youtube: bool
+    unsupported: tuple[Any, ...]
+    explicit: bool
 
 @runtime_checkable
 class MediaSearchProvider(Protocol):
@@ -197,13 +214,54 @@ class CommonsMediaSearchProvider:
             raise EngineUnavailableError("Wikimedia Commons 回执不是 JSON 对象")
         return raw
 
+
+class YouTubeMediaSearchProvider:
+    """YouTube Data API v3 search.list；只查公开视频，不下载。"""
+
+    name = _PROVIDER_YOUTUBE
+    max_top_k = _YOUTUBE_MAX_TOP_K
+
+    def __init__(self, *, endpoint: str, timeout_sec: float, api_key: str) -> None:
+        self._endpoint = endpoint
+        self._timeout_sec = timeout_sec
+        self._api_key = api_key
+
+    def search(self, request: MediaSearchRequest) -> dict[str, Any]:
+        if request.media_kind != _KIND_VIDEO:
+            raise EngineUnavailableError("YouTube 只支持 video_search")
+        params: dict[str, str] = {
+            "part": "snippet",
+            "type": "video",
+            "maxResults": str(request.top_k),
+            "q": request.query,
+            "key": self._api_key,
+        }
+        if request.geo is not None:
+            params["location"] = f"{request.geo.lat},{request.geo.lon}"
+            params["locationRadius"] = f"{request.geo.radius_m}m"
+        if request.published_window is not None:
+            window = request.published_window
+            params["publishedAfter"] = f"{window.start.isoformat()}T00:00:00Z"
+            before = window.end + timedelta(days=1)
+            params["publishedBefore"] = f"{before.isoformat()}T00:00:00Z"
+        url = _append_query(self._endpoint, urllib.parse.urlencode(params))
+        raw = _http_json(
+            url,
+            headers={"Accept": "application/json"},
+            timeout_sec=self._timeout_sec,
+            error_prefix="YouTube",
+        )
+        if not isinstance(raw, dict):
+            raise EngineUnavailableError("YouTube 回执不是 JSON 对象")
+        return raw
+
 def execute_video_search(
     *,
     purpose: str,
     inputs: dict[str, Any],
     ctx: RuntimeContext | None = None,
 ) -> Observation:
-    """按关键词检索公开视频；第一期仅 Wikimedia Commons。"""
+    """按关键词检索公开视频；默认 Wikimedia Commons，platforms 含 youtube 时走 YouTube。"""
 
     del purpose
     return _run_search(_KIND_VIDEO, inputs, ctx)
@@ -237,48 +295,68 @@ def _run_search(
             raise SearchInputError("缺少必填输入 query 或 area", "missing_input")
         time_window, unsupported_time = _parse_time_range(inputs.get("time_range"))
         requested_top_k = _parse_top_k(inputs.get("top_k"))
-        _, unsupported_sources = _parse_requested_providers(
-            operation,
-            inputs,
-        )
-        provider = _resolve_provider(ctx)
-        provider_name = str(getattr(provider, "name", "injected"))
-        max_top_k = _provider_max_top_k(provider)
-        top_k = min(requested_top_k, max_top_k)
+        selection = _parse_requested_providers(operation, inputs)
+        providers, provider_errors = _select_providers(selection, ctx)
         assembled = " ".join(part for part in (query, area.text) if part)
-        need_extra = time_window is not None or (
-            area.geo is not None and bool(assembled)
+        buckets: list[list[dict[str, Any]]] = []
+        used_names: list[str] = []
+        for provider in providers:
+            provider_name = str(getattr(provider, "name", "injected"))
+            server_side = provider_name == _PROVIDER_YOUTUBE
+            max_top_k = _provider_max_top_k(provider)
+            provider_top_k = min(requested_top_k, max_top_k)
+            need_extra = (not server_side) and (
+                time_window is not None or (area.geo is not None and bool(assembled))
+            )
+            fetch_k = max_top_k if need_extra else provider_top_k
+            request = MediaSearchRequest(
+                query=assembled,
+                media_kind=media_kind,
+                top_k=fetch_k,
+                geo=area.geo,
+                published_window=time_window if server_side else None,
+            )
+            try:
+                payload = provider.search(request)
+            except EngineUnavailableError as exc:
+                provider_errors.append(_redact_secrets(str(exc)))
+                continue
+            provider_hits = _normalize_results(
+                payload,
+                media_kind=media_kind,
+                provider_name=provider_name,
+            )
+            if (not server_side) and area.geo is not None and assembled:
+                provider_hits = [
+                    item for item in provider_hits if _matches_query(item, assembled)
+                ]
+            if time_window is not None and not server_side:
+                provider_hits = [
+                    item for item in provider_hits if _captured_in_window(item, time_window)
+                ]
+            buckets.append(provider_hits[:provider_top_k])
+            used_names.append(provider_name)
+        if not buckets:
+            message = provider_errors[-1] if provider_errors else "没有可用的媒体检索来源"
+            raise EngineUnavailableError(message)
+        top_k = min(
+            requested_top_k,
+            max(_provider_max_top_k(provider) for provider in providers),
         )
-        fetch_k = max_top_k if need_extra else top_k
-        request = MediaSearchRequest(
-            query=assembled,
-            media_kind=media_kind,
-            top_k=fetch_k,
-            geo=area.geo,
-        )
-        payload = provider.search(request)
+        hits = _interleave(buckets, top_k)
     except SearchInputError as exc:
         return _fail(str(exc), exc.error_code)
     except EngineUnavailableError as exc:
-        return _fail(str(exc), exc.error_code)
+        return _fail(_redact_secrets(str(exc)), exc.error_code)
 
-    hits = _normalize_results(
-        payload,
-        media_kind=media_kind,
-        provider_name=provider_name,
-    )
-    if area.geo is not None and assembled:
-        hits = [item for item in hits if _matches_query(item, assembled)]
-    if time_window is not None:
-        hits = [item for item in hits if _captured_in_window(item, time_window)]
     results = []
-    for item in hits[:top_k]:
+    for item in hits:
         row = dict(item)
         row["result_id"] = f"ms_{len(results) + 1}"
         results.append(row)
 
     applied: dict[str, Any] = {
-        "provider": provider_name,
+        "provider": used_names[0] if len(used_names) == 1 else "+".join(used_names),
         "query": assembled,
         "top_k": top_k,
     }
@@ -290,8 +368,10 @@ def _run_search(
         )
     unsupported: dict[str, Any] = {}
     source_key = "platforms" if operation == "video_search" else "sources"
-    if unsupported_sources:
-        unsupported[source_key] = list(unsupported_sources)
+    if selection.unsupported:
+        unsupported[source_key] = list(selection.unsupported)
+    if provider_errors:
+        unsupported["provider_errors"] = list(provider_errors)
     if area.unsupported is not None:
         unsupported["area"] = area.unsupported
     if unsupported_time is not None:
@@ -421,11 +501,16 @@ def _as_float(raw: Any) -> float | None:
 def _parse_requested_providers(
     operation: str,
     inputs: dict[str, Any],
-) -> tuple[bool, list[Any]]:
+) -> SourceSelection:
     key = "platforms" if operation == "video_search" else "sources"
     raw = inputs.get(key)
     if raw is None or raw == "" or raw == []:
-        return True, []
+        return SourceSelection(
+            commons=True,
+            youtube=False,
+            unsupported=(),
+            explicit=False,
+        )
     if isinstance(raw, str):
         items: list[Any] = [raw]
     elif isinstance(raw, list):
@@ -433,20 +518,26 @@ def _parse_requested_providers(
     else:
         raise SearchInputError(f"{key} 必须是字符串列表", "invalid_query")
     want_commons = False
+    want_youtube = False
     unsupported: list[Any] = []
     for item in items:
         if not isinstance(item, str):
             raise SearchInputError(f"{key} 必须是字符串列表", "invalid_query")
-        alias = _COMMONS_ALIASES.get(item.strip().lower())
-        if alias == _PROVIDER_COMMONS:
+        lowered = item.strip().lower()
+        if _COMMONS_ALIASES.get(lowered) == _PROVIDER_COMMONS:
             want_commons = True
+        elif operation == "video_search" and lowered in _YOUTUBE_ALIASES:
+            want_youtube = True
         else:
             unsupported.append(item)
-    if not want_commons:
-        raise EngineUnavailableError(
-            f"当前仅支持 Wikimedia Commons，未实现来源: {unsupported}",
-        )
-    return True, unsupported
+    if not want_commons and not want_youtube:
+        raise EngineUnavailableError(f"未实现来源: {unsupported}")
+    return SourceSelection(
+        commons=want_commons,
+        youtube=want_youtube,
+        unsupported=tuple(unsupported),
+        explicit=True,
+    )
 
 def _parse_time_range(raw: Any) -> tuple[TimeWindow | None, Any | None]:
     if raw is None or raw == "":
@@ -531,6 +622,44 @@ def _provider_max_top_k(provider: MediaSearchProvider) -> int:
         return _COMMONS_MAX_TOP_K
     return min(value, _TOP_K_MAX)
 
+def _select_providers(
+    selection: SourceSelection,
+    ctx: RuntimeContext | None,
+) -> tuple[list[MediaSearchProvider], list[str]]:
+    providers: list[MediaSearchProvider] = []
+    errors: list[str] = []
+    if selection.commons:
+        providers.append(_resolve_provider(ctx))
+    if selection.youtube:
+        try:
+            providers.append(_resolve_youtube(ctx))
+        except EngineUnavailableError as exc:
+            if not providers:
+                raise
+            errors.append(_redact_secrets(str(exc)))
+    if not providers:
+        raise EngineUnavailableError("没有可用的媒体检索来源")
+    return providers, errors
+
+def _resolve_youtube(ctx: RuntimeContext | None) -> MediaSearchProvider:
+    extras = ctx.extras if ctx is not None else {}
+    injected = extras.get("youtube_search_provider")
+    if injected is not None:
+        if not isinstance(injected, MediaSearchProvider):
+            raise EngineUnavailableError("youtube_search_provider 必须提供 search(request)")
+        return injected
+    _load_dotenv()
+    if not _allow_real_api():
+        raise EngineUnavailableError("ALLOW_REAL_TOOL_API=false，禁止调用 YouTube Data API")
+    api_key = os.environ.get("YOUTUBE_API_KEY", "").strip()
+    if not api_key:
+        raise EngineUnavailableError("未配置 YOUTUBE_API_KEY，无法检索 YouTube")
+    return YouTubeMediaSearchProvider(
+        endpoint=_env_value("YOUTUBE_DATA_API_ENDPOINT", _DEFAULT_YOUTUBE_ENDPOINT),
+        timeout_sec=_env_timeout(),
+        api_key=api_key,
+    )
+
 def _resolve_provider(ctx: RuntimeContext | None) -> MediaSearchProvider:
     extras = ctx.extras if ctx is not None else {}
     injected = extras.get("media_search_provider")
@@ -582,7 +711,7 @@ def _http_json(
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace") if exc.fp else str(exc)
         raise EngineUnavailableError(
-            f"{error_prefix} HTTP {exc.code}: {detail[:200]}",
+            _redact_secrets(f"{error_prefix} HTTP {exc.code}: {detail[:200]}"),
         ) from exc
     except urllib.error.URLError as exc:
         raise EngineUnavailableError(
@@ -591,12 +720,26 @@ def _http_json(
     except (json.JSONDecodeError, TimeoutError, OSError) as exc:
         raise EngineUnavailableError(f"{error_prefix} 调用失败: {exc}") from exc
     if isinstance(raw, dict) and raw.get("error"):
-        raise EngineUnavailableError(f"{error_prefix} 失败: {raw['error']}")
+        raise EngineUnavailableError(
+            _redact_secrets(f"{error_prefix} 失败: {raw['error']}")[:400],
+        )
     return raw
 
 def _append_query(endpoint: str, query: str) -> str:
     separator = "&" if urllib.parse.urlparse(endpoint).query else "?"
     return f"{endpoint}{separator}{query}"
+
+def _interleave(buckets: list[list[dict[str, Any]]], limit: int) -> list[dict[str, Any]]:
+    pools = [list(bucket) for bucket in buckets]
+    merged: list[dict[str, Any]] = []
+    while len(merged) < limit and any(pools):
+        for pool in pools:
+            if pool and len(merged) < limit:
+                merged.append(pool.pop(0))
+    return merged
+
+def _redact_secrets(text: str) -> str:
+    return _SECRET_QUERY_RE.sub(r"\1REDACTED", text)
 
 def _normalize_results(
     payload: dict[str, Any],
@@ -604,6 +747,12 @@ def _normalize_results(
     media_kind: str,
     provider_name: str,
 ) -> list[dict[str, Any]]:
+    if (
+        provider_name == _PROVIDER_YOUTUBE
+        and isinstance(payload, dict)
+        and isinstance(payload.get("items"), list)
+    ):
+        return _normalize_youtube_items(payload)
     if isinstance(payload, dict) and isinstance(payload.get("results"), list):
         hits: list[dict[str, Any]] = []
         for item in payload["results"]:
@@ -618,6 +767,38 @@ def _normalize_results(
         hit = _normalize_commons_page(page, media_kind, provider_name)
         if hit is not None:
             hits.append(hit)
+    return hits
+
+def _normalize_youtube_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    hits: list[dict[str, Any]] = []
+    items = payload.get("items")
+    if not isinstance(items, list):
+        return hits
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        id_block = item.get("id") if isinstance(item.get("id"), dict) else {}
+        video_id = str(id_block.get("videoId") or "").strip()
+        if not video_id or not re.fullmatch(r"[A-Za-z0-9_-]{6,}", video_id):
+            continue
+        snippet = item.get("snippet") if isinstance(item.get("snippet"), dict) else {}
+        page_url = f"https://www.youtube.com/watch?v={video_id}"
+        hits.append(
+            {
+                "media_id": video_id,
+                "title": html.unescape(str(snippet.get("title") or "")).strip(),
+                "url": page_url,
+                "source_url": page_url,
+                "media_kind": _KIND_VIDEO,
+                "provider": _PROVIDER_YOUTUBE,
+                "author": html.unescape(str(snippet.get("channelTitle") or "")).strip(),
+                "license": "",
+                "license_url": "",
+                "uploaded_at": str(snippet.get("publishedAt") or "").strip(),
+                "captured_at": None,
+                "snippet": html.unescape(str(snippet.get("description") or "")).strip(),
+            }
+        )
     return hits
 
 def _pages_from_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:

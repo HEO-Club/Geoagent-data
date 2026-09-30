@@ -409,6 +409,14 @@
         "official_url": "https://serpapi.com/google-lens-api",
         "authentication": "SerpAPI Key",
         "license_note": "不是 Google 官方 Lens API；需单独评估稳定性与许可。"
+      },
+      {
+        "name": "Baidu Graph Playwright",
+        "kind": "local_browser",
+        "role": "可选中文以图搜图：本机打开百度识图，抽取相似图来源页与猜测标签",
+        "official_url": "https://graph.baidu.com/",
+        "authentication": "无；需本机 Playwright / Chromium",
+        "license_note": "仅当 engines 含 baidu 时启用；验证码与拒绝处理不得绕过。"
       }
     ],
     "execution_flow": [
@@ -419,7 +427,8 @@
     "limitations": [
       "搜索命中不是地点真值",
       "不得虚构已执行的检索回执",
-      "敏感或无授权图片不上传第三方"
+      "敏感或无授权图片不上传第三方",
+      "登录/验证码/付费墙不得绕过"
     ],
     "mcp_strategy": "自建 provider adapter；密钥只在服务端环境变量中，不进入 Tool inputs。"
   },

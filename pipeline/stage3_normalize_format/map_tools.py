@@ -391,7 +391,7 @@ def _catalog_payload(forest: ToolForest) -> list[dict]:
             "variants": tree.variants,
         }
         for tree in forest.trees
-        if not tree.canonical.is_terminal
+        if tree.canonical.available and not tree.canonical.is_terminal
     ]
 
 
@@ -618,6 +618,8 @@ def _apply_unknown_decision(
     if decision.action == "map":
         target = (decision.canonical_name or "").strip()
         existing = find_tree_for_name(forest, target) if target else None
+        if existing is not None and not existing.canonical.available:
+            existing = None
         if existing is not None:
             forest = add_operation(
                 forest, existing.canonical.name, operation, op_desc
@@ -660,6 +662,8 @@ def _apply_unknown_decision(
     if decision.action == "create" and create_kind == "new_operation":
         parent_name = (decision.canonical_name or "").strip()
         parent = find_tree_for_name(forest, parent_name) if parent_name else None
+        if parent is not None and not parent.canonical.available:
+            parent = None
         proposed_op = _pick_proposal_operation(decision, operation)
         op_name = (
             _normalize_operation_name(proposed_op.name)
@@ -884,6 +888,11 @@ def ensure_tool_trees(
             tree = find_tree_for_name(forest, target) if target else None
             if tree is None:
                 continue
+            if (
+                not tree.canonical.available
+                and raw.lower() != tree.canonical.name.lower()
+            ):
+                continue
             operation = (
                 decision.operation.strip()
                 .lower()
@@ -925,6 +934,11 @@ def ensure_tool_trees(
                 decision.action != "map"
                 or decision.confidence < RECLASSIFY_CONFIDENCE
                 or tree is None
+            ):
+                continue
+            if (
+                not tree.canonical.available
+                and raw.lower() != tree.canonical.name.lower()
             ):
                 continue
             operation = (

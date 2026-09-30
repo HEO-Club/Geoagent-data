@@ -30,6 +30,7 @@ _TOP_K_MAX = 100
 _JPEG_QUALITY = 95
 _ENGINE_SERPAPI = "serpapi"
 _ENGINE_VISION = "google_cloud_vision"
+_ENGINE_BAIDU_GRAPH = "baidu_graph"
 _DEFAULT_ENGINE = _ENGINE_SERPAPI
 _ENGINE_ALIASES = {
     "serpapi": _ENGINE_SERPAPI,
@@ -39,6 +40,9 @@ _ENGINE_ALIASES = {
     "google_cloud_vision": _ENGINE_VISION,
     "vision": _ENGINE_VISION,
     "web_detection": _ENGINE_VISION,
+    "baidu": _ENGINE_BAIDU_GRAPH,
+    "baidu_graph": _ENGINE_BAIDU_GRAPH,
+    "baidu_graph_search": _ENGINE_BAIDU_GRAPH,
 }
 _DEFAULT_VISION_ENDPOINT = "https://vision.googleapis.com/v1/images:annotate"
 _DEFAULT_SERPAPI_SEARCH_ENDPOINT = "https://serpapi.com/search.json"
@@ -408,18 +412,23 @@ def _resolve_engine(
             "ALLOW_REAL_TOOL_API=false，禁止调用真实反向搜图 API",
         )
     last_error: EngineUnavailableError | None = None
+    extras_for_build = extras if isinstance(extras, dict) else {}
     names = requested or [_DEFAULT_ENGINE]
     for name in names:
         try:
-            engine = _build_engine(name)
+            engine = _build_engine(name, extras=extras_for_build)
         except EngineUnavailableError as exc:
             last_error = exc
             continue
         return engine, engine.name
     raise last_error or EngineUnavailableError("未配置可用的反向搜图引擎")
 
-def _build_engine(name: str) -> ReverseImageSearchEngine:
+def _build_engine(
+    name: str,
+    extras: dict[str, Any] | None = None,
+) -> ReverseImageSearchEngine:
     timeout_sec = _env_timeout()
+    extras = extras or {}
     if name == _ENGINE_SERPAPI:
         api_key = _serpapi_api_key()
         if not api_key:
@@ -451,6 +460,11 @@ def _build_engine(name: str) -> ReverseImageSearchEngine:
             ),
             timeout_sec=timeout_sec,
         )
+    if name == _ENGINE_BAIDU_GRAPH:
+        from tool.reverse_image_search._baidu_graph import BaiduGraphEngine
+
+        session = extras.get("baidu_graph_session")
+        return BaiduGraphEngine(session=session, timeout_sec=timeout_sec)
     raise EngineUnavailableError(f"不支持的 engines: {name}")
 
 def _allow_real_tool_api() -> bool:

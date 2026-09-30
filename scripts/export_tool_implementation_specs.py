@@ -27,6 +27,8 @@ RUNTIME_STATUS = {
     "osm_result_process": "runtime_implemented_local_verified",
     "distance_bearing_calculator": "runtime_implemented_local_verified",
     "spatial_filter": "runtime_implemented_local_verified",
+    "map_layer_query": "runtime_implemented_provider_mock_verified_live_service_pending",
+    "media_search": "runtime_implemented_commons_default_youtube_when_requested",
 }
 
 
@@ -107,7 +109,8 @@ PROFILES: dict[str, dict[str, Any]] = {
     "web_search": {
         "architecture": "provider_api",
         "backends": [
-            _backend("Brave Search API", "external_api", "网页、图片和视频搜索", "https://brave.com/search/api/", "Brave Search API Key"),
+            _backend("SerpAPI Google", "third_party_api", "非中文网页搜索", "https://serpapi.com/search-api", "SerpAPI Key", license_note="复用 SERPAPI_API_KEY；engine=google。时间范围写成 tbs。"),
+            _backend("SerpAPI Baidu", "third_party_api", "中文网页搜索（organic 与百度结果页中的社交媒体卡片）", "https://serpapi.com/baidu-search-api", "SerpAPI Key", license_note="复用 SERPAPI_API_KEY；不是百度官方搜索 API。"),
             _backend("Tavily Search", "external_api_or_mcp", "Agent 搜索与结构化结果", "https://docs.tavily.com/documentation/mcp", "Tavily API Key"),
         ],
         "execution_flow": ["规范化 query/domain/time_range", "调用 provider 并记录实际支持的过滤项", "返回标题、URL、摘要和 result_id"],
@@ -125,15 +128,14 @@ PROFILES: dict[str, dict[str, Any]] = {
         "mcp_strategy": "静态读取与浏览器分别作为 provider，禁止浏览器获得无关本地文件权限。",
     },
     "media_search": {
-        "architecture": "multi_provider_media_catalog",
+        "architecture": "commons_default_youtube_video_on_request",
         "backends": [
-            _backend("YouTube Data API", "external_api", "视频元数据检索", "https://developers.google.com/youtube/v3/docs/search/list", "Google Cloud API Key"),
-            _backend("Wikimedia Commons API", "external_api", "带作者和许可元数据的图片", "https://www.mediawiki.org/wiki/API:Imageinfo/en"),
-            _backend("Europeana API", "external_api", "历史照片与文化遗产媒体", "https://api.europeana.eu/en", "Europeana API Key"),
+            _backend("Wikimedia Commons API", "external_api", "默认图片与视频元数据检索", "https://www.mediawiki.org/wiki/API:Imageinfo/en", license_note="只返回元数据与链接，不下载；命中不授予训练使用权。"),
+            _backend("YouTube Data API search.list", "external_api", "仅当 video_search 的 platforms 含 youtube 时检索公开视频", "https://developers.google.com/youtube/v3/docs/search/list", "环境变量 YOUTUBE_API_KEY", license_note="默认约 100 次搜索/天；不下载视频。"),
         ],
-        "execution_flow": ["按媒体类型、区域和时间查询", "获取媒体详情和许可字段", "返回媒体 ID、来源、上传/拍摄时间及许可"],
-        "limitations": ["上传时间不等于拍摄时间", "能搜索不等于能下载或训练", "逐资源核对许可与署名要求"],
-        "mcp_strategy": "自建聚合 MCP/adapter，但保留 provider 和原始许可字段。",
+        "execution_flow": ["未指定平台时只查 Wikimedia Commons", "video_search 在 platforms 含 youtube 时调用 YouTube search.list", "地名拼进关键词；经纬度或 bbox 转成圆心加半径", "只返回链接、标题、作者、许可和上传或发布时间"],
+        "limitations": ["不下载文件，不支持以图搜图", "上传或发布时间不是拍摄时间", "地名不会解析成坐标", "Commons 的坐标检索与关键词不能同时交给服务端", "未实现 Europeana、Flickr 和 B站"],
+        "mcp_strategy": "保持现有 executor。新增平台前先改目录说明，避免模型把未实现来源当成可选项。",
     },
     "video_frame_extract": {
         "architecture": "local_ffmpeg",
@@ -174,9 +176,12 @@ PROFILES: dict[str, dict[str, Any]] = {
     },
     "map_layer_query": {
         "architecture": "ogc_service_or_local_geoserver",
-        "backends": [_backend("GeoServer WMS/WFS", "self_host_or_external_ogc", "加载栅格地图和矢量属性", "https://docs.geoserver.org/latest/en/user/services/wms/reference/")],
-        "execution_flow": ["先读 GetCapabilities/图层清单", "按 bbox、CRS、time、layer 请求", "区分地图图片与可计算矢量/栅格"],
-        "limitations": ["WMS 图片不能替代真实几何", "TIME 支持取决于数据源", "必须保留 CRS、图层日期和许可"],
+        "backends": [
+            _backend("terrestris OSM WMS", "public_ogc", "默认公开 OSM 底图与 SRTM 阴影", "https://ows.terrestris.de/osm/service"),
+            _backend("GeoServer WMS/WFS", "self_host_or_external_ogc", "自建专题图层和矢量属性", "https://docs.geoserver.org/latest/en/user/services/wms/reference/"),
+        ],
+        "execution_flow": ["默认走 terrestris GetMap", "按 bbox、CRS、layer 请求 PNG", "历史地图/时间轴/WFS 明确标为不支持"],
+        "limitations": ["当前不支持时间轴、历史地图和 WFS", "WMS 图片不能替代真实几何", "默认后端无独立水系或行政图层"],
         "mcp_strategy": "自建 OGC adapter；不要给模型直接拼接不受限的服务 URL。",
     },
     "osm_query": {
@@ -212,11 +217,10 @@ PROFILES: dict[str, dict[str, Any]] = {
     "satellite_imagery_query": {
         "architecture": "stac_catalog_plus_process_api",
         "backends": [
-            _backend("Copernicus Data Space Sentinel Hub", "external_api", "STAC 检索、影像处理和下载", "https://documentation.dataspace.copernicus.eu/APIs/SentinelHub/Overview.html", "Copernicus 账户、OAuth client_id/client_secret"),
-            _backend("Planet Data API", "commercial_api", "商业高分影像目录与资产", "https://docs.planet.com/develop/apis/data/", "Planet 账户/OAuth或受支持的 API 凭证", license_note="下载和训练使用取决于商业合同。"),
+            _backend("Copernicus Data Space Sentinel Hub", "external_api", "按 bbox 检索场景并返回真彩预览", "https://documentation.dataspace.copernicus.eu/APIs/SentinelHub/Overview.html", "Copernicus 账户、OAuth client_id/client_secret"),
         ],
-        "execution_flow": ["Catalog 先按 AOI/日期/云量查真实 acquisition", "选择实际可用资产后 Process/下载", "记录 scene_id、日期、分辨率、CRS、处理脚本和许可"],
-        "limitations": ["resolution_m 不能创造不存在的分辨率", "云量/拼接/季节会影响判断", "oblique_view 渲染不得冒充真实斜拍照片"],
+        "execution_flow": ["输入必须是 bbox 或中心点加半径", "Catalog 按范围、日期和云量检索", "Process API 返回裁剪真彩预览，不下载整景"],
+        "limitations": ["不接受地名", "不提供航片、地形、Planet 或 Google Earth", "resolution_m 不能创造不存在的分辨率", "oblique_view 只记录朝向，不是真实斜拍"],
         "mcp_strategy": "自建 OAuth token 缓存的 API adapter；不要每次请求新 token。",
     },
     "satellite_imagery_compare": {

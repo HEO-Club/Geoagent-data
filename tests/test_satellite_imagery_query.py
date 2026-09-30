@@ -177,12 +177,12 @@ def test_missing_area_coordinates_source_result_is_missing_input() -> None:
     assert observation.error_code == "missing_input"
 
 
-def test_place_name_without_geometry_is_missing_input() -> None:
+def test_place_name_without_geometry_is_invalid_area() -> None:
     observation = _call("retrieve", inputs={"area": "郑州市"})
     assert observation.ok is False
-    assert observation.error_code == "missing_input"
+    assert observation.error_code == "invalid_area"
     assert observation.error is not None
-    assert "geocode" in observation.error
+    assert "不接受地名" in observation.error
 
 
 def test_retrieve_picks_lowest_cloud_and_reports_native_gsd() -> None:
@@ -345,7 +345,7 @@ def test_planet_provider_is_unsupported() -> None:
     assert observation.ok is False
     assert observation.error_code == "unsupported_provider"
     assert observation.error is not None
-    assert "Planet" in observation.error
+    assert "不接受" in observation.error
 
 
 def test_google_provider_is_unsupported() -> None:
@@ -356,16 +356,19 @@ def test_google_provider_is_unsupported() -> None:
     assert observation.ok is False
     assert observation.error_code == "unsupported_provider"
     assert observation.error is not None
-    assert "Google" in observation.error
+    assert "不接受" in observation.error
 
 
-def test_aerial_layer_is_unsupported() -> None:
-    observation = _call(
-        "retrieve",
-        inputs={"area": {"bbox": [113.5, 34.7, 113.8, 34.9]}, "layer": "aerial"},
-    )
-    assert observation.ok is False
-    assert observation.error_code == "unsupported_layer"
+def test_aerial_and_terrain_layers_are_unsupported() -> None:
+    for layer in ("aerial", "terrain"):
+        observation = _call(
+            "retrieve",
+            inputs={"area": {"bbox": [113.5, 34.7, 113.8, 34.9]}, "layer": layer},
+        )
+        assert observation.ok is False
+        assert observation.error_code == "unsupported_layer"
+        assert observation.error is not None
+        assert "不接受" in observation.error
 
 
 def test_allow_real_api_false_without_provider_is_unavailable() -> None:
@@ -486,8 +489,14 @@ def test_copernicus_catalog_sends_bbox_and_bearer(monkeypatch: Any) -> None:
     assert catalog_url.endswith("/search")
     auth = catalog_headers.get("Authorization") or catalog_headers.get("authorization")
     assert auth == "Bearer tok-1"
+    accept = catalog_headers.get("Accept") or catalog_headers.get("accept")
+    assert accept is not None
+    assert "application/geo+json" in accept
     assert catalog_body is not None
     payload = json.loads(catalog_body.decode("utf-8"))
     assert payload["bbox"] == [113.6, 34.8, 113.7, 34.9]
     assert payload["collections"] == ["sentinel-2-l2a"]
-    assert payload["query"]["eo:cloud_cover"]["lt"] == 20
+    assert payload["filter-lang"] == "cql2-json"
+    assert payload["filter"]["op"] == "<"
+    assert payload["filter"]["args"][1] == 20
+    assert "query" not in payload

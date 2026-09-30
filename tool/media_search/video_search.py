@@ -14,6 +14,6 @@ def execute(
     inputs: dict[str, Any],
     ctx: RuntimeContext | None = None,
 ) -> Observation:
-    """执行 media_search.video_search：在公开图库检索视频。"""
+    """执行 media_search.video_search：默认检索 Wikimedia Commons，platforms 含 youtube 时检索 YouTube。"""
 
     return execute_video_search(purpose=purpose, inputs=inputs, ctx=ctx)

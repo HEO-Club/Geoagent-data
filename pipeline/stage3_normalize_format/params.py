@@ -936,25 +936,45 @@ def _operation_schemas() -> dict[tuple[str, str], ToolInputSchema]:
 
     # satellite imagery
     schemas[("satellite_imagery_query", "retrieve")] = _schema(
-        "获取指定区域和时间的卫星或航片。",
-        [_area(extra_aliases=["target"]), _field("coordinates", "待获取影像的一个或多个坐标。", type="string_or_array", aliases=["坐标", "points"]), _field("source_result", "上一步筛选结果或坐标结果引用。", type="string_or_object", aliases=["已有结果", "筛选结果", "result_id"]), _time_range(), _field("provider", "影像服务或数据集。", aliases=["数据源", "服务"]), _field("layer", "影像图层，如 satellite/aerial/terrain。", aliases=["图层", "影像类型"]), _field("cloud_cover_max", "最大允许云量百分比。", type="number", aliases=["最大云量", "cloud_threshold"], minimum=0, maximum=100), _field("resolution_m", "期望空间分辨率（米/像素）。", type="number", aliases=["分辨率", "resolution"], minimum=0)],
+        "按 bbox 或中心点加半径返回 Copernicus 卫星真彩预览。不接受地名。",
+        [
+            _field("area", "WGS84 bbox [west,south,east,north]，或 {lat, lon, radius_m}。不接受地名。", type="location", context_sources=["active_area"], aliases=["区域", "地区", "地点", "候选区域", "检索范围", "搜索区域", "省域范围", "region", "target_area", "search_area", "sample_area", "location", "cities", "target"], example={"lat": 34.75, "lon": 113.65, "radius_m": 2000}),
+            _field("coordinates", "中心点 [lon, lat] 或 {lat, lon}。未给半径时使用默认搜索半径。不接受地名。", type="string_or_array", aliases=["坐标", "points"]),
+            _field("source_result", "上一步已含 bbox 的结果引用。", type="string_or_object", aliases=["已有结果", "筛选结果", "result_id"]),
+            _time_range(),
+            _field("cloud_cover_max", "最大允许云量百分比。", type="number", aliases=["最大云量", "cloud_threshold"], minimum=0, maximum=100),
+            _field("resolution_m", "期望空间分辨率（米/像素）。只用于筛选原生分辨率，不会提高成图细节。", type="number", aliases=["分辨率", "resolution"], minimum=0),
+        ],
         required_any=[["area", "coordinates", "source_result"]],
     )
     schemas[("satellite_imagery_query", "change_time")] = _schema(
-        "在同一区域切换历史年份、季节或水期影像。",
-        [_area(required=True), _time_range(required=True), _field("source_result", "可选的上一影像会话或结果 ID。", aliases=["已有影像", "result_id"]), _field("provider", "影像服务提供方。", aliases=["数据源", "服务"])],
+        "在同一 bbox 或中心点上切换时间后再返回预览图。",
+        [
+            _field("area", "WGS84 bbox [west,south,east,north]，或 {lat, lon, radius_m}。不接受地名。", type="location", required=True, context_sources=["active_area"], aliases=["区域", "地区", "地点", "候选区域", "检索范围", "搜索区域", "省域范围", "region", "target_area", "search_area", "sample_area", "location", "cities", "target"], example={"lat": 34.75, "lon": 113.65, "radius_m": 2000}),
+            _time_range(required=True),
+            _field("source_result", "可选的上一影像会话或结果 ID。", aliases=["已有影像", "result_id"]),
+        ],
     )
     schemas[("satellite_imagery_query", "compare_candidates")] = _schema(
-        "在多个明确候选区域的卫星影像中按同一视觉或空间模板进行横向比对；不能只给候选数量而不提供候选本身。",
-        [_field("candidates", "待比较的候选地点、坐标或区域列表。", type="array", required=True, aliases=["候选点", "候选区域", "候选列表", "locations"]), _field("template", "所有候选共同使用的视觉/空间比对模板。", type="string_or_object", required=True, aliases=["比对模板", "结构模板", "特征模板", "criteria"]), _time_range(), _field("provider", "影像服务提供方。", aliases=["数据源", "服务"])],
+        "每个候选必须是 bbox 或中心点加半径，再与模板比较预览图。不能只给候选数量。",
+        [_field("candidates", "至少两个候选，每个都是 bbox 或中心点加半径。不接受地名。", type="array", required=True, aliases=["候选点", "候选区域", "候选列表", "locations"]), _field("template", "所有候选共同使用的视觉/空间比对模板。", type="string_or_object", required=True, aliases=["比对模板", "结构模板", "特征模板", "criteria"]), _time_range()],
     )
     schemas[("satellite_imagery_query", "compare_time")] = _schema(
-        "获取并比较同一区域的两个或多个时间影像。",
-        [_area(required=True), _field("times", "需要比较的至少两个时间点或时间范围。", type="array", item_type="string", required=True, aliases=["时间列表", "年份列表", "时相", "periods"]), _field("comparison", "比较目标，如水位、建设变化或植被。", aliases=["比对目标", "变化类型", "method"])],
+        "获取并比较同一 bbox 或中心点的两个或多个时间预览。",
+        [
+            _field("area", "WGS84 bbox [west,south,east,north]，或 {lat, lon, radius_m}。不接受地名。", type="location", required=True, context_sources=["active_area"], aliases=["区域", "地区", "地点", "候选区域", "检索范围", "搜索区域", "省域范围", "region", "target_area", "search_area", "sample_area", "location", "cities", "target"], example={"lat": 34.75, "lon": 113.65, "radius_m": 2000}),
+            _field("times", "需要比较的至少两个时间点或时间范围。", type="array", item_type="string", required=True, aliases=["时间列表", "年份列表", "时相", "periods"]),
+            _field("comparison", "比较目标，如水位、建设变化或植被。", aliases=["比对目标", "变化类型", "method"]),
+        ],
     )
     schemas[("satellite_imagery_query", "oblique_view")] = _schema(
-        "获取指定区域的倾斜、三维或地形视角。",
-        [_area(required=True), _field("heading", "观察朝向角（度）。", type="number", aliases=["朝向", "方位角"], minimum=0, maximum=360), _field("tilt", "倾斜角（度）。", type="number", aliases=["倾角", "pitch"], minimum=0, maximum=90), _time_range()],
+        "返回同一 bbox 或中心点的正射预览，并记录 heading 与 tilt。不是航片或三维地形。",
+        [
+            _field("area", "WGS84 bbox [west,south,east,north]，或 {lat, lon, radius_m}。不接受地名。", type="location", required=True, context_sources=["active_area"], aliases=["区域", "地区", "地点", "候选区域", "检索范围", "搜索区域", "省域范围", "region", "target_area", "search_area", "sample_area", "location", "cities", "target"], example={"lat": 34.75, "lon": 113.65, "radius_m": 2000}),
+            _field("heading", "观察朝向角（度）。只记录，不生成斜视影像。", type="number", aliases=["朝向", "方位角"], minimum=0, maximum=360),
+            _field("tilt", "倾斜角（度）。只记录，不生成斜视影像。", type="number", aliases=["倾角", "pitch"], minimum=0, maximum=90),
+            _time_range(),
+        ],
     )
 
     # weather
@@ -1012,12 +1032,24 @@ def _operation_schemas() -> dict[tuple[str, str], ToolInputSchema]:
 
     # media search
     schemas[("media_search", "video_search")] = _schema(
-        "在公开视频或内容平台检索地点和视角。",
-        [_query(required=True), _area(), _time_range(), _field("platforms", "限定视频平台。", type="array", item_type="string", aliases=["平台", "站点"]), _field("top_k", "最多返回结果数。", type="integer", aliases=["结果数", "limit"], minimum=1, maximum=100)],
+        "按关键词检索公开视频，只返回链接和元数据。",
+        [
+            _field("query", "检索关键词或对象描述。不接受图片，不能用来以图搜图。", type="string_or_array", required=True, aliases=["关键词", "检索词", "查询词", "检索对象", "对象", "目标", "特征组合", "筛选条件", "material", "keywords", "问题", "q", "search_query"], example="铁路桥 石栏"),
+            _field("area", "地名会原样拼进检索词，不会转成坐标或行政区范围。经纬度对象或 bbox 会转成圆心加半径后再检索，半径限制为 10 到 10000 米。", type="location", context_sources=["active_area"], aliases=["区域", "地区", "地点", "候选区域", "检索范围", "搜索区域", "省域范围", "region", "target_area", "search_area", "sample_area", "location", "cities"], example={"lat": 34.75, "lon": 113.65, "radius_m": 5000}),
+            _field("time_range", "年份、日期或起止范围。Commons 只保留元数据里有拍摄时间且落在范围内的结果；YouTube 按发布时间过滤。无法解析的写法不会生效，只会记为未支持。", type="string_or_object", aliases=["时期", "时间", "年份", "年代", "年代范围", "日期", "影像时期", "影像年份", "date_range", "year"], example="1980-1995"),
+            _field("platforms", "限定视频平台。可填 wikimedia_commons 或 youtube；不填时只检索 Wikimedia Commons。其他平台不会被检索。", type="array", item_type="string", aliases=["平台", "站点"], example=["youtube"]),
+            _field("top_k", "最多返回条数。请求值限制在 1 到 100，单个来源实际最多返回 50 条。", type="integer", aliases=["结果数", "limit"], minimum=1, maximum=100),
+        ],
     )
     schemas[("media_search", "photo_search")] = _schema(
-        "检索历史照片、航拍照片或公共图库。",
-        [_query(), _area(), _time_range(), _field("sources", "限定图库或档案来源。", type="array", item_type="string", aliases=["来源", "站点", "archives"]), _field("top_k", "最多返回结果数。", type="integer", aliases=["结果数", "limit"], minimum=1, maximum=100)],
+        "检索 Wikimedia Commons 图片。query 与 area 至少提供一个。只返回链接和元数据。",
+        [
+            _field("query", "检索关键词或对象描述。不接受图片，不能用来以图搜图。", type="string_or_array", aliases=["关键词", "检索词", "查询词", "检索对象", "对象", "目标", "特征组合", "筛选条件", "material", "keywords", "问题", "q", "search_query"], example="铁路桥 石栏"),
+            _field("area", "地名会原样拼进检索词，不会转成坐标或行政区范围。经纬度对象或 bbox 会转成圆心加半径后再检索，半径限制为 10 到 10000 米。", type="location", context_sources=["active_area"], aliases=["区域", "地区", "地点", "候选区域", "检索范围", "搜索区域", "省域范围", "region", "target_area", "search_area", "sample_area", "location", "cities"], example={"lat": 34.75, "lon": 113.65, "radius_m": 5000}),
+            _field("time_range", "年份、日期或起止范围。Commons 只保留元数据里有拍摄时间且落在范围内的结果；YouTube 按发布时间过滤。无法解析的写法不会生效，只会记为未支持。", type="string_or_object", aliases=["时期", "时间", "年份", "年代", "年代范围", "日期", "影像时期", "影像年份", "date_range", "year"], example="1980-1995"),
+            _field("sources", "限定图库。当前只实现 wikimedia_commons；不填时也只检索 Wikimedia Commons。其他来源不会被检索。", type="array", item_type="string", aliases=["来源", "站点", "archives"]),
+            _field("top_k", "最多返回条数。请求值限制在 1 到 100，单个来源实际最多返回 50 条。", type="integer", aliases=["结果数", "limit"], minimum=1, maximum=100),
+        ],
         required_any=[["query", "area"]],
     )
     schemas[("media_search", "frame_retrieve")] = _schema(

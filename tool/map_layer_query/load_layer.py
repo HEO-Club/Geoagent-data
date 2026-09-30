@@ -1,4 +1,4 @@
-"""map_layer_query.load_layer：加载水系、地形、行政区或其他地图图层"""
+"""map_layer_query.load_layer：按范围加载地图图层；当前不支持时间轴、历史地图和 WFS。"""
 
 from __future__ import annotations
 
@@ -14,6 +14,6 @@ def execute(
     inputs: dict[str, Any],
     ctx: RuntimeContext | None = None,
 ) -> Observation:
-    """执行 map_layer_query.load_layer：OGC WMS 出图，可选 WFS 矢量。"""
+    """执行 map_layer_query.load_layer：默认 terrestris WMS 出图；当前不支持时间轴、历史地图和 WFS。"""
 
     return execute_load_layer(purpose=purpose, inputs=inputs, ctx=ctx)

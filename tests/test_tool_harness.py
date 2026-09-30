@@ -1003,7 +1003,7 @@ def test_harness_controls_mixed_tool_chain_and_isolates_failed_branch(
             ),
             TrajectoryStep(
                 event_type="tool_call",
-                thought="尝试尚未落地的地图图层",
+                thought="尝试无范围的图层加载以制造失败分支",
                 action=Action(
                     tool="map_layer_query",
                     params={

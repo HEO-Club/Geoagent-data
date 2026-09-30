@@ -476,3 +476,115 @@ def test_real_engine_rejects_http_and_unapproved_hosts(
     assert host_result.ok is False
     assert host_result.error_code == "engine_unavailable"
     assert host_result.error is not None and "白名单" in host_result.error
+
+
+class _FakeBaiduSession:
+    """测试替身：不启动浏览器，返回预设 similar / guess。"""
+
+    def __init__(self, payload: dict[str, Any] | None = None, error: Exception | None = None) -> None:
+        self.payload = payload if payload is not None else {
+            "guess": ["图中可能是铁路桥"],
+            "similar": [
+                {
+                    "thumb": "https://img.example.cn/t1.jpg",
+                    "from": "https://news.example.cn/bridge",
+                },
+                {
+                    "thumb": "https://img.example.cn/t2.jpg",
+                    "from": "",
+                },
+            ],
+        }
+        self.error = error
+        self.calls: list[bytes] = []
+
+    def run(self, image_bytes: bytes) -> dict[str, Any]:
+        self.calls.append(image_bytes)
+        if self.error is not None:
+            raise self.error
+        return self.payload
+
+
+def test_baidu_graph_session_maps_similar_to_urls(tmp_path: Path, monkeypatch: Any) -> None:
+    session = _FakeBaiduSession()
+    monkeypatch.setenv("ALLOW_REAL_TOOL_API", "true")
+    observation = execute(
+        "reverse_image_search",
+        "search",
+        purpose="百度识图",
+        inputs={"image": str(_gradient(tmp_path / "baidu.png")), "engines": ["baidu"]},
+        ctx=RuntimeContext(
+            extras={
+                "artifact_dir": str(tmp_path / "baidu_out"),
+                "baidu_graph_session": session,
+            }
+        ),
+    )
+    assert observation.ok is True
+    assert observation.result is not None
+    assert session.calls, "应把查询图交给会话"
+    assert observation.result["applied"]["engine"] == "baidu_graph"
+    assert observation.result["applied"]["engines"] == ["baidu_graph"]
+    urls = [item["url"] for item in observation.result["matches"]]
+    assert "https://news.example.cn/bridge" in urls
+    assert "https://img.example.cn/t2.jpg" in urls
+    assert observation.result["best_guess_labels"][0]["label"] == "图中可能是铁路桥"
+    assert any("地点" in item for item in observation.result["assumptions"])
+
+
+def test_baidu_graph_captcha_is_provider_error(tmp_path: Path, monkeypatch: Any) -> None:
+    session = _FakeBaiduSession(
+        error=search_mod.EngineUnavailableError("百度识图要求人机验证", "provider_error"),
+    )
+    monkeypatch.setenv("ALLOW_REAL_TOOL_API", "true")
+    observation = execute(
+        "reverse_image_search",
+        "search",
+        purpose="验证页",
+        inputs={"image": str(_gradient(tmp_path / "cap.png")), "engines": ["baidu_graph"]},
+        ctx=RuntimeContext(
+            extras={
+                "artifact_dir": str(tmp_path / "cap"),
+                "baidu_graph_session": session,
+            }
+        ),
+    )
+    assert observation.ok is False
+    assert observation.error_code == "provider_error"
+    assert observation.error is not None
+    assert "人机验证" in observation.error
+
+
+def test_default_engines_do_not_build_baidu_graph(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    built: list[str] = []
+    original = search_mod._build_engine
+
+    def spy(name: str, extras: dict[str, Any] | None = None) -> Any:
+        built.append(name)
+        return original(name, extras)
+
+    monkeypatch.setenv("ALLOW_REAL_TOOL_API", "true")
+    monkeypatch.setenv("SERPAPI_API_KEY", "test-serpapi-key")
+    monkeypatch.setattr(search_mod, "_build_engine", spy)
+
+    def fake_urlopen(request: Any, timeout: float | None = None) -> _FakeHttpResponse:
+        del timeout
+        url = str(request.full_url)
+        if "search.json" in url:
+            return _FakeHttpResponse({"visual_matches": []})
+        return _FakeHttpResponse({"image_id": "img_1"})
+
+    monkeypatch.setattr(search_mod.urllib.request, "urlopen", fake_urlopen)
+    observation = execute(
+        "reverse_image_search",
+        "search",
+        purpose="默认不走百度",
+        inputs={"image": str(_gradient(tmp_path / "def.png"))},
+        ctx=RuntimeContext(extras={"artifact_dir": str(tmp_path / "def")}),
+    )
+    assert observation.ok is True
+    assert built == ["serpapi"]
+    assert "baidu_graph" not in built

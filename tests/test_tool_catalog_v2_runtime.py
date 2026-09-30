@@ -7,7 +7,11 @@ from pathlib import Path
 from pipeline.config import clear_settings_cache, get_settings
 from pipeline.schemas.freeform import FreeFormStep, FreeFormTrajectory
 from pipeline.stage3_normalize_format.format_jsonl import remap_trajectory
-from pipeline.stage3_normalize_format.map_tools import ensure_tool_trees
+from pipeline.stage3_normalize_format.map_tools import (
+    _catalog_payload,
+    ensure_tool_trees,
+)
+from pipeline.stage3_normalize_format.trees import load_forest
 from pipeline.stage3_normalize_format.params import normalize_and_validate_tool_inputs
 from pipeline.tool_catalog_v2 import (
     build_tool_forest_v2,
@@ -24,6 +28,12 @@ def test_v2_catalog_has_granular_tools_and_contracts() -> None:
     assert {"satellite_imagery_query", "satellite_imagery_compare"}.issubset(
         names
     )
+    infra = next(
+        tree for tree in forest.trees if tree.canonical.name == "infrastructure_registry"
+    )
+    assert infra.canonical.available is False
+    route = next(tree for tree in forest.trees if tree.canonical.name == "route_query")
+    assert route.canonical.available is False
     for tree in forest.trees:
         if tree.canonical.is_terminal:
             continue
@@ -56,7 +66,8 @@ def test_image_runtime_contract_matches_executor_inputs() -> None:
 
 
 def test_guidance_explains_fixed_outer_contract_and_acquisition() -> None:
-    guidance = render_tool_contract_guidance(build_tool_forest_v2())
+    forest = build_tool_forest_v2()
+    guidance = render_tool_contract_guidance(forest)
     assert "params.operation" in guidance
     assert "params.purpose" in guidance
     assert "params.inputs" in guidance
@@ -64,6 +75,26 @@ def test_guidance_explains_fixed_outer_contract_and_acquisition() -> None:
     assert "获取:" in guidance
     assert "osm_result_process" in guidance
     assert "source_result" in guidance
+    assert "infrastructure_registry" not in guidance
+    assert "route_query" not in guidance
+    offered = {item["canonical"] for item in _catalog_payload(forest)}
+    assert "infrastructure_registry" not in offered
+    assert "route_query" not in offered
+    assert "web_search" in offered
+    official = load_forest(Path("canonical_tool_catalog_v2.json"))
+    official_infra = next(
+        tree
+        for tree in official.trees
+        if tree.canonical.name == "infrastructure_registry"
+    )
+    assert official_infra.canonical.available is False
+    official_route = next(
+        tree for tree in official.trees if tree.canonical.name == "route_query"
+    )
+    assert official_route.canonical.available is False
+    official_guidance = render_tool_contract_guidance(official)
+    assert "infrastructure_registry" not in official_guidance
+    assert "route_query" not in official_guidance
 
 
 def test_stage3_accepts_v2_nested_params_and_preserves_purpose() -> None:

@@ -61,19 +61,31 @@ def test_opening_gate_without_key_still_does_not_hit_network(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("ALLOW_REAL_TOOL_API", "true")
-    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "")
-    monkeypatch.setenv("BRAVE_API_KEY", "")
-    observation = execute(
+    monkeypatch.setenv("SERPAPI_API_KEY", "")
+    monkeypatch.setenv("SERPAPI_KEY", "")
+    chinese = execute(
         "web_search",
         "keyword_search",
         purpose="缺钥匙",
         inputs={"query": "铁路桥"},
         ctx=RuntimeContext(),
     )
-    assert observation.ok is False
-    assert observation.error_code == "engine_unavailable"
-    assert observation.error is not None
-    assert "BRAVE" in observation.error
+    assert chinese.ok is False
+    assert chinese.error_code == "engine_unavailable"
+    assert chinese.error is not None
+    assert "SERPAPI" in chinese.error
+
+    english = execute(
+        "web_search",
+        "keyword_search",
+        purpose="缺英文检索钥匙",
+        inputs={"query": "railway bridge"},
+        ctx=RuntimeContext(),
+    )
+    assert english.ok is False
+    assert english.error_code == "engine_unavailable"
+    assert english.error is not None
+    assert "SERPAPI" in english.error
 
 
 def test_opened_gate_without_mock_cannot_reach_free_http(

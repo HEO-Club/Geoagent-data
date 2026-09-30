@@ -216,22 +216,34 @@ def test_allow_real_api_false_without_engine_is_unavailable() -> None:
 
 def test_allow_real_api_true_missing_key_is_unavailable(monkeypatch: Any) -> None:
     monkeypatch.setenv("ALLOW_REAL_TOOL_API", "true")
-    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "")
-    monkeypatch.setenv("BRAVE_API_KEY", "")
-    observation = execute(
+    monkeypatch.setenv("SERPAPI_API_KEY", "")
+    monkeypatch.setenv("SERPAPI_KEY", "")
+    chinese = execute(
         "web_search",
         "keyword_search",
         purpose="缺钥匙",
         inputs={"query": "铁路桥"},
         ctx=RuntimeContext(),
     )
-    assert observation.ok is False
-    assert observation.error_code == "engine_unavailable"
-    assert observation.error is not None
-    assert "BRAVE" in observation.error
+    assert chinese.ok is False
+    assert chinese.error_code == "engine_unavailable"
+    assert chinese.error is not None
+    assert "SERPAPI" in chinese.error
+
+    english = execute(
+        "web_search",
+        "keyword_search",
+        purpose="缺英文检索钥匙",
+        inputs={"query": "railway bridge"},
+        ctx=RuntimeContext(),
+    )
+    assert english.ok is False
+    assert english.error_code == "engine_unavailable"
+    assert english.error is not None
+    assert "SERPAPI" in english.error
 
 
-def test_brave_engine_sends_token_and_strips_full_text(monkeypatch: Any) -> None:
+def test_english_query_uses_serpapi_google(monkeypatch: Any) -> None:
     calls: list[Any] = []
 
     class _FakeHttpResponse:
@@ -252,36 +264,50 @@ def test_brave_engine_sends_token_and_strips_full_text(monkeypatch: Any) -> None
         calls.append(request)
         parsed = urlparse(str(request.full_url))
         params = parse_qs(parsed.query)
-        assert params["q"] == ["铁路桥 site:news.example.com"]
-        assert params["count"] == ["10"]
-        assert params["search_lang"] == ["zh-hans"]
-        assert params["freshness"] == ["2020-01-01to2020-12-31"]
-        headers = {key.lower(): value for key, value in request.header_items()}
-        assert headers["x-subscription-token"] == "test-brave-key"
-        return _FakeHttpResponse(_sample_brave())
+        assert parsed.hostname == "serpapi.com"
+        assert params["engine"] == ["google"]
+        assert params["q"] == ["railway bridge site:news.example.com"]
+        assert params["num"] == ["10"]
+        assert params["hl"] == ["en"]
+        assert params["api_key"] == ["test-serp-key"]
+        assert params["tbs"] == ["cdr:1,cd_min:01/01/2020,cd_max:12/31/2020"]
+        return _FakeHttpResponse(
+            {
+                "organic_results": [
+                    {
+                        "title": "Example Bridge Page",
+                        "link": "https://news.example.com/bridge",
+                        "snippet": "A historic stone railing railway bridge.",
+                    }
+                ],
+                "answer_box": {"answer": "Must not appear in observation"},
+            }
+        )
 
     monkeypatch.setenv("ALLOW_REAL_TOOL_API", "true")
-    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "test-brave-key")
-    monkeypatch.setenv("BRAVE_API_KEY", "")
+    monkeypatch.setenv("SERPAPI_API_KEY", "test-serp-key")
+    monkeypatch.setenv("SERPAPI_KEY", "")
     monkeypatch.setattr(search_mod.urllib.request, "urlopen", fake_urlopen)
 
     observation = execute(
         "web_search",
         "keyword_search",
-        purpose="mock brave",
+        purpose="mock google",
         inputs={
-            "query": "铁路桥",
+            "query": "railway bridge",
             "domains": ["news.example.com"],
-            "language": "zh-CN",
+            "language": "en",
             "time_range": "2020",
         },
         ctx=RuntimeContext(),
     )
     assert observation.ok is True
     assert observation.result is not None
-    assert calls, "应发起一次 Brave HTTP 请求"
-    assert observation.result["applied"]["engine"] == "brave"
-    assert observation.result["applied"]["language"] == "zh-hans"
+    assert calls, "应发起一次 SerpAPI Google 请求"
+    assert observation.result["applied"]["engine"] == "serpapi_google"
+    assert observation.result["applied"]["language"] == "en"
+    assert observation.result["applied"]["time_range"] == "2020-01-01to2020-12-31"
+    assert "test-serp-key" not in str(observation.result)
     assert observation.result["results"][0]["url"] == "https://news.example.com/bridge"
     keys = _nested_keys(observation.result)
     assert "raw_content" not in keys
@@ -315,3 +341,121 @@ def test_top_k_is_capped_by_engine_limit() -> None:
     assert engine.calls[0].top_k == 20
     assert observation.result is not None
     assert observation.result["applied"]["top_k"] == 20
+
+
+def _sample_baidu() -> dict[str, Any]:
+    return {
+        "organic_results": [
+            {
+                "title": "铁路桥新闻",
+                "link": "https://news.example.cn/bridge",
+                "snippet": "石栏铁路桥的公开报道。",
+            },
+            {
+                "title": "重复链接",
+                "link": "https://news.example.cn/bridge",
+                "snippet": "应被去重。",
+            },
+        ],
+        "social_media_results": [
+            {
+                "nickname": "铁路观察",
+                "link": "https://weibo.com/example/status/1",
+                "snippet": "现场照片在微博。",
+                "source": "微博",
+            }
+        ],
+        "error": None,
+    }
+
+
+def test_chinese_query_uses_serpapi_baidu(monkeypatch: Any) -> None:
+    calls: list[Any] = []
+
+    def fake_urlopen(request: Any, timeout: float | None = None) -> Any:
+        del timeout
+        calls.append(request)
+        parsed = urlparse(str(request.full_url))
+        params = parse_qs(parsed.query)
+        assert parsed.hostname == "serpapi.com"
+        assert params["engine"] == ["baidu"]
+        assert params["q"] == ["铁路桥 石栏"]
+        assert params["api_key"] == ["test-serp-key"]
+        assert "freshness" not in params
+        return _FakeHttpResponse(_sample_baidu())
+
+    monkeypatch.setenv("ALLOW_REAL_TOOL_API", "true")
+    monkeypatch.setenv("SERPAPI_API_KEY", "test-serp-key")
+    monkeypatch.setenv("SERPAPI_KEY", "")
+    monkeypatch.setattr(search_mod.urllib.request, "urlopen", fake_urlopen)
+
+    observation = execute(
+        "web_search",
+        "keyword_search",
+        purpose="mock baidu",
+        inputs={"query": "铁路桥 石栏", "time_range": "2020", "top_k": 50},
+        ctx=RuntimeContext(),
+    )
+    assert observation.ok is True
+    assert observation.result is not None
+    assert calls, "应发起一次 SerpAPI 百度请求"
+    assert observation.result["applied"]["engine"] == "serpapi_baidu"
+    assert observation.result["applied"]["top_k"] == 10
+    assert "time_range" not in observation.result["applied"]
+    assert observation.result["applied"]["unsupported"]["time_range"] == (
+        "2020-01-01to2020-12-31"
+    )
+    results = observation.result["results"]
+    assert results[0]["title"] == "铁路桥新闻"
+    assert results[0]["url"] == "https://news.example.cn/bridge"
+    assert "公开报道" in results[0]["snippet"]
+    assert results[1]["url"] == "https://weibo.com/example/status/1"
+    assert results[1]["title"] == "铁路观察"
+    assert len(results) == 2
+    dumped = str(observation.result)
+    assert "test-serp-key" not in dumped
+
+
+def test_language_chinese_uses_serpapi_baidu(monkeypatch: Any) -> None:
+    calls: list[Any] = []
+
+    def fake_urlopen(request: Any, timeout: float | None = None) -> Any:
+        del timeout
+        calls.append(request)
+        params = parse_qs(urlparse(str(request.full_url)).query)
+        assert params["engine"] == ["baidu"]
+        assert params["q"] == ["coffee shop"]
+        return _FakeHttpResponse(_sample_baidu())
+
+    monkeypatch.setenv("ALLOW_REAL_TOOL_API", "true")
+    monkeypatch.setenv("SERPAPI_API_KEY", "test-serp-key")
+    monkeypatch.setattr(search_mod.urllib.request, "urlopen", fake_urlopen)
+
+    observation = execute(
+        "web_search",
+        "keyword_search",
+        purpose="语言走百度",
+        inputs={"query": "coffee shop", "language": "中文"},
+        ctx=RuntimeContext(),
+    )
+    assert observation.ok is True
+    assert observation.result is not None
+    assert calls
+    assert observation.result["applied"]["engine"] == "serpapi_baidu"
+    assert observation.result["applied"]["language"] == "zh-hans"
+
+
+class _FakeHttpResponse:
+    """urlopen 替身：返回预设 JSON 字节。"""
+
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self._body = json.dumps(payload).encode("utf-8")
+
+    def read(self) -> bytes:
+        return self._body
+
+    def __enter__(self) -> _FakeHttpResponse:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None

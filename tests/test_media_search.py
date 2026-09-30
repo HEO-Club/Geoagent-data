@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -203,7 +204,7 @@ def test_photo_search_returns_metadata_and_separates_upload_from_capture() -> No
     assert "MUST NOT LEAK" not in dumped
     assert "FULL FILE BYTES" not in dumped
     assumptions = observation.result["assumptions"]
-    assert any("上传时间" in item for item in assumptions)
+    assert any("上传或发布时间" in item for item in assumptions)
     assert any("使用权" in item for item in assumptions)
     assert any("未下载" in item for item in assumptions)
     assert any("Commons" in item for item in assumptions)
@@ -244,7 +245,7 @@ def test_video_search_uses_video_kind() -> None:
     assert observation.result["results"][0]["media_id"] == "File:Bridge_drone.webm"
 
 
-def test_youtube_only_platform_is_unavailable() -> None:
+def test_youtube_only_platform_without_provider_is_unavailable() -> None:
     observation = _search(
         operation="video_search",
         inputs={"platforms": ["youtube"]},
@@ -253,7 +254,121 @@ def test_youtube_only_platform_is_unavailable() -> None:
     assert observation.ok is False
     assert observation.error_code == "engine_unavailable"
     assert observation.error is not None
-    assert "YouTube" in observation.error or "youtube" in observation.error.lower()
+    assert "YouTube" in observation.error
+
+
+def test_youtube_provider_maps_publish_time_not_capture() -> None:
+    provider = FakeMediaProvider()
+    provider.name = "youtube"
+    provider.payload = {
+        "items": [
+            {
+                "id": {"kind": "youtube#video", "videoId": "abcdefghijk"},
+                "snippet": {
+                    "title": "Stone bridge &amp; river",
+                    "description": "Aerial view",
+                    "channelTitle": "Pilot",
+                    "publishedAt": "2019-08-20T00:00:00Z",
+                },
+            }
+        ]
+    }
+    observation = execute(
+        "media_search",
+        "video_search",
+        purpose="youtube",
+        inputs={"query": "铁路桥", "platforms": ["youtube"]},
+        ctx=RuntimeContext(extras={"youtube_search_provider": provider}),
+    )
+    assert observation.ok is True
+    assert observation.result is not None
+    assert observation.result["applied"]["provider"] == "youtube"
+    hit = observation.result["results"][0]
+    assert hit["media_id"] == "abcdefghijk"
+    assert hit["title"] == "Stone bridge & river"
+    assert hit["uploaded_at"] == "2019-08-20T00:00:00Z"
+    assert hit["captured_at"] is None
+    assert hit["url"] == "https://www.youtube.com/watch?v=abcdefghijk"
+    assert provider.calls[0].published_window is None
+
+
+def test_youtube_http_sends_query_and_hides_key(monkeypatch: Any) -> None:
+    calls: list[Any] = []
+
+    class _FakeHttpResponse:
+        def read(self) -> bytes:
+            return json.dumps(
+                {
+                    "items": [
+                        {
+                            "id": {"videoId": "abcdefghijk"},
+                            "snippet": {
+                                "title": "Bridge",
+                                "description": "span",
+                                "channelTitle": "Pilot",
+                                "publishedAt": "2020-01-02T03:04:05Z",
+                            },
+                        }
+                    ]
+                }
+            ).encode("utf-8")
+
+        def __enter__(self) -> _FakeHttpResponse:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    def fake_urlopen(request: Any, timeout: float | None = None) -> _FakeHttpResponse:
+        del timeout
+        calls.append(request)
+        params = parse_qs(urlparse(str(request.full_url)).query)
+        assert params["type"] == ["video"]
+        assert params["part"] == ["snippet"]
+        assert params["q"] == ["铁路桥"]
+        assert params["location"] == ["34.75,113.65"]
+        assert params["locationRadius"] == ["5000m"]
+        assert params["publishedAfter"] == ["2019-01-01T00:00:00Z"]
+        assert params["publishedBefore"] == ["2020-01-01T00:00:00Z"]
+        assert params["key"] == ["test-key-not-real"]
+        return _FakeHttpResponse()
+
+    monkeypatch.setenv("ALLOW_REAL_TOOL_API", "true")
+    monkeypatch.setenv("YOUTUBE_API_KEY", "test-key-not-real")
+    monkeypatch.setattr(search_mod.urllib.request, "urlopen", fake_urlopen)
+    observation = execute(
+        "media_search",
+        "video_search",
+        purpose="mock youtube",
+        inputs={
+            "query": "铁路桥",
+            "platforms": ["yt"],
+            "area": {"lat": 34.75, "lon": 113.65, "radius_m": 5000},
+            "time_range": "2019",
+        },
+        ctx=RuntimeContext(),
+    )
+    assert observation.ok is True
+    assert calls
+    assert observation.result is not None
+    assert observation.result["results"][0]["provider"] == "youtube"
+    assert "test-key-not-real" not in str(observation.result)
+
+
+def test_youtube_missing_key_is_unavailable(monkeypatch: Any) -> None:
+    monkeypatch.setenv("ALLOW_REAL_TOOL_API", "true")
+    monkeypatch.setenv("YOUTUBE_API_KEY", "")
+    observation = execute(
+        "media_search",
+        "video_search",
+        purpose="no key",
+        inputs={"query": "铁路桥", "platforms": ["youtube"]},
+        ctx=RuntimeContext(),
+    )
+    assert observation.ok is False
+    assert observation.error_code == "engine_unavailable"
+    assert observation.error is not None
+    assert "YOUTUBE_API_KEY" in observation.error
 
 
 def test_mixed_sources_keep_commons_and_record_unsupported() -> None:
@@ -460,6 +575,35 @@ def test_invalid_top_k_is_rejected() -> None:
     observation = _search(inputs={"top_k": "many"})
     assert observation.ok is False
     assert observation.error_code == "invalid_top_k"
+
+
+def test_catalog_states_current_media_search_limits() -> None:
+    catalog = json.loads(
+        Path("canonical_tool_catalog_v2.json").read_text(encoding="utf-8")
+    )
+    tree = next(
+        item["canonical"]
+        for item in catalog["trees"]
+        if item["canonical"]["name"] == "media_search"
+    )
+    text = tree["description"]
+    assert "Wikimedia Commons" in text
+    assert "youtube" in text
+    assert "不支持以图搜图" in text
+    assert "不会解析成坐标" in text
+    operations = {item["name"]: item for item in tree["operations"]}
+    video_fields = {
+        field["name"]: field["description"]
+        for field in operations["video_search"]["input_schema"]["fields"]
+    }
+    photo_fields = {
+        field["name"]: field["description"]
+        for field in operations["photo_search"]["input_schema"]["fields"]
+    }
+    assert "youtube" in video_fields["platforms"]
+    assert "wikimedia_commons" in photo_fields["sources"]
+    assert "不会转成坐标" in video_fields["area"]
+    assert "拍摄时间" in photo_fields["time_range"]
 
 
 def test_top_k_is_capped_by_provider_limit() -> None:

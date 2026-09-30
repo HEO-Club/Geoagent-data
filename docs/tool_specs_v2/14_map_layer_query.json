@@ -2,29 +2,29 @@
   "schema_version": "geoagent_tool_implementation_spec_v1",
   "ordinal": 14,
   "research_date": "2026-08-31",
-  "research_status": "design_researched_not_runtime_implemented",
+  "research_status": "runtime_implemented_provider_mock_verified_live_service_pending",
   "catalog_source": "canonical_tool_catalog_v2.json",
   "canonical_tool": {
     "canonical": {
       "name": "map_layer_query",
-      "description": "加载水系、地形、行政或历史地图图层。",
+      "description": "加载地图图层可视化。默认 terrestris OSM WMS 仅支持 roads（综合底图）和 terrain（山体阴影）；当前不支持时间轴、历史地图和 WFS。",
       "executor": "map_layer_service",
       "usage": "仅在需要访问该真实执行器并获得新证据时调用；先选择 operation，再按其 input_schema 填 inputs。缺少执行级参数时按 acquisition_hint 获取，不得编造坐标、文件、会话或前置结果。",
       "operations": [
         {
           "name": "load_layer",
-          "description": "加载水系、地形、行政区或其他地图图层",
+          "description": "按范围加载地图图层。默认后端只出 roads/terrain 图片；当前不支持时间轴、历史地图和 WFS。",
           "aliases": [],
           "input_schema": {
-            "description": "加载指定区域的水系、地形、道路、行政区或历史地图图层。",
+            "description": "加载指定区域的地图图层。默认 terrestris 只提供 roads、terrain 的 WMS 图片；当前不支持时间轴、历史地图和 WFS。水系或行政几何请用 osm_query 或自建 WMS。",
             "fields": [
               {
                 "name": "area",
                 "type": "location",
                 "required": true,
                 "requirement_level": "semantic",
-                "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
-                "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+                "description": "地理查询范围，可为 bbox、中心点加半径，或标准地名/行政区。默认 WMS 出图需要 bbox 或中心点加半径；纯地名需先 geocode。",
+                "acquisition_hint": "优先使用已有 bbox、中心点或 $active_area；来源只有地名时先 geocode。来源没有时不得补写坐标。",
                 "context_sources": [
                   "active_area"
                 ],
@@ -55,8 +55,8 @@
                 "type": "string_or_array",
                 "required": true,
                 "requirement_level": "semantic",
-                "description": "需要加载的一个或多个图层。",
-                "acquisition_hint": "根据目的明确要加载的图层，如 hydrology、terrain、historical_map。",
+                "description": "需要加载的一个或多个图层。默认 terrestris 可执行 roads、terrain；hydrology、administrative、historical_map 当前默认后端不支持。",
+                "acquisition_hint": "根据目的填写图层名。默认后端用 roads 看 OSM 底图、terrain 看地形阴影；要水系或行政矢量用 osm_query，不要为此编造历史图层。",
                 "context_sources": [],
                 "context_default": null,
                 "aliases": [
@@ -70,7 +70,7 @@
                 "minimum": null,
                 "maximum": null,
                 "example": [
-                  "hydrology"
+                  "roads"
                 ]
               },
               {
@@ -78,8 +78,8 @@
                 "type": "string_or_object",
                 "required": false,
                 "requirement_level": "optional",
-                "description": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。",
-                "acquisition_hint": "从字幕、task 或已有结果提取真实时间范围；来源没有时不得猜测。",
+                "description": "查询时间点或起止范围。当前默认后端不支持时间轴，传入后记入 applied.unsupported，不会生成历史地图。",
+                "acquisition_hint": "字幕若明确给了年份仍可原样写入；当前执行器不会按该时间出图。需要历史影像请用 satellite_imagery_query。来源没有时不得猜测。",
                 "context_sources": [],
                 "context_default": null,
                 "aliases": [
@@ -105,8 +105,8 @@
                 "type": "string",
                 "required": false,
                 "requirement_level": "optional",
-                "description": "地图或数据服务提供方。",
-                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 provider；来源没有时不得编造。",
+                "description": "地图服务提供方。默认 terrestris；可选 wms / geoserver / ogc（需自建端点）。",
+                "acquisition_hint": "仅当 Thought 或配置明确指定数据源时填写；默认即可走 terrestris。来源没有时不得编造。",
                 "context_sources": [],
                 "context_default": null,
                 "aliases": [
@@ -117,7 +117,7 @@
                 "item_type": null,
                 "minimum": null,
                 "maximum": null,
-                "example": null
+                "example": "terrestris"
               }
             ],
             "required_any": [],
@@ -176,8 +176,8 @@
         "type": "location",
         "required": true,
         "requirement_level": "semantic",
-        "purpose": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
-        "how_to_obtain": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+        "purpose": "地理查询范围，可为 bbox、中心点加半径，或标准地名/行政区。默认 WMS 出图需要 bbox 或中心点加半径；纯地名需先 geocode。",
+        "how_to_obtain": "优先使用已有 bbox、中心点或 $active_area；来源只有地名时先 geocode。来源没有时不得补写坐标。",
         "context_sources": [
           "active_area"
         ],
@@ -208,15 +208,15 @@
         "type": "string_or_array",
         "required": true,
         "requirement_level": "semantic",
-        "purpose": "需要加载的一个或多个图层。",
-        "how_to_obtain": "根据目的明确要加载的图层，如 hydrology、terrain、historical_map。",
+        "purpose": "需要加载的一个或多个图层。默认 terrestris 可执行 roads、terrain；hydrology、administrative、historical_map 当前默认后端不支持。",
+        "how_to_obtain": "根据目的填写图层名。默认后端用 roads 看 OSM 底图、terrain 看地形阴影；要水系或行政矢量用 osm_query，不要为此编造历史图层。",
         "context_sources": [],
         "context_default": null,
         "allowed_values": [],
         "minimum": null,
         "maximum": null,
         "example": [
-          "hydrology"
+          "roads"
         ],
         "aliases": [
           "图层",
@@ -231,8 +231,8 @@
         "type": "string_or_object",
         "required": false,
         "requirement_level": "optional",
-        "purpose": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。",
-        "how_to_obtain": "从字幕、task 或已有结果提取真实时间范围；来源没有时不得猜测。",
+        "purpose": "查询时间点或起止范围。当前默认后端不支持时间轴，传入后记入 applied.unsupported，不会生成历史地图。",
+        "how_to_obtain": "字幕若明确给了年份仍可原样写入；当前执行器不会按该时间出图。需要历史影像请用 satellite_imagery_query。来源没有时不得猜测。",
         "context_sources": [],
         "context_default": null,
         "allowed_values": [],
@@ -258,14 +258,14 @@
         "type": "string",
         "required": false,
         "requirement_level": "optional",
-        "purpose": "地图或数据服务提供方。",
-        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 provider；来源没有时不得编造。",
+        "purpose": "地图服务提供方。默认 terrestris；可选 wms / geoserver / ogc（需自建端点）。",
+        "how_to_obtain": "仅当 Thought 或配置明确指定数据源时填写；默认即可走 terrestris。来源没有时不得编造。",
         "context_sources": [],
         "context_default": null,
         "allowed_values": [],
         "minimum": null,
         "maximum": null,
-        "example": null,
+        "example": "terrestris",
         "aliases": [
           "数据源",
           "服务"
@@ -278,23 +278,31 @@
     "architecture": "ogc_service_or_local_geoserver",
     "backends": [
       {
+        "name": "terrestris OSM WMS",
+        "kind": "public_ogc",
+        "role": "默认公开 OSM 底图与 SRTM 阴影",
+        "official_url": "https://ows.terrestris.de/osm/service",
+        "authentication": "无",
+        "license_note": "使用前核对软件与数据许可。"
+      },
+      {
         "name": "GeoServer WMS/WFS",
         "kind": "self_host_or_external_ogc",
-        "role": "加载栅格地图和矢量属性",
+        "role": "自建专题图层和矢量属性",
         "official_url": "https://docs.geoserver.org/latest/en/user/services/wms/reference/",
         "authentication": "无",
         "license_note": "使用前核对软件与数据许可。"
       }
     ],
     "execution_flow": [
-      "先读 GetCapabilities/图层清单",
-      "按 bbox、CRS、time、layer 请求",
-      "区分地图图片与可计算矢量/栅格"
+      "默认走 terrestris GetMap",
+      "按 bbox、CRS、layer 请求 PNG",
+      "历史地图/时间轴/WFS 明确标为不支持"
     ],
     "limitations": [
+      "当前不支持时间轴、历史地图和 WFS",
       "WMS 图片不能替代真实几何",
-      "TIME 支持取决于数据源",
-      "必须保留 CRS、图层日期和许可"
+      "默认后端无独立水系或行政图层"
     ],
     "mcp_strategy": "自建 OGC adapter；不要给模型直接拼接不受限的服务 URL。"
   },

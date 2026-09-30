@@ -29,6 +29,9 @@ imageio-ffmpeg
 rapidocr
 onnxruntime
 
+# 本机 stdio MCP（python -m tool.mcp）；密钥仍只走环境变量
+mcp>=2.2.0
+
 # 工程与测试
 tenacity
 diskcache

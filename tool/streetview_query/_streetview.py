@@ -33,7 +33,9 @@ _DEFAULT_UA = "geoagent-dataset/1.0 (streetview_query; local)"
 _DEFAULT_SEARCH_RADIUS_M = 50
 _SEARCH_RADIUS_MIN = 1
 _SEARCH_RADIUS_MAX = 5000
+_RADIUS_API_MAX_M = 50
 _DEFAULT_IMAGE_LIMIT = 50
+_SEARCH_RESULT_MAX = 20
 _LIMIT_MIN = 1
 _LIMIT_MAX = 200
 _DEFAULT_CAPTURE_WIDTH = 640
@@ -45,6 +47,7 @@ _YEAR_MIN = 1000
 _YEAR_MAX = 2100
 _SESSIONS_KEY = "streetview_sessions"
 _SESSION_COUNTER_KEY = "streetview_session_counter"
+_SEARCH_FIELDS = "id,captured_at,compass_angle,geometry,sequence,is_pano"
 _IMAGE_FIELDS = (
     "id,captured_at,compass_angle,computed_compass_angle,"
     "computed_geometry,geometry,sequence,is_pano,"
@@ -121,6 +124,7 @@ _ASSUMPTIONS = [
     "当前仅接入 Mapillary，未接 Google Street View",
     "无法唯一判定时，坐标串按 lon,lat 解析",
     "纯地名未在本步 geocode，需要 bbox 或中心点加半径",
+    "Mapillary 只按中心点检索，半径最大 50 米；更大的范围不会扩大检索",
     "Mapillary 在部分地区覆盖稀疏，无图即无覆盖",
     "available_dates 仅来自本次检索返回的影像，不是全局完整编年史",
 ]
@@ -258,14 +262,17 @@ class MapillaryStreetviewProvider:
         self._user_agent = user_agent
 
     def search_images(self, request: ImageSearchRequest) -> list[dict[str, Any]]:
+        """按中心点半径检索。Mapillary 的 bbox 检索会因数据量被拒绝。"""
+
+        center_lat = (request.bbox.south + request.bbox.north) / 2.0
+        center_lon = (request.bbox.west + request.bbox.east) / 2.0
         params: dict[str, str] = {
             "access_token": self._access_token,
-            "fields": _IMAGE_FIELDS,
-            "bbox": (
-                f"{request.bbox.west},{request.bbox.south},"
-                f"{request.bbox.east},{request.bbox.north}"
-            ),
-            "limit": str(request.limit),
+            "fields": _SEARCH_FIELDS,
+            "lat": _coord_param(center_lat),
+            "lng": _coord_param(center_lon),
+            "radius": str(_radius_m_for_bbox(request.bbox)),
+            "limit": str(max(_LIMIT_MIN, min(_SEARCH_RESULT_MAX, request.limit))),
         }
         if request.start_captured_at:
             params["start_captured_at"] = request.start_captured_at
@@ -366,7 +373,7 @@ def execute_open(
             applied=_applied(
                 provider,
                 location=location,
-                extra={"search_radius_m": location.radius_m},
+                extra={"search_radius_m": _radius_m_for_bbox(location.bbox)},
             ),
             ctx=ctx,
         )
@@ -1229,6 +1236,22 @@ def _bbox_from_polygon(points: tuple[tuple[float, float], ...]) -> BBox:
     lons = [point[0] for point in points]
     lats = [point[1] for point in points]
     return BBox(west=min(lons), south=min(lats), east=max(lons), north=max(lats))
+
+def _coord_param(value: float) -> str:
+    return format(value, ".7f").rstrip("0").rstrip(".")
+
+
+def _radius_m_for_bbox(bbox: BBox) -> int:
+    """把查询矩形收成 Mapillary 半径检索，上限 50 米。"""
+
+    center = GeoPoint(
+        lat=(bbox.south + bbox.north) / 2.0,
+        lon=(bbox.west + bbox.east) / 2.0,
+    )
+    corner = GeoPoint(lat=bbox.north, lon=bbox.east)
+    radius_m = int(math.ceil(_haversine_m(center, corner)))
+    return max(_SEARCH_RADIUS_MIN, min(_RADIUS_API_MAX_M, radius_m))
+
 
 def _bbox_from_center(center: GeoPoint, radius_m: int) -> BBox:
     lat_delta = radius_m / _METERS_PER_DEG_LAT

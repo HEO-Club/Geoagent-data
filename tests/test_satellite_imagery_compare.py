@@ -232,15 +232,15 @@ def test_candidates_count_only_is_missing_input() -> None:
     assert "数量" in observation.error
 
 
-def test_place_name_without_geometry_is_missing_input() -> None:
+def test_place_name_without_geometry_is_invalid_area() -> None:
     observation = _call(
         "compare_time",
         inputs={"area": "郑州市", "times": ["2018", "2024"]},
     )
     assert observation.ok is False
-    assert observation.error_code == "missing_input"
+    assert observation.error_code == "invalid_area"
     assert observation.error is not None
-    assert "geocode" in observation.error
+    assert "不接受地名" in observation.error
 
 
 def test_compare_time_two_years_returns_overlay_and_dates(tmp_path: Path) -> None:

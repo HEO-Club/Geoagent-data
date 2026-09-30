@@ -1,4 +1,4 @@
-"""infrastructure_registry：查询建设历史、许可和登记记录。"""
+"""infrastructure_registry：当前不可用；原用途为查询建设历史、许可和登记记录。"""
 
 from __future__ import annotations
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from io import BytesIO
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -420,3 +421,224 @@ def test_wms_with_wfs_returns_vector(monkeypatch: Any) -> None:
     keys = _nested_keys(observation.result)
     assert "confirmed_location" not in keys
     assert "raw_content" not in keys
+
+
+def _set_terrestris_env(monkeypatch: Any) -> None:
+    monkeypatch.setenv("ALLOW_REAL_TOOL_API", "true")
+    monkeypatch.setenv("MAP_LAYER_PROVIDER", "terrestris")
+    monkeypatch.setenv("MAP_LAYER_WMS_ENDPOINT", "")
+    monkeypatch.setenv("MAP_LAYER_WFS_ENDPOINT", "")
+    monkeypatch.setenv("MAP_LAYER_WMS_LAYERS", "")
+
+
+def test_terrestris_roads_uses_osm_wms(monkeypatch: Any) -> None:
+    calls: list[Any] = []
+
+    def fake_urlopen(request: Any, timeout: float | None = None) -> _FakeHttpResponse:
+        del timeout
+        calls.append(request)
+        parsed = urlparse(str(request.full_url))
+        params = parse_qs(parsed.query)
+        assert parsed.netloc == "ows.terrestris.de"
+        assert parsed.path == "/osm/service"
+        assert params["REQUEST"] == ["GetMap"]
+        assert params["LAYERS"] == ["OSM-WMS"]
+        assert params["CRS"] == ["EPSG:4326"]
+        assert params["BBOX"] == ["34.7,113.5,34.9,113.8"]
+        assert "TIME" not in params
+        return _FakeHttpResponse(_png_bytes())
+
+    _set_terrestris_env(monkeypatch)
+    monkeypatch.setattr(layers_mod.urllib.request, "urlopen", fake_urlopen)
+
+    observation = execute(
+        "map_layer_query",
+        "load_layer",
+        purpose="terrestris 道路底图",
+        inputs={"area": [113.5, 34.7, 113.8, 34.9], "layers": ["roads"]},
+        ctx=RuntimeContext(),
+    )
+    assert observation.ok is True
+    assert observation.result is not None
+    assert calls
+    layer = observation.result["layers"][0]
+    assert layer["name"] == "roads"
+    assert layer["provider_layer"] == "OSM-WMS"
+    assert layer["representation"] == "image"
+    assert layer["usable_for_gis"] is False
+    applied = observation.result["applied"]
+    assert applied["provider"] == "terrestris"
+    assert applied["layers"]["roads"] == "OSM-WMS"
+    assumptions = observation.result["assumptions"]
+    assert any("综合底图" in item for item in assumptions)
+    assert any("无独立水系" in item for item in assumptions)
+
+
+def test_terrestris_terrain_uses_srtm_hillshade(monkeypatch: Any) -> None:
+    calls: list[Any] = []
+
+    def fake_urlopen(request: Any, timeout: float | None = None) -> _FakeHttpResponse:
+        del timeout
+        calls.append(request)
+        parsed = urlparse(str(request.full_url))
+        params = parse_qs(parsed.query)
+        assert params["LAYERS"] == ["SRTM30-Colored-Hillshade"]
+        return _FakeHttpResponse(_png_bytes((90, 80, 60)))
+
+    _set_terrestris_env(monkeypatch)
+    monkeypatch.setattr(layers_mod.urllib.request, "urlopen", fake_urlopen)
+
+    observation = execute(
+        "map_layer_query",
+        "load_layer",
+        purpose="terrestris 地形",
+        inputs={"area": {"bbox": [113.5, 34.7, 113.8, 34.9]}, "layers": ["terrain"]},
+        ctx=RuntimeContext(),
+    )
+    assert observation.ok is True
+    assert observation.result is not None
+    assert calls
+    layer = observation.result["layers"][0]
+    assert layer["provider_layer"] == "SRTM30-Colored-Hillshade"
+    assert observation.result["applied"]["provider"] == "terrestris"
+
+
+def test_terrestris_hydrology_is_unsupported(monkeypatch: Any) -> None:
+    def fail_if_called(request: Any, timeout: float | None = None) -> _FakeHttpResponse:
+        del request, timeout
+        raise AssertionError("unsupported layer must not call WMS")
+
+    _set_terrestris_env(monkeypatch)
+    monkeypatch.setattr(layers_mod.urllib.request, "urlopen", fail_if_called)
+
+    observation = execute(
+        "map_layer_query",
+        "load_layer",
+        purpose="terrestris 水系",
+        inputs={"area": {"bbox": [113.5, 34.7, 113.8, 34.9]}, "layers": ["hydrology"]},
+        ctx=RuntimeContext(),
+    )
+    assert observation.ok is False
+    assert observation.error_code == "unsupported_layer"
+    assert observation.error is not None
+    assert "OSM-WMS" in observation.error
+
+
+def test_terrestris_administrative_is_unsupported(monkeypatch: Any) -> None:
+    _set_terrestris_env(monkeypatch)
+    observation = execute(
+        "map_layer_query",
+        "load_layer",
+        purpose="terrestris 行政区",
+        inputs={"area": {"bbox": [113.5, 34.7, 113.8, 34.9]}, "layers": ["administrative"]},
+        ctx=RuntimeContext(),
+    )
+    assert observation.ok is False
+    assert observation.error_code == "unsupported_layer"
+
+
+def test_terrestris_historical_map_is_unsupported(monkeypatch: Any) -> None:
+    _set_terrestris_env(monkeypatch)
+    observation = execute(
+        "map_layer_query",
+        "load_layer",
+        purpose="terrestris 历史",
+        inputs={"area": {"bbox": [113.5, 34.7, 113.8, 34.9]}, "layers": ["historical_map"]},
+        ctx=RuntimeContext(),
+    )
+    assert observation.ok is False
+    assert observation.error_code == "unsupported_layer"
+
+
+def test_terrestris_time_range_is_recorded_unsupported(monkeypatch: Any) -> None:
+    def fake_urlopen(request: Any, timeout: float | None = None) -> _FakeHttpResponse:
+        del timeout
+        params = parse_qs(urlparse(str(request.full_url)).query)
+        assert "TIME" not in params
+        return _FakeHttpResponse(_png_bytes())
+
+    _set_terrestris_env(monkeypatch)
+    monkeypatch.setattr(layers_mod.urllib.request, "urlopen", fake_urlopen)
+
+    observation = execute(
+        "map_layer_query",
+        "load_layer",
+        purpose="terrestris 时相",
+        inputs={
+            "area": {"bbox": [113.5, 34.7, 113.8, 34.9]},
+            "layers": ["roads"],
+            "time_range": "2020-01-01",
+        },
+        ctx=RuntimeContext(),
+    )
+    assert observation.ok is True
+    assert observation.result is not None
+    unsupported = observation.result["applied"].get("unsupported") or {}
+    assert unsupported.get("time_range") == "2020-01-01"
+
+
+def test_inputs_provider_terrestris_is_accepted() -> None:
+    observation = _load(inputs={"provider": "terrestris"})
+    assert observation.ok is True
+
+
+def test_default_provider_is_terrestris_when_endpoint_empty(monkeypatch: Any) -> None:
+    calls: list[Any] = []
+
+    def fake_urlopen(request: Any, timeout: float | None = None) -> _FakeHttpResponse:
+        del timeout
+        calls.append(request)
+        parsed = urlparse(str(request.full_url))
+        assert parsed.netloc == "ows.terrestris.de"
+        return _FakeHttpResponse(_png_bytes())
+
+    monkeypatch.setenv("ALLOW_REAL_TOOL_API", "true")
+    monkeypatch.setattr(layers_mod, "_load_dotenv", lambda: None)
+    monkeypatch.delenv("MAP_LAYER_PROVIDER", raising=False)
+    monkeypatch.setenv("MAP_LAYER_WMS_ENDPOINT", "")
+    monkeypatch.setenv("MAP_LAYER_WFS_ENDPOINT", "")
+    monkeypatch.setenv("MAP_LAYER_WMS_LAYERS", "")
+    monkeypatch.setattr(layers_mod.urllib.request, "urlopen", fake_urlopen)
+
+    observation = execute(
+        "map_layer_query",
+        "load_layer",
+        purpose="默认后端",
+        inputs={"area": {"bbox": [113.5, 34.7, 113.8, 34.9]}, "layers": ["roads"]},
+        ctx=RuntimeContext(),
+    )
+    assert observation.ok is True
+    assert observation.result is not None
+    assert calls
+    assert observation.result["applied"]["provider"] == "terrestris"
+
+
+def test_catalog_describes_current_backend_limits() -> None:
+    catalog = json.loads(
+        (Path(__file__).resolve().parents[1] / "canonical_tool_catalog_v2.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    tool = next(
+        tree["canonical"]
+        for tree in catalog["trees"]
+        if tree["canonical"]["name"] == "map_layer_query"
+    )
+    operation = tool["operations"][0]
+    field_names = [field["name"] for field in operation["input_schema"]["fields"]]
+    assert field_names == ["area", "layers", "time_range", "provider"]
+    blob = " ".join(
+        [
+            tool["description"],
+            operation["description"],
+            operation["input_schema"]["description"],
+        ]
+    )
+    assert "时间轴" in blob
+    assert "历史地图" in blob
+    assert "WFS" in blob
+    time_field = next(
+        field for field in operation["input_schema"]["fields"] if field["name"] == "time_range"
+    )
+    assert time_field["required"] is False
+    assert "不支持时间轴" in time_field["description"]

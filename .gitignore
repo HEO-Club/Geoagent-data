@@ -29,6 +29,7 @@ data/intermediate/*
 data/selected/*
 data/runs/*
 data/tool_runs/*
+data/mcp_sessions/*
 data/output/*
 intermediate/
 tmp1/
@@ -42,6 +43,7 @@ pytest-cache-files-*/
 !data/selected/.gitkeep
 !data/runs/.gitkeep
 !data/tool_runs/.gitkeep
+!data/mcp_sessions/.gitkeep
 !data/output/.gitkeep
 
 # 媒体文件

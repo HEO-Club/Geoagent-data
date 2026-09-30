@@ -92,6 +92,7 @@ class ToolDefinition(BaseModel):
     params: list[ParamSpec] = Field(default_factory=list)
     observation_fields: list[ObservationField] = Field(default_factory=list)
     is_terminal: bool = False
+    available: bool = True
 
 
 class ToolTree(BaseModel):

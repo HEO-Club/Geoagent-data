@@ -1,4 +1,4 @@
-"""map_layer_query：加载水系、地形、行政或历史地图图层。"""
+"""map_layer_query：默认 terrestris OSM WMS 出图；当前不支持时间轴、历史地图和 WFS。"""
 
 from __future__ import annotations
 

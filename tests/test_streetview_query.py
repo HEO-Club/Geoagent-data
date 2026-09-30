@@ -374,7 +374,7 @@ def test_google_provider_is_unavailable() -> None:
     assert "Google" in observation.error
 
 
-def test_mapillary_search_sends_bbox_and_token(monkeypatch: Any) -> None:
+def test_mapillary_search_sends_radius_and_token(monkeypatch: Any) -> None:
     calls: list[str] = []
 
     class _FakeHttpResponse:
@@ -427,5 +427,12 @@ def test_mapillary_search_sends_bbox_and_token(monkeypatch: Any) -> None:
     parsed = urlparse(calls[0])
     query = parse_qs(parsed.query)
     assert query["access_token"] == ["test-token"]
-    assert query["bbox"] == ["113.6,34.8,113.7,34.9"]
-    assert "id" in query["fields"][0]
+    assert "bbox" not in query
+    assert query["lat"] == ["34.85"]
+    assert query["lng"] == ["113.65"]
+    assert query["radius"] == ["50"]
+    assert query["limit"] == ["20"]
+    fields = query["fields"][0]
+    assert "id" in fields
+    assert "geometry" in fields
+    assert "thumb_1024_url" not in fields

@@ -18,7 +18,7 @@ from tool.satellite_imagery_query._query import (
     EngineUnavailableError,
     SatelliteInputError,
     _parse_time_spec,
-    _reject_unsupported_provider,
+    _reject_removed_inputs,
     _strip_forbidden,
     execute_retrieve,
 )
@@ -85,6 +85,7 @@ def execute_compare_time(
 
     del purpose
     try:
+        _reject_removed_inputs(inputs)
         inputs = declared_inputs(inputs, "area", "times", "comparison")
         time_items = _parse_times(inputs.get("times"))
         area = inputs.get("area")
@@ -144,8 +145,8 @@ def execute_compare_candidates(
 
     del purpose
     try:
-        inputs = declared_inputs(inputs, "candidates", "template", "time_range", "provider")
-        _reject_unsupported_provider(inputs.get("provider"))
+        _reject_removed_inputs(inputs)
+        inputs = declared_inputs(inputs, "candidates", "template", "time_range")
         candidates = _parse_candidates(inputs.get("candidates"), ctx)
         template = _parse_template(inputs.get("template"), ctx)
         captures: list[CapturedScene] = []
@@ -207,7 +208,7 @@ def execute_compare_candidates(
 
 
 def _copy_optional_retrieve_fields(inputs: dict[str, Any], payload: dict[str, Any]) -> None:
-    for key in ("provider", "time_range"):
+    for key in ("time_range",):
         if key in payload:
             continue
         value = inputs.get(key)

@@ -1,4 +1,4 @@
-"""map_layer_query 共享执行器：OGC WMS GetMap，可选 GeoServer WFS。"""
+"""map_layer_query 共享执行器：默认 terrestris OSM WMS，可选自建 GeoServer WFS。"""
 
 from __future__ import annotations
 
@@ -22,7 +22,16 @@ from tool.contract import Observation, RuntimeContext, declared_inputs
 from tool.runtime.image_store import put_image
 
 _PROVIDER_WMS = "wms"
+_PROVIDER_TERRESTRIS = "terrestris"
 _PROVIDER_ALIASES = frozenset({"wms", "geoserver", "ogc"})
+_TERRESTRIS_ALIASES = frozenset({"terrestris", "osm-wms", "osm_wms"})
+_KNOWN_PROVIDERS = _PROVIDER_ALIASES | _TERRESTRIS_ALIASES
+# 公开 OSM 底图服务，端点可由 MAP_LAYER_WMS_ENDPOINT 覆盖。
+_DEFAULT_TERRESTRIS_WMS_ENDPOINT = "https://ows.terrestris.de/osm/service"
+_TERRESTRIS_WMS_LAYERS: dict[str, str] = {
+    "roads": "OSM-WMS",
+    "terrain": "SRTM30-Colored-Hillshade",
+}
 _DEFAULT_TIMEOUT_SEC = 30.0
 _DEFAULT_WMS_VERSION = "1.3.0"
 _DEFAULT_WFS_VERSION = "2.0.0"
@@ -90,6 +99,12 @@ _IMAGE_ASSUMPTION = (
 _VECTOR_ASSUMPTION = "需要可计算几何时使用本步 WFS 矢量，或改用 osm_query"
 _CRS_ASSUMPTION = "当前后端未做坐标系转换"
 _NO_SESSION_ASSUMPTION = "本步只返回图层，未打开街景或地图会话"
+_TERRESTRIS_ROADS_ASSUMPTION = (
+    "默认 terrestris 公开 OSM WMS：roads 映射为综合底图 OSM-WMS，不是单独路网矢量"
+)
+_TERRESTRIS_COVERAGE_ASSUMPTION = (
+    "terrestris 无独立水系、行政边界或历史地图图层，也无 WFS；专题分层请自建 WMS 或改用 osm_query"
+)
 
 class LayerInputError(Exception):
     """area / layers / time_range 无法按合同解析。"""
@@ -183,7 +198,11 @@ class OgcWmsProvider:
         width: int = _DEFAULT_WIDTH,
         height: int = _DEFAULT_HEIGHT,
         max_features: int = _DEFAULT_MAX_FEATURES,
+        name: str = _PROVIDER_WMS,
+        strict_mapping: bool = False,
+        supports_time: bool = True,
     ) -> None:
+        self.name = name
         self._wms_endpoint = wms_endpoint.rstrip("/")
         self._wfs_endpoint = wfs_endpoint.rstrip("/") if wfs_endpoint else None
         self._wms_version = wms_version
@@ -198,6 +217,8 @@ class OgcWmsProvider:
         self._width = width
         self._height = height
         self._max_features = max_features
+        self._strict_mapping = strict_mapping
+        self._supports_time = supports_time
         self._capabilities: Capabilities | None = None
 
     def load(self, request: LayerRequest) -> dict[str, Any]:
@@ -252,24 +273,31 @@ class OgcWmsProvider:
 
     def _resolve_mapping(self, layers: tuple[str, ...]) -> dict[str, str]:
         catalog = dict(self._layer_mapping)
-        if not catalog:
+        if not catalog and not self._strict_mapping:
             catalog.update(self._capabilities_catalog().layers)
         resolved: dict[str, str] = {}
         missing: list[str] = []
         for semantic in layers:
             mapped = catalog.get(semantic)
-            if not mapped:
+            if not mapped and not self._strict_mapping:
                 mapped = self._match_hint(semantic, catalog)
             if not mapped:
                 missing.append(semantic)
                 continue
             resolved[semantic] = mapped
         if missing:
-            raise LayerInputError(
-                "图层无法映射: " + ", ".join(missing),
-                "unsupported_layer",
-            )
+            raise LayerInputError(self._missing_layer_message(missing), "unsupported_layer")
         return resolved
+
+    def _missing_layer_message(self, missing: list[str]) -> str:
+        joined = ", ".join(missing)
+        if self.name in _TERRESTRIS_ALIASES:
+            return (
+                "terrestris OSM-WMS 只提供 roads→OSM-WMS（综合底图）和 "
+                "terrain→SRTM30-Colored-Hillshade；"
+                f"不支持独立水系、行政区或历史地图: {joined}"
+            )
+        return f"图层无法映射: {joined}"
 
     def _match_hint(self, semantic: str, catalog: dict[str, str]) -> str | None:
         hints = _SEMANTIC_HINTS.get(semantic, (semantic,))
@@ -297,6 +325,8 @@ class OgcWmsProvider:
         return caps
 
     def _layer_has_time(self, wms_name: str) -> bool:
+        if not self._supports_time:
+            return False
         if self._layer_mapping and self._capabilities is None:
             return True
         return wms_name in self._capabilities_catalog().timed
@@ -384,7 +414,7 @@ def execute_load_layer(
     inputs: dict[str, Any],
     ctx: RuntimeContext | None = None,
 ) -> Observation:
-    """加载指定区域的水系、地形、道路、行政区或历史地图图层。"""
+    """按范围加载地图图层。默认 terrestris 只出 roads/terrain 图片；当前不支持时间轴、历史地图和 WFS。"""
 
     del purpose
     try:
@@ -507,9 +537,10 @@ def _ok(
         "layers": numbered,
         "bbox": bbox,
         "applied": applied,
-        "assumptions": _assumptions(has_vector=any(
-            row.get("representation") == "vector" for row in numbered
-        )),
+        "assumptions": _assumptions(
+            has_vector=any(row.get("representation") == "vector" for row in numbered),
+            provider_name=provider_name,
+        ),
     }
     artifacts: dict[str, Any] = {}
     if image_ids:
@@ -592,10 +623,12 @@ def _truncate_features(raw: Any, limit: int) -> tuple[Any, int]:
     payload.pop("raw_content", None)
     return _strip_forbidden(payload), len(clipped)
 
-def _assumptions(*, has_vector: bool) -> list[str]:
+def _assumptions(*, has_vector: bool, provider_name: str) -> list[str]:
     items = [_IMAGE_ASSUMPTION, _VECTOR_ASSUMPTION, _CRS_ASSUMPTION, _NO_SESSION_ASSUMPTION]
     if not has_vector:
         items[1] = "本步仅为图层可视化；需要可计算几何请用 osm_query 或配置 WFS"
+    if provider_name in _TERRESTRIS_ALIASES:
+        items.extend([_TERRESTRIS_ROADS_ASSUMPTION, _TERRESTRIS_COVERAGE_ASSUMPTION])
     return items
 
 def _parse_layers(raw: Any) -> tuple[str, ...]:
@@ -776,7 +809,7 @@ def _reject_unsupported_provider(raw: Any) -> None:
     if not isinstance(raw, str):
         raise LayerInputError("provider 必须是字符串", "invalid_provider")
     name = raw.strip().lower()
-    if name in _PROVIDER_ALIASES:
+    if name in _KNOWN_PROVIDERS:
         return
     raise EngineUnavailableError(f"未知 map_layer provider: {raw}", "unsupported_provider")
 
@@ -790,7 +823,9 @@ def _resolve_provider(ctx: RuntimeContext | None) -> MapLayerProvider:
     _load_dotenv()
     if not _allow_real_api():
         raise EngineUnavailableError("ALLOW_REAL_TOOL_API=false，禁止调用真实图层 API")
-    name = _env_value("MAP_LAYER_PROVIDER", _PROVIDER_WMS).lower()
+    name = _env_value("MAP_LAYER_PROVIDER", _PROVIDER_TERRESTRIS).lower()
+    if name in _TERRESTRIS_ALIASES:
+        return _build_terrestris_provider()
     if name not in _PROVIDER_ALIASES:
         raise EngineUnavailableError(f"未知 MAP_LAYER_PROVIDER: {name}")
     return _build_wms_provider()
@@ -799,10 +834,44 @@ def _build_wms_provider() -> OgcWmsProvider:
     endpoint = os.environ.get("MAP_LAYER_WMS_ENDPOINT", "").strip()
     if not endpoint:
         raise EngineUnavailableError("未配置 MAP_LAYER_WMS_ENDPOINT")
+    return _make_ogc_provider(
+        endpoint=endpoint,
+        name=_PROVIDER_WMS,
+        layer_mapping=_parse_layer_mapping(os.environ.get("MAP_LAYER_WMS_LAYERS", "").strip()),
+        strict_mapping=False,
+        supports_time=True,
+    )
+
+
+def _build_terrestris_provider() -> OgcWmsProvider:
+    """公开 OSM WMS：默认端点与 roads/terrain 映射，不把专题层伪装成 OSM 底图。"""
+
+    endpoint = (
+        os.environ.get("MAP_LAYER_WMS_ENDPOINT", "").strip()
+        or _DEFAULT_TERRESTRIS_WMS_ENDPOINT
+    )
+    mapping = dict(_TERRESTRIS_WMS_LAYERS)
+    mapping.update(_parse_layer_mapping(os.environ.get("MAP_LAYER_WMS_LAYERS", "").strip()))
+    return _make_ogc_provider(
+        endpoint=endpoint,
+        name=_PROVIDER_TERRESTRIS,
+        layer_mapping=mapping,
+        strict_mapping=True,
+        supports_time=False,
+    )
+
+
+def _make_ogc_provider(
+    *,
+    endpoint: str,
+    name: str,
+    layer_mapping: dict[str, str],
+    strict_mapping: bool,
+    supports_time: bool,
+) -> OgcWmsProvider:
     wfs = os.environ.get("MAP_LAYER_WFS_ENDPOINT", "").strip() or None
     user = os.environ.get("MAP_LAYER_WMS_USER", "").strip() or None
     password = os.environ.get("MAP_LAYER_WMS_PASSWORD", "").strip() or None
-    mapping = _parse_layer_mapping(os.environ.get("MAP_LAYER_WMS_LAYERS", "").strip())
     wfs_mapping = _parse_layer_mapping(os.environ.get("MAP_LAYER_WFS_LAYERS", "").strip())
     width, height = _map_size()
     return OgcWmsProvider(
@@ -811,7 +880,7 @@ def _build_wms_provider() -> OgcWmsProvider:
         wms_version=_env_value("MAP_LAYER_WMS_VERSION", _DEFAULT_WMS_VERSION),
         wfs_version=_env_value("MAP_LAYER_WFS_VERSION", _DEFAULT_WFS_VERSION),
         crs=_env_value("MAP_LAYER_WMS_CRS", _DEFAULT_CRS),
-        layer_mapping=mapping,
+        layer_mapping=layer_mapping,
         wfs_mapping=wfs_mapping,
         user=user,
         password=password,
@@ -820,6 +889,9 @@ def _build_wms_provider() -> OgcWmsProvider:
         width=width,
         height=height,
         max_features=_max_features(),
+        name=name,
+        strict_mapping=strict_mapping,
+        supports_time=supports_time,
     )
 
 def _parse_layer_mapping(raw: str) -> dict[str, str]:
@@ -852,7 +924,7 @@ def _max_features() -> int:
 def _is_ogc_provider(provider: MapLayerProvider) -> bool:
     if isinstance(provider, OgcWmsProvider):
         return True
-    return _provider_name(provider) in _PROVIDER_ALIASES
+    return _provider_name(provider) in _KNOWN_PROVIDERS
 
 def _provider_name(provider: MapLayerProvider) -> str:
     return str(getattr(provider, "name", "injected"))

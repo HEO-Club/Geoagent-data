@@ -74,15 +74,6 @@ _LAYER_ALIASES: dict[str, str] = {
     "optical": _LAYER_SATELLITE,
     "卫星": _LAYER_SATELLITE,
     "遥感": _LAYER_SATELLITE,
-    "aerial": "aerial",
-    "airphoto": "aerial",
-    "ortho": "aerial",
-    "航片": "aerial",
-    "航空": "aerial",
-    "航空影像": "aerial",
-    "terrain": "terrain",
-    "dem": "terrain",
-    "地形": "terrain",
 }
 _COPERNICUS_ALIASES = frozenset(
     {
@@ -94,10 +85,6 @@ _COPERNICUS_ALIASES = frozenset(
         "sentinel-2",
         "sentinel2",
     }
-)
-_PLANET_ALIASES = frozenset({"planet", "planet.com", "planetscope", "skysat"})
-_GOOGLE_ALIASES = frozenset(
-    {"google", "google earth", "google_earth", "googleearth", "earth"}
 )
 _EARLIEST_ALIASES = frozenset(
     {"earliest", "earliest available", "最早", "最早可用", "最早的"}
@@ -156,9 +143,9 @@ _ASSUMPTIONS = [
     "resolution_m 只筛选原生空间分辨率，不会把 10 m 哨兵影像写成旗杆或小电塔级细节",
     "Sentinel-2 L2A 约 2015 年起、原生约 10 m；更早时相尝试 Landsat（约 30 m）",
     "目录无命中时如实无覆盖，不会用近景顶替所请求的历史年份",
-    "当前仅接入 Copernicus Data Space，未接 Planet 或 Google Earth",
+    "只使用 Copernicus 卫星光学预览，不接受其他影像服务或图层",
     "不下载 SAFE 全产品，只返回 Catalog 元数据与 Process API 裁剪真彩预览",
-    "纯地名未在本步 geocode，需要 bbox 或中心点加半径",
+    "输入必须是 bbox 或中心点加半径，不接受地名",
 ]
 
 class SatelliteInputError(Exception):
@@ -311,24 +298,42 @@ class CopernicusProvider:
     def search_scenes(self, request: SceneSearchRequest) -> list[dict[str, Any]]:
         if not request.collections:
             return []
-        body: dict[str, Any] = {
-            "collections": list(request.collections),
-            "bbox": [request.bbox.west, request.bbox.south, request.bbox.east, request.bbox.north],
-            "limit": request.limit,
-        }
-        if request.datetime:
-            body["datetime"] = request.datetime
-        if request.cloud_cover_max is not None:
-            body["query"] = {"eo:cloud_cover": {"lt": request.cloud_cover_max}}
-        payload = self._post_json(
-            self._catalog_endpoint,
-            body,
-            error_prefix="Copernicus Catalog",
-        )
-        features = payload.get("features")
-        if not isinstance(features, list):
-            return []
-        return [item for item in features if isinstance(item, dict)]
+        features: list[dict[str, Any]] = []
+        errors: list[str] = []
+        for collection in request.collections:
+            body: dict[str, Any] = {
+                "collections": [collection],
+                "bbox": [
+                    request.bbox.west,
+                    request.bbox.south,
+                    request.bbox.east,
+                    request.bbox.north,
+                ],
+                "limit": request.limit,
+            }
+            if request.datetime:
+                body["datetime"] = request.datetime
+            if request.cloud_cover_max is not None:
+                body["filter-lang"] = "cql2-json"
+                body["filter"] = {
+                    "op": "<",
+                    "args": [{"property": "eo:cloud_cover"}, request.cloud_cover_max],
+                }
+            try:
+                payload = self._post_json(
+                    self._catalog_endpoint,
+                    body,
+                    error_prefix="Copernicus Catalog",
+                )
+            except EngineUnavailableError as exc:
+                errors.append(str(exc))
+                continue
+            found = payload.get("features")
+            if isinstance(found, list):
+                features.extend(item for item in found if isinstance(item, dict))
+        if not features and errors:
+            raise EngineUnavailableError(errors[-1])
+        return features
 
     def fetch_preview(self, request: PreviewRequest) -> bytes:
         bbox = request.bbox
@@ -414,7 +419,12 @@ class CopernicusProvider:
         return self._token
 
     def _post_json(self, url: str, body: dict[str, Any], *, error_prefix: str) -> dict[str, Any]:
-        raw = self._post_bytes(url, body, error_prefix=error_prefix, accept="application/json")
+        raw = self._post_bytes(
+            url,
+            body,
+            error_prefix=error_prefix,
+            accept="application/geo+json, application/json",
+        )
         try:
             payload = json.loads(raw.decode("utf-8"))
         except json.JSONDecodeError as exc:
@@ -453,18 +463,16 @@ def execute_retrieve(
 
     del purpose
     try:
+        _reject_removed_inputs(inputs)
         inputs = declared_inputs(
             inputs,
             "area",
             "coordinates",
             "source_result",
             "time_range",
-            "provider",
-            "layer",
             "cloud_cover_max",
             "resolution_m",
         )
-        _reject_unsupported_provider(inputs.get("provider"))
         location = _resolve_search_location(inputs, ctx, require_geometry=True)
         return _run_query(
             _OP_RETRIEVE,
@@ -490,8 +498,8 @@ def execute_change_time(
 
     del purpose
     try:
-        inputs = declared_inputs(inputs, "area", "time_range", "source_result", "provider")
-        _reject_unsupported_provider(inputs.get("provider"))
+        _reject_removed_inputs(inputs)
+        inputs = declared_inputs(inputs, "area", "time_range", "source_result")
         if inputs.get("area") in (None, ""):
             raise SatelliteInputError("缺少必填输入 area", "missing_input")
         if inputs.get("time_range") in (None, ""):
@@ -521,6 +529,7 @@ def execute_oblique_view(
 
     del purpose
     try:
+        _reject_removed_inputs(inputs)
         inputs = declared_inputs(inputs, "area", "heading", "tilt", "time_range")
         if inputs.get("area") in (None, ""):
             raise SatelliteInputError("缺少必填输入 area", "missing_input")
@@ -719,8 +728,8 @@ def _resolve_search_location(
         if require_geometry:
             if area.text:
                 raise SatelliteInputError(
-                    "需要 bbox 或中心点加半径；纯地名请先 geocode",
-                    "missing_input",
+                    "area 必须是 bbox 或中心点加半径，不接受地名",
+                    "invalid_area",
                 )
             raise SatelliteInputError(
                 "缺少必填输入 area、coordinates 或 source_result",
@@ -770,7 +779,10 @@ def _parse_area(raw: Any) -> ParsedArea:
                 center=point,
                 applied={"lat": point.lat, "lon": point.lon},
             )
-        return ParsedArea(text=text, applied=text)
+        raise SatelliteInputError(
+            "area 必须是 bbox 或中心点加半径，不接受地名",
+            "invalid_area",
+        )
     if isinstance(raw, (list, tuple)):
         polygon = _polygon_from_points(raw)
         if polygon is not None:
@@ -812,7 +824,10 @@ def _parse_area(raw: Any) -> ParsedArea:
             return ParsedArea(center=center, radius_m=radius, applied=applied)
         text = _optional_str(raw.get("city", raw.get("text", raw.get("name", raw.get("area")))))
         if text:
-            return ParsedArea(text=text, applied=text)
+            raise SatelliteInputError(
+                "area 必须是 bbox 或中心点加半径，不接受地名",
+                "invalid_area",
+            )
         return ParsedArea(unsupported=raw)
     return ParsedArea(unsupported=raw)
 
@@ -1102,7 +1117,7 @@ def _parse_layer(raw: Any) -> str:
     semantic = _LAYER_ALIASES.get(token.lower(), _LAYER_ALIASES.get(token, token.lower()))
     if semantic != _LAYER_SATELLITE:
         raise SatelliteInputError(
-            f"本阶段不支持 layer={token}；航片/地形请改用对应数据源或 map_layer_query",
+            "只返回卫星光学预览，不接受其他图层",
             "unsupported_layer",
         )
     return semantic
@@ -1435,6 +1450,13 @@ def _applied(
         payload["unsupported"] = unsupported
     return payload
 
+def _reject_removed_inputs(inputs: dict[str, Any]) -> None:
+    """provider / layer 已从合同删除；传入非 Copernicus 卫星光学时直接拒绝。"""
+
+    _reject_unsupported_provider(inputs.get("provider"))
+    if inputs.get("layer") not in (None, ""):
+        _parse_layer(inputs.get("layer"))
+
 def _reject_unsupported_provider(raw: Any) -> None:
     if raw is None or raw == "":
         return
@@ -1443,17 +1465,10 @@ def _reject_unsupported_provider(raw: Any) -> None:
     name = raw.strip().lower()
     if name in _COPERNICUS_ALIASES:
         return
-    if name in _PLANET_ALIASES:
-        raise EngineUnavailableError(
-            "本阶段仅接入 Copernicus，未实现 Planet",
-            "unsupported_provider",
-        )
-    if name in _GOOGLE_ALIASES:
-        raise EngineUnavailableError(
-            "本阶段仅接入 Copernicus，未实现 Google Earth",
-            "unsupported_provider",
-        )
-    raise EngineUnavailableError(f"未知 satellite provider: {raw}", "unsupported_provider")
+    raise EngineUnavailableError(
+        "只使用 Copernicus，不接受其他影像服务",
+        "unsupported_provider",
+    )
 
 def _resolve_provider(ctx: RuntimeContext | None) -> SatelliteImageryProvider:
     extras = _extras(ctx)
@@ -1468,8 +1483,6 @@ def _resolve_provider(ctx: RuntimeContext | None) -> SatelliteImageryProvider:
     if not _allow_real_api():
         raise EngineUnavailableError("ALLOW_REAL_TOOL_API=false，禁止调用真实卫星影像 API")
     name = _env_value("SATELLITE_PROVIDER", _PROVIDER_COPERNICUS).lower()
-    if name in _PLANET_ALIASES:
-        raise EngineUnavailableError("本阶段仅接入 Copernicus，未实现 Planet")
     if name not in _COPERNICUS_ALIASES:
         raise EngineUnavailableError(f"未知 SATELLITE_PROVIDER: {name}")
     return _build_copernicus_provider()

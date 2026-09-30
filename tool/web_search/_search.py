@@ -1,4 +1,4 @@
-"""web_search 共享执行器：Brave Search Web API，只返回标题、链接与摘要。"""
+"""web_search 共享执行器：中文走 SerpAPI 百度，其余走 SerpAPI Google。"""
 
 from __future__ import annotations
 
@@ -18,10 +18,21 @@ from tool.contract import Observation, RuntimeContext, declared_inputs
 _DEFAULT_TOP_K = 10
 _TOP_K_MIN = 1
 _TOP_K_MAX = 100
-_BRAVE_MAX_TOP_K = 20
-_ENGINE_BRAVE = "brave"
-_DEFAULT_BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
+_SERP_MAX_TOP_K = 10
+_ENGINE_SERPAPI_BAIDU = "serpapi_baidu"
+_ENGINE_SERPAPI_GOOGLE = "serpapi_google"
+_DEFAULT_SERPAPI_ENDPOINT = "https://serpapi.com/search.json"
+_GOOGLE_HL = {
+    "en": "en",
+    "ja": "ja",
+    "ko": "ko",
+    "zh-hans": "zh-CN",
+    "zh-hant": "zh-TW",
+}
+_GOOGLE_QDR = {"pd": "qdr:d", "pw": "qdr:w", "pm": "qdr:m", "py": "qdr:y"}
 _DEFAULT_TIMEOUT_SEC = 30.0
+_HAN_RE = re.compile(r"[\u4e00-\u9fff]")
+_CHINESE_LANGS = frozenset({"zh-hans", "zh-hant"})
 _RELATIVE_FRESHNESS = frozenset({"pd", "pw", "pm", "py"})
 _YEAR_RE = re.compile(r"^(\d{4})$")
 _YEAR_RANGE_RE = re.compile(r"^(\d{4})\s*[-–—至到]\s*(\d{4})$")
@@ -112,11 +123,11 @@ class WebSearchEngine(Protocol):
     def search(self, request: WebSearchRequest) -> dict[str, Any]:
         """提交检索请求，返回 Brave 风格 `{web: {results: [...]}}` 载荷。"""
 
-class BraveSearchEngine:
-    """Brave Search Web API 适配器；密钥与端点只读环境变量。"""
+class SerpApiGoogleSearchEngine:
+    """SerpAPI Google 网页搜索适配器；英文及其他非中文查询使用。"""
 
-    name = _ENGINE_BRAVE
-    max_top_k = _BRAVE_MAX_TOP_K
+    name = _ENGINE_SERPAPI_GOOGLE
+    max_top_k = _SERP_MAX_TOP_K
 
     def __init__(
         self,
@@ -131,26 +142,62 @@ class BraveSearchEngine:
 
     def search(self, request: WebSearchRequest) -> dict[str, Any]:
         params: dict[str, str] = {
+            "engine": "google",
             "q": request.query,
-            "count": str(request.top_k),
+            "num": str(request.top_k),
+            "api_key": self._api_key,
         }
-        if request.language:
-            params["search_lang"] = request.language
-        if request.freshness:
-            params["freshness"] = request.freshness
+        hl = _google_hl(request.language)
+        if hl:
+            params["hl"] = hl
+        tbs = _google_tbs(request.freshness)
+        if tbs:
+            params["tbs"] = tbs
         url = _append_query(self._endpoint, urllib.parse.urlencode(params))
         raw = _http_json(
             url,
-            headers={
-                "Accept": "application/json",
-                "X-Subscription-Token": self._api_key,
-            },
+            headers={"Accept": "application/json"},
             timeout_sec=self._timeout_sec,
-            error_prefix="Brave Search",
+            error_prefix="SerpAPI Google",
         )
         if not isinstance(raw, dict):
-            raise EngineUnavailableError("Brave Search 回执不是 JSON 对象")
-        return raw
+            raise EngineUnavailableError("SerpAPI Google 回执不是 JSON 对象")
+        return _serp_organic_to_web(raw, include_social=False)
+
+
+class SerpApiBaiduSearchEngine:
+    """SerpAPI 百度网页搜索适配器；密钥与端点只读环境变量。"""
+
+    name = _ENGINE_SERPAPI_BAIDU
+    max_top_k = _SERP_MAX_TOP_K
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        endpoint: str,
+        timeout_sec: float,
+    ) -> None:
+        self._api_key = api_key
+        self._endpoint = endpoint
+        self._timeout_sec = timeout_sec
+
+    def search(self, request: WebSearchRequest) -> dict[str, Any]:
+        params: dict[str, str] = {
+            "engine": "baidu",
+            "q": request.query,
+            "api_key": self._api_key,
+        }
+        url = _append_query(self._endpoint, urllib.parse.urlencode(params))
+        raw = _http_json(
+            url,
+            headers={"Accept": "application/json"},
+            timeout_sec=self._timeout_sec,
+            error_prefix="SerpAPI Baidu",
+        )
+        if not isinstance(raw, dict):
+            raise EngineUnavailableError("SerpAPI Baidu 回执不是 JSON 对象")
+        return _serp_organic_to_web(raw, include_social=True)
 
 def execute_keyword_search(
     *,
@@ -193,11 +240,16 @@ def _run_search(
         )
         freshness, unsupported_time = _parse_freshness(inputs.get("time_range"))
         requested_top_k = _parse_top_k(inputs.get("top_k"))
-        engine = _resolve_engine(ctx)
+        assembled = _with_site_operators(query, domains)
+        engine = _resolve_engine(ctx, query=query, language=language)
         engine_name = str(getattr(engine, "name", "injected"))
+        # 百度网页搜索没有 freshness 对应参数，已解析的时间范围只记不支持。
+        if engine_name == _ENGINE_SERPAPI_BAIDU and freshness is not None:
+            if unsupported_time is None:
+                unsupported_time = freshness
+            freshness = None
         max_top_k = _engine_max_top_k(engine)
         top_k = min(requested_top_k, max_top_k)
-        assembled = _with_site_operators(query, domains)
         request = WebSearchRequest(
             query=assembled,
             top_k=top_k,
@@ -392,16 +444,31 @@ def _parse_top_k(raw: Any) -> int:
     return max(_TOP_K_MIN, min(_TOP_K_MAX, value))
 
 def _engine_max_top_k(engine: WebSearchEngine) -> int:
-    raw = getattr(engine, "max_top_k", _BRAVE_MAX_TOP_K)
+    raw = getattr(engine, "max_top_k", _SERP_MAX_TOP_K)
     try:
         value = int(raw)
     except (TypeError, ValueError):
-        return _BRAVE_MAX_TOP_K
+        return _SERP_MAX_TOP_K
     if value < _TOP_K_MIN:
-        return _BRAVE_MAX_TOP_K
+        return _SERP_MAX_TOP_K
     return min(value, _TOP_K_MAX)
 
-def _resolve_engine(ctx: RuntimeContext | None) -> WebSearchEngine:
+def _wants_baidu(query: str, language: str | None) -> bool:
+    """中文语言或未指定语言且查询含汉字时走百度。"""
+
+    if language in _CHINESE_LANGS:
+        return True
+    if language is None and _HAN_RE.search(query) is not None:
+        return True
+    return False
+
+
+def _resolve_engine(
+    ctx: RuntimeContext | None,
+    *,
+    query: str,
+    language: str | None,
+) -> WebSearchEngine:
     extras = ctx.extras if ctx is not None else {}
     injected = extras.get("web_search_engine")
     if injected is not None:
@@ -415,35 +482,142 @@ def _resolve_engine(ctx: RuntimeContext | None) -> WebSearchEngine:
         raise EngineUnavailableError(
             "ALLOW_REAL_TOOL_API=false，禁止调用真实网页搜索 API",
         )
-    api_key = _brave_api_key()
+    api_key = _serpapi_api_key()
     if not api_key:
-        raise EngineUnavailableError("未配置 BRAVE_SEARCH_API_KEY 或 BRAVE_API_KEY")
-    return BraveSearchEngine(
+        raise EngineUnavailableError("未配置 SERPAPI_API_KEY 或 SERPAPI_KEY")
+    endpoint = _validated_https_endpoint(
+        "SERPAPI_ENDPOINT",
+        _DEFAULT_SERPAPI_ENDPOINT,
+        allowed_hosts={"serpapi.com"},
+    )
+    timeout_sec = _env_timeout()
+    if _wants_baidu(query, language):
+        return SerpApiBaiduSearchEngine(
+            api_key=api_key,
+            endpoint=endpoint,
+            timeout_sec=timeout_sec,
+        )
+    return SerpApiGoogleSearchEngine(
         api_key=api_key,
-        endpoint=_env_value("BRAVE_SEARCH_ENDPOINT", _DEFAULT_BRAVE_ENDPOINT),
-        timeout_sec=_env_timeout(),
+        endpoint=endpoint,
+        timeout_sec=timeout_sec,
     )
 
-def _brave_api_key() -> str:
+
+def _serpapi_api_key() -> str:
     return (
-        os.environ.get("BRAVE_SEARCH_API_KEY", "").strip()
-        or os.environ.get("BRAVE_API_KEY", "").strip()
+        os.environ.get("SERPAPI_API_KEY", "").strip()
+        or os.environ.get("SERPAPI_KEY", "").strip()
     )
+
+
+def _validated_https_endpoint(
+    name: str,
+    default: str,
+    *,
+    allowed_hosts: set[str],
+) -> str:
+    endpoint = _env_value(name, default)
+    parsed = urllib.parse.urlparse(endpoint)
+    if parsed.scheme.lower() != "https" or not parsed.hostname:
+        raise EngineUnavailableError(f"{name} 必须是有效 HTTPS 地址")
+    allow_custom = os.environ.get("ALLOW_CUSTOM_TOOL_ENDPOINTS", "false").strip().lower()
+    if parsed.hostname.lower() not in allowed_hosts and allow_custom not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        hosts = ", ".join(sorted(allowed_hosts))
+        raise EngineUnavailableError(
+            f"{name} 主机不在白名单（{hosts}）；自定义 HTTPS 端点需显式开启 ALLOW_CUSTOM_TOOL_ENDPOINTS",
+        )
+    return endpoint
 
 def _env_value(name: str, default: str) -> str:
     raw = os.environ.get(name, "").strip()
     return raw or default
 
 def _env_timeout() -> float:
-    raw = os.environ.get("BRAVE_SEARCH_TIMEOUT_SEC", "").strip()
-    if raw:
+    for name in ("SERPAPI_TIMEOUT_SEC",):
+        raw = os.environ.get(name, "").strip()
+        if not raw:
+            continue
         try:
             value = float(raw)
         except ValueError:
-            value = 0.0
+            continue
         if value > 0:
             return value
     return _DEFAULT_TIMEOUT_SEC
+
+
+def _google_hl(language: str | None) -> str | None:
+    if not language:
+        return None
+    return _GOOGLE_HL.get(language)
+
+
+def _google_tbs(freshness: str | None) -> str | None:
+    """把已解析的时间范围写成 Google 的 tbs 参数。"""
+
+    if not freshness:
+        return None
+    relative = _GOOGLE_QDR.get(freshness)
+    if relative:
+        return relative
+    if "to" not in freshness:
+        return None
+    start, end = freshness.split("to", 1)
+
+    def _us(iso: str) -> str | None:
+        parts = iso.split("-")
+        if len(parts) != 3:
+            return None
+        year, month, day = parts
+        return f"{month}/{day}/{year}"
+
+    start_us = _us(start)
+    end_us = _us(end)
+    if not start_us or not end_us:
+        return None
+    return f"cdr:1,cd_min:{start_us},cd_max:{end_us}"
+
+
+def _serp_organic_to_web(raw: dict[str, Any], *, include_social: bool) -> dict[str, Any]:
+    """把 SerpAPI organic（及可选社交媒体卡片）收成统一结果列表。"""
+
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def _append(url: Any, title: Any, snippet: Any) -> None:
+        cleaned = _clean_url(url)
+        if not cleaned or cleaned in seen:
+            return
+        seen.add(cleaned)
+        title_text = str(title).strip() if title is not None else ""
+        snippet_text = snippet.strip() if isinstance(snippet, str) else ""
+        rows.append(
+            {
+                "title": title_text,
+                "url": cleaned,
+                "description": snippet_text,
+            }
+        )
+
+    organic = raw.get("organic_results")
+    if isinstance(organic, list):
+        for item in organic:
+            if isinstance(item, dict):
+                _append(item.get("link"), item.get("title"), item.get("snippet"))
+    social = raw.get("social_media_results") if include_social else None
+    if isinstance(social, list):
+        for item in social:
+            if not isinstance(item, dict):
+                continue
+            title = item.get("nickname") or item.get("source")
+            _append(item.get("link"), title, item.get("snippet"))
+    return {"web": {"results": rows}}
 
 def _http_json(
     url: str,
