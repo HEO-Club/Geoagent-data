@@ -23,8 +23,8 @@
                 "type": "location",
                 "required": true,
                 "requirement_level": "semantic",
-                "description": "地理查询范围，可为 bbox、中心点加半径，或标准地名/行政区。默认 WMS 出图需要 bbox 或中心点加半径；纯地名需先 geocode。",
-                "acquisition_hint": "优先使用已有 bbox、中心点或 $active_area；来源只有地名时先 geocode。来源没有时不得补写坐标。",
+                "description": "地理查询范围，可为 bbox、中心点加半径，或标准地名/行政区。纯地名由本工具内部 geocode 后再出图。",
+                "acquisition_hint": "优先使用已有 bbox、中心点或 $active_area；来源只有地名时直接写入 area，由本工具内部 geocode。来源没有时不得补写坐标。",
                 "context_sources": [
                   "active_area"
                 ],
@@ -176,8 +176,8 @@
         "type": "location",
         "required": true,
         "requirement_level": "semantic",
-        "purpose": "地理查询范围，可为 bbox、中心点加半径，或标准地名/行政区。默认 WMS 出图需要 bbox 或中心点加半径；纯地名需先 geocode。",
-        "how_to_obtain": "优先使用已有 bbox、中心点或 $active_area；来源只有地名时先 geocode。来源没有时不得补写坐标。",
+        "purpose": "地理查询范围，可为 bbox、中心点加半径，或标准地名/行政区。纯地名由本工具内部 geocode 后再出图。",
+        "how_to_obtain": "优先使用已有 bbox、中心点或 $active_area；来源只有地名时直接写入 area，由本工具内部 geocode。来源没有时不得补写坐标。",
         "context_sources": [
           "active_area"
         ],

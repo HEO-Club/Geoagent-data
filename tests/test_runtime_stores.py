@@ -77,3 +77,19 @@ def test_filesystem_image_store_restores_derived_ids(tmp_path: Path) -> None:
     assert reopened.resolve(first_id).is_file()
     second_id = reopened.put(image, source_id=first_id, suffix="png")
     assert second_id == "img_0002"
+
+
+def test_filesystem_image_store_delete_removes_file(tmp_path: Path) -> None:
+    root = tmp_path / "images"
+    image = Image.new("RGB", (4, 4), (1, 2, 3))
+    store = FilesystemImageStore(root)
+    image_id = store.put(image, source_id="source", suffix="jpeg")
+    path = store.resolve(image_id)
+    assert path.is_file()
+    store.delete(image_id)
+    assert path.is_file() is False
+    try:
+        store.resolve(image_id)
+    except FileNotFoundError:
+        return
+    raise AssertionError("deleted image id should not resolve")

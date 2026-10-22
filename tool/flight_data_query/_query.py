@@ -20,6 +20,7 @@ from tool._gate import allow_real_api as _allow_real_api
 from tool._gate import load_tool_dotenv as _load_dotenv
 from tool.contract import Observation, RuntimeContext, declared_inputs
 
+_HTTP_ATTEMPTS = 3
 _OP_SEARCH = "search"
 _OP_TRACK = "track"
 _OP_NEARBY = "nearby_traffic"
@@ -1291,30 +1292,41 @@ def _http_bytes(
     error_prefix: str,
     empty_on_404: str | None = None,
 ) -> bytes:
-    request = urllib.request.Request(url, method="GET")
-    for key, value in headers.items():
-        request.add_header(key, value)
-    try:
-        with urllib.request.urlopen(request, timeout=timeout_sec) as response:
-            return bytes(response.read())
-    except urllib.error.HTTPError as exc:
-        if empty_on_404 is not None and exc.code == 404:
-            return b""
-        detail = exc.read()[:200] if exc.fp else b""
-        text = detail.decode("utf-8", errors="replace")
-        raise EngineUnavailableError(
-            f"{error_prefix} HTTP {exc.code}: {text}",
-            _provider_http_error_code(exc.code),
-        ) from exc
-    except urllib.error.URLError as exc:
-        raise EngineUnavailableError(
-            f"{error_prefix} 网络失败: {exc.reason}",
-            "network_error",
-        ) from exc
-    except TimeoutError as exc:
-        raise EngineUnavailableError(f"{error_prefix} 超时: {exc}", "timeout") from exc
-    except OSError as exc:
-        raise EngineUnavailableError(f"{error_prefix} 调用失败: {exc}", "network_error") from exc
+    """GET。连接中断或超时再试两次；HTTP 状态错误立即失败。"""
+
+    last_transport: Exception | None = None
+    for attempt in range(_HTTP_ATTEMPTS):
+        request = urllib.request.Request(url, method="GET")
+        for key, value in headers.items():
+            request.add_header(key, value)
+        try:
+            with urllib.request.urlopen(request, timeout=timeout_sec) as response:
+                return bytes(response.read())
+        except urllib.error.HTTPError as exc:
+            if empty_on_404 is not None and exc.code == 404:
+                return b""
+            detail = exc.read()[:200] if exc.fp else b""
+            text = detail.decode("utf-8", errors="replace")
+            raise EngineUnavailableError(
+                f"{error_prefix} HTTP {exc.code}: {text}",
+                _provider_http_error_code(exc.code),
+            ) from exc
+        except urllib.error.URLError as exc:
+            last_transport = exc
+            if attempt == _HTTP_ATTEMPTS - 1:
+                raise EngineUnavailableError(
+                    f"{error_prefix} 网络失败: {exc.reason}",
+                    "network_error",
+                ) from exc
+        except TimeoutError as exc:
+            last_transport = exc
+            if attempt == _HTTP_ATTEMPTS - 1:
+                raise EngineUnavailableError(f"{error_prefix} 超时: {exc}", "timeout") from exc
+        except OSError as exc:
+            last_transport = exc
+            if attempt == _HTTP_ATTEMPTS - 1:
+                raise EngineUnavailableError(f"{error_prefix} 调用失败: {exc}", "network_error") from exc
+    raise EngineUnavailableError(f"{error_prefix} 网络失败: {last_transport}", "network_error")
 
 def _http_post_form(
     url: str,

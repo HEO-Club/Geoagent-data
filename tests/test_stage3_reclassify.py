@@ -283,3 +283,21 @@ def test_reclassify_does_not_map_to_unavailable_tool(
 
     map_tools.ensure_tool_trees(freeform, path, matcher=matcher)
     assert freeform.steps[0].tool == "web_search"
+
+
+def test_feature_query_positive_example_is_osm_near() -> None:
+    """地理特征的相对位置正例指向 osm_query 的 near。"""
+    import inspect
+
+    from pipeline.stage2_freeform_tao.run import DEFAULT_SYSTEM_HINT
+
+    example = "有桥、有河且相距若干米"
+    assert example in DEFAULT_SYSTEM_HINT
+    assert "osm_query" in DEFAULT_SYSTEM_HINT
+    reclassify = inspect.getsource(map_tools.llm_reclassify_tool_calls)
+    match_batch = inspect.getsource(map_tools.llm_semantic_match_batch)
+    assert example in reclassify
+    assert "osm_query" in reclassify
+    assert "在底图上查看水系" not in reclassify
+    assert example in match_batch
+    assert "osm_query" in match_batch

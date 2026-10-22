@@ -51,8 +51,8 @@
                 "type": "region",
                 "required": false,
                 "requirement_level": "optional",
-                "description": "图片中的目标区域，可用 [x1,y1,x2,y2]、命名区域或对象表示；对象可带 coordinate_space=auto/pixels/normalized 消除 0..1 坐标歧义。",
-                "acquisition_hint": "在当前图片上明确裁剪框或可复现的目标区域描述；0..1 边界框应显式标注 coordinate_space，避免把 1 像素框误解为整图。",
+                "description": "像素框 [x1,y1,x2,y2]，或已经登记成像素框的区域名。取值在 0 到 1 时标明 coordinate_space=normalized。不要填写物体名称或画面描述。",
+                "acquisition_hint": "从当前图片量出 [x1,y1,x2,y2]，或引用已登记的区域名。没有像素框时不要把画面描述写进 region，也不要编造坐标。",
                 "context_sources": [],
                 "context_default": null,
                 "aliases": [
@@ -67,7 +67,7 @@
                 "item_type": null,
                 "minimum": null,
                 "maximum": null,
-                "example": "bridge_tower_top"
+                "example": [12, 40, 180, 160]
               },
               {
                 "name": "adjustments",
@@ -158,8 +158,8 @@
                 "type": "region",
                 "required": true,
                 "requirement_level": "execution",
-                "description": "图片中的目标区域，可用 [x1,y1,x2,y2]、命名区域或对象表示；对象可带 coordinate_space=auto/pixels/normalized 消除 0..1 坐标歧义。",
-                "acquisition_hint": "在当前图片上明确裁剪框或可复现的目标区域描述；0..1 边界框应显式标注 coordinate_space，避免把 1 像素框误解为整图。",
+                "description": "像素框 [x1,y1,x2,y2]，或已经登记成像素框的区域名。取值在 0 到 1 时标明 coordinate_space=normalized。不要填写物体名称或画面描述。",
+                "acquisition_hint": "从当前图片量出 [x1,y1,x2,y2]，或引用已登记的区域名。没有像素框时不要把画面描述写进 region，也不要编造坐标。",
                 "context_sources": [],
                 "context_default": null,
                 "aliases": [
@@ -174,7 +174,7 @@
                 "item_type": null,
                 "minimum": null,
                 "maximum": null,
-                "example": "bridge_tower_top"
+                "example": [12, 40, 180, 160]
               },
               {
                 "name": "padding",
@@ -283,8 +283,8 @@
                 "type": "region",
                 "required": true,
                 "requirement_level": "execution",
-                "description": "图片中的目标区域，可用 [x1,y1,x2,y2]、命名区域或对象表示；对象可带 coordinate_space=auto/pixels/normalized 消除 0..1 坐标歧义。",
-                "acquisition_hint": "在当前图片上明确裁剪框或可复现的目标区域描述；0..1 边界框应显式标注 coordinate_space，避免把 1 像素框误解为整图。",
+                "description": "像素框 [x1,y1,x2,y2]，或已经登记成像素框的区域名。取值在 0 到 1 时标明 coordinate_space=normalized。不要填写物体名称或画面描述。",
+                "acquisition_hint": "从当前图片量出 [x1,y1,x2,y2]，或引用已登记的区域名。没有像素框时不要把画面描述写进 region，也不要编造坐标。",
                 "context_sources": [],
                 "context_default": null,
                 "aliases": [
@@ -299,7 +299,7 @@
                 "item_type": null,
                 "minimum": null,
                 "maximum": null,
-                "example": "bridge_tower_top"
+                "example": [12, 40, 180, 160]
               },
               {
                 "name": "scale",
@@ -432,14 +432,14 @@
         "type": "region",
         "required": false,
         "requirement_level": "optional",
-        "purpose": "图片中的目标区域，可用 [x1,y1,x2,y2]、命名区域或对象表示；对象可带 coordinate_space=auto/pixels/normalized 消除 0..1 坐标歧义。",
-        "how_to_obtain": "在当前图片上明确裁剪框或可复现的目标区域描述；0..1 边界框应显式标注 coordinate_space，避免把 1 像素框误解为整图。",
+        "purpose": "像素框 [x1,y1,x2,y2]，或已经登记成像素框的区域名。取值在 0 到 1 时标明 coordinate_space=normalized。不要填写物体名称或画面描述。",
+        "how_to_obtain": "从当前图片量出 [x1,y1,x2,y2]，或引用已登记的区域名。没有像素框时不要把画面描述写进 region，也不要编造坐标。",
         "context_sources": [],
         "context_default": null,
         "allowed_values": [],
         "minimum": null,
         "maximum": null,
-        "example": "bridge_tower_top",
+        "example": [12, 40, 180, 160],
         "aliases": [
           "区域",
           "裁剪区域",
@@ -527,14 +527,14 @@
         "type": "region",
         "required": true,
         "requirement_level": "execution",
-        "purpose": "图片中的目标区域，可用 [x1,y1,x2,y2]、命名区域或对象表示；对象可带 coordinate_space=auto/pixels/normalized 消除 0..1 坐标歧义。",
-        "how_to_obtain": "在当前图片上明确裁剪框或可复现的目标区域描述；0..1 边界框应显式标注 coordinate_space，避免把 1 像素框误解为整图。",
+        "purpose": "像素框 [x1,y1,x2,y2]，或已经登记成像素框的区域名。取值在 0 到 1 时标明 coordinate_space=normalized。不要填写物体名称或画面描述。",
+        "how_to_obtain": "从当前图片量出 [x1,y1,x2,y2]，或引用已登记的区域名。没有像素框时不要把画面描述写进 region，也不要编造坐标。",
         "context_sources": [],
         "context_default": null,
         "allowed_values": [],
         "minimum": null,
         "maximum": null,
-        "example": "bridge_tower_top",
+        "example": [12, 40, 180, 160],
         "aliases": [
           "区域",
           "裁剪区域",
@@ -640,14 +640,14 @@
         "type": "region",
         "required": true,
         "requirement_level": "execution",
-        "purpose": "图片中的目标区域，可用 [x1,y1,x2,y2]、命名区域或对象表示；对象可带 coordinate_space=auto/pixels/normalized 消除 0..1 坐标歧义。",
-        "how_to_obtain": "在当前图片上明确裁剪框或可复现的目标区域描述；0..1 边界框应显式标注 coordinate_space，避免把 1 像素框误解为整图。",
+        "purpose": "像素框 [x1,y1,x2,y2]，或已经登记成像素框的区域名。取值在 0 到 1 时标明 coordinate_space=normalized。不要填写物体名称或画面描述。",
+        "how_to_obtain": "从当前图片量出 [x1,y1,x2,y2]，或引用已登记的区域名。没有像素框时不要把画面描述写进 region，也不要编造坐标。",
         "context_sources": [],
         "context_default": null,
         "allowed_values": [],
         "minimum": null,
         "maximum": null,
-        "example": "bridge_tower_top",
+        "example": [12, 40, 180, 160],
         "aliases": [
           "区域",
           "裁剪区域",

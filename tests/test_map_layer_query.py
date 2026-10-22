@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import importlib
 import json
+
+import pytest
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -246,22 +249,47 @@ def test_wfs_vector_is_usable_for_gis_and_truncated(monkeypatch: Any) -> None:
     assert "raw_content" not in keys
 
 
-def test_place_name_without_bbox_on_builtin_wms_is_missing_input(monkeypatch: Any) -> None:
-    monkeypatch.setenv("ALLOW_REAL_TOOL_API", "true")
-    monkeypatch.setenv("MAP_LAYER_PROVIDER", "wms")
-    monkeypatch.setenv("MAP_LAYER_WMS_ENDPOINT", "http://localhost/geoserver/wms")
-    monkeypatch.setenv("MAP_LAYER_WMS_LAYERS", '{"hydrology":"workspace:rivers"}')
-    observation = execute(
-        "map_layer_query",
-        "load_layer",
-        purpose="纯地名",
+def test_place_name_is_geocoded_before_wms(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_geocode(*, purpose: str, inputs: dict[str, Any], ctx: object = None) -> Observation:
+        del purpose, ctx
+        assert inputs["query"] == "郑州附近黄河沿线"
+        return Observation(
+            ok=True,
+            result={
+                "results": [
+                    {
+                        "location": {"lat": 34.8, "lon": 113.6, "crs": "EPSG:4326"},
+                        "bbox": [113.5, 34.7, 113.8, 34.9],
+                    }
+                ],
+                "applied": {"provider": "amap"},
+            },
+        )
+
+    monkeypatch.setattr(importlib.import_module("tool.geocode.geocode"), "execute", fake_geocode)
+    provider = FakeMapLayerProvider()
+    observation = _load(
         inputs={"area": "郑州附近黄河沿线", "layers": ["hydrology"]},
-        ctx=RuntimeContext(),
+        provider=provider,
     )
+    assert observation.ok is True
+    assert provider.calls
+    assert provider.calls[0].bbox is not None
+    assert provider.calls[0].bbox.west == 113.5
+    assert provider.calls[0].bbox.north == 34.9
+    assert observation.result is not None
+    assert observation.result["applied"]["area"]["geocode_query"] == "郑州附近黄河沿线"
+
+
+def test_place_name_without_geocode_backend_is_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_geocode(*, purpose: str, inputs: dict[str, Any], ctx: object = None) -> Observation:
+        del purpose, inputs, ctx
+        return Observation(ok=False, result=None, error="未配置地理编码", error_code="engine_unavailable")
+
+    monkeypatch.setattr(importlib.import_module("tool.geocode.geocode"), "execute", fake_geocode)
+    observation = _load(inputs={"area": "郑州附近黄河沿线", "layers": ["hydrology"]})
     assert observation.ok is False
-    assert observation.error_code == "missing_input"
-    assert observation.error is not None
-    assert "bbox" in observation.error
+    assert observation.error_code == "engine_unavailable"
 
 
 def test_historical_map_without_layer_is_unsupported() -> None:

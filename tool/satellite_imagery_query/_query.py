@@ -35,6 +35,7 @@ _DEFAULT_TOKEN = (
     "/protocol/openid-connect/token"
 )
 _DEFAULT_TIMEOUT_SEC = 30.0
+_HTTP_ATTEMPTS = 3
 _DEFAULT_UA = "geoagent-dataset/1.0 (satellite_imagery_query; local)"
 _DEFAULT_SEARCH_RADIUS_M = 2000
 _SEARCH_RADIUS_MIN = 50
@@ -94,6 +95,7 @@ _SESSIONS_KEY = "satellite_sessions"
 _SESSION_COUNTER_KEY = "satellite_session_counter"
 _YEAR_RE = re.compile(r"^(\d{4})$")
 _YEAR_RANGE_RE = re.compile(r"^(\d{4})\s*[-–—至到]\s*(\d{4})$")
+_DECADE_RE = re.compile(r"^(\d{3})0(?:\s*年代|'s|s)$", re.IGNORECASE)
 _DATE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})$")
 _DATE_RANGE_RE = re.compile(
     r"^(\d{4}-\d{2}-\d{2})\s*(?:to|/|[-–—至到])\s*(\d{4}-\d{2}-\d{2})$",
@@ -145,7 +147,7 @@ _ASSUMPTIONS = [
     "目录无命中时如实无覆盖，不会用近景顶替所请求的历史年份",
     "只使用 Copernicus 卫星光学预览，不接受其他影像服务或图层",
     "不下载 SAFE 全产品，只返回 Catalog 元数据与 Process API 裁剪真彩预览",
-    "输入必须是 bbox 或中心点加半径，不接受地名",
+    "纯地名会先 geocode，没有点再按同一名称查 POI，再用默认半径扩成框",
 ]
 
 class SatelliteInputError(Exception):
@@ -300,6 +302,7 @@ class CopernicusProvider:
             return []
         features: list[dict[str, Any]] = []
         errors: list[str] = []
+        succeeded = False
         for collection in request.collections:
             body: dict[str, Any] = {
                 "collections": [collection],
@@ -313,6 +316,9 @@ class CopernicusProvider:
             }
             if request.datetime:
                 body["datetime"] = request.datetime
+            else:
+                # CDSE Catalog 不接受缺少 datetime 和 ids 的检索；未指定时间时查到当前为止。
+                body["datetime"] = f"../{_rfc3339(datetime.now(timezone.utc))}"
             if request.cloud_cover_max is not None:
                 body["filter-lang"] = "cql2-json"
                 body["filter"] = {
@@ -328,10 +334,11 @@ class CopernicusProvider:
             except EngineUnavailableError as exc:
                 errors.append(str(exc))
                 continue
+            succeeded = True
             found = payload.get("features")
             if isinstance(found, list):
                 features.extend(item for item in found if isinstance(item, dict))
-        if not features and errors:
+        if not succeeded and errors:
             raise EngineUnavailableError(errors[-1])
         return features
 
@@ -458,6 +465,7 @@ def execute_retrieve(
     purpose: str,
     inputs: dict[str, Any],
     ctx: RuntimeContext | None = None,
+    geocode_place_names: bool = True,
 ) -> Observation:
     """获取指定区域和时间的卫星或航片。"""
 
@@ -473,7 +481,12 @@ def execute_retrieve(
             "cloud_cover_max",
             "resolution_m",
         )
-        location = _resolve_search_location(inputs, ctx, require_geometry=True)
+        location = _resolve_search_location(
+            inputs,
+            ctx,
+            require_geometry=True,
+            geocode_place_names=geocode_place_names,
+        )
         return _run_query(
             _OP_RETRIEVE,
             inputs=inputs,
@@ -649,6 +662,7 @@ class _SearchLocation:
     center: GeoPoint
     radius_m: int
     area: ParsedArea
+    geocode_applied: dict[str, Any] | None = None
 
 def _resolve_session_or_location(
     inputs: dict[str, Any],
@@ -696,6 +710,7 @@ def _resolve_search_location(
     ctx: RuntimeContext | None,
     *,
     require_geometry: bool,
+    geocode_place_names: bool = True,
 ) -> _SearchLocation:
     point = _parse_coordinates(inputs.get("coordinates"))
     area = _parse_area(_resolve_area(inputs.get("area"), ctx))
@@ -712,6 +727,10 @@ def _resolve_search_location(
     radius = area.radius_m if area.radius_m is not None else _search_radius()
     if center is not None and bbox is None:
         bbox = _bbox_from_center(center, radius)
+    geocode_applied: dict[str, Any] | None = None
+    if center is None and bbox is None and area.text and geocode_place_names:
+        center, geocode_applied = _geocode_place_name(area.text, ctx=ctx)
+        bbox = _bbox_from_center(center, radius)
     if bbox is None and source_bbox is not None:
         bbox = source_bbox
         if center is None:
@@ -726,17 +745,112 @@ def _resolve_search_location(
         )
     if bbox is None or center is None:
         if require_geometry:
-            if area.text:
+            if area.text and not geocode_place_names:
                 raise SatelliteInputError(
                     "area 必须是 bbox 或中心点加半径，不接受地名",
                     "invalid_area",
                 )
+            if area.text:
+                raise SatelliteInputError(f"无法解析地名: {area.text}", "no_result")
             raise SatelliteInputError(
                 "缺少必填输入 area、coordinates 或 source_result",
                 "missing_input",
             )
         raise SatelliteInputError("无法解析查询位置", "invalid_area")
-    return _SearchLocation(bbox=bbox, center=center, radius_m=radius, area=area)
+    return _SearchLocation(
+        bbox=bbox,
+        center=center,
+        radius_m=radius,
+        area=area,
+        geocode_applied=geocode_applied,
+    )
+
+def _geocode_place_name(
+    query: str,
+    *,
+    ctx: RuntimeContext | None,
+) -> tuple[GeoPoint, dict[str, Any]]:
+    """把纯地名交给 geocode；没有点时再按同一名称查 POI。"""
+
+    from tool.geocode.geocode import execute as execute_geocode
+
+    observation = execute_geocode(
+        purpose="解析卫星影像范围",
+        inputs={"query": query, "top_k": 1},
+        ctx=ctx,
+    )
+    applied: dict[str, Any] = {"geocode_query": query}
+    if not observation.ok:
+        code = observation.error_code or "engine_unavailable"
+        message = observation.error or "内部 geocode 失败"
+        if code in {"missing_input", "invalid_input"}:
+            raise SatelliteInputError(message, code)
+        if code != "no_result":
+            raise EngineUnavailableError(message, code)
+        point = None
+    else:
+        result = observation.result if isinstance(observation.result, dict) else {}
+        provider = result.get("provider")
+        if provider is None and isinstance(result.get("applied"), dict):
+            provider = result["applied"].get("provider")
+        if provider:
+            applied["geocode_provider"] = provider
+        point = _point_from_rows(result.get("candidates") or result.get("results") or [])
+    if point is not None:
+        return point, applied
+    poi_point, poi_applied = _poi_place_name(query, ctx=ctx)
+    if poi_point is None:
+        raise SatelliteInputError(f"无法解析地名: {query}", "no_result")
+    applied.update(poi_applied)
+    return poi_point, applied
+
+
+def _poi_place_name(
+    query: str,
+    *,
+    ctx: RuntimeContext | None,
+) -> tuple[GeoPoint | None, dict[str, Any]]:
+    """地理编码没有点时，按名称取第一个 POI 坐标。"""
+
+    from tool.poi_search.poi_search import execute as execute_poi_search
+
+    observation = execute_poi_search(
+        purpose="解析卫星影像范围",
+        inputs={"query": query, "top_k": 1},
+        ctx=ctx,
+    )
+    if not observation.ok:
+        code = observation.error_code or "engine_unavailable"
+        message = observation.error or "内部 POI 检索失败"
+        if code in {"missing_input", "invalid_input", "no_result", "needs_acquisition"}:
+            return None, {}
+        raise EngineUnavailableError(message, code)
+    result = observation.result if isinstance(observation.result, dict) else {}
+    point = _point_from_rows(result.get("candidates") or result.get("results") or [])
+    if point is None:
+        return None, {}
+    applied: dict[str, Any] = {"poi_query": query}
+    provider = result.get("provider")
+    if provider is None and isinstance(result.get("applied"), dict):
+        provider = result["applied"].get("provider")
+    if provider:
+        applied["poi_provider"] = provider
+    return point, applied
+
+
+def _point_from_rows(rows: Any) -> GeoPoint | None:
+    if not isinstance(rows, list):
+        return None
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        point = _center_from_mapping(item)
+        if point is None and isinstance(item.get("location"), dict):
+            point = _center_from_mapping(item["location"])
+        if point is not None:
+            return point
+    return None
+
 
 def _resolve_area(raw: Any, ctx: RuntimeContext | None) -> Any:
     if raw is None or raw == "" or raw == "$active_area":
@@ -779,10 +893,7 @@ def _parse_area(raw: Any) -> ParsedArea:
                 center=point,
                 applied={"lat": point.lat, "lon": point.lon},
             )
-        raise SatelliteInputError(
-            "area 必须是 bbox 或中心点加半径，不接受地名",
-            "invalid_area",
-        )
+        return ParsedArea(text=text, applied=text)
     if isinstance(raw, (list, tuple)):
         polygon = _polygon_from_points(raw)
         if polygon is not None:
@@ -824,10 +935,7 @@ def _parse_area(raw: Any) -> ParsedArea:
             return ParsedArea(center=center, radius_m=radius, applied=applied)
         text = _optional_str(raw.get("city", raw.get("text", raw.get("name", raw.get("area")))))
         if text:
-            raise SatelliteInputError(
-                "area 必须是 bbox 或中心点加半径，不接受地名",
-                "invalid_area",
-            )
+            return ParsedArea(text=text, applied=text)
         return ParsedArea(unsupported=raw)
     return ParsedArea(unsupported=raw)
 
@@ -1044,6 +1152,12 @@ def _parse_time_window(raw: Any) -> tuple[TimeWindow | None, Any | None]:
             value = int(year.group(1))
             if _YEAR_MIN <= value <= _YEAR_MAX:
                 return TimeWindow(date(value, 1, 1), date(value, 12, 31)), None
+        decade = _DECADE_RE.fullmatch(text)
+        if decade:
+            start = int(decade.group(1)) * 10
+            end = start + 9
+            if _YEAR_MIN <= start and end <= _YEAR_MAX:
+                return TimeWindow(date(start, 1, 1), date(end, 12, 31)), None
         year_range = _YEAR_RANGE_RE.fullmatch(text)
         if year_range:
             start, end = int(year_range.group(1)), int(year_range.group(2))
@@ -1160,11 +1274,11 @@ def _select_collections(
     resolution_m: float | None,
 ) -> tuple[str, ...]:
     del layer
+    # landsat-tm-l2 / landsat-etm-l2 在 CDSE Catalog 上会解析成 LTML2 / LETML2
+    # 并返回 HTTP 500，不能放进默认检索。1999–2012 因此没有可查询的集合。
     ranked = (
         _COLLECTION_S2,
         _COLLECTION_LANDSAT_OT,
-        _COLLECTION_LANDSAT_ETM,
-        _COLLECTION_LANDSAT_TM,
     )
     window = time_spec.window if time_spec is not None else None
     selected: list[str] = []
@@ -1439,9 +1553,12 @@ def _applied(
         "crs": _CRS_WGS84,
         "search_radius_m": location.radius_m,
         "bbox": _bbox_applied(location.bbox),
+        "center": {"lat": location.center.lat, "lon": location.center.lon},
     }
     if location.area.applied is not None:
         payload["area"] = location.area.applied
+    if location.geocode_applied:
+        payload.update(location.geocode_applied)
     payload.update(extra)
     unsupported: dict[str, Any] = {}
     if location.area.unsupported is not None:
@@ -1568,21 +1685,30 @@ def _http_bytes(
     timeout_sec: float,
     error_prefix: str,
 ) -> bytes:
+    """登录、目录和预览请求。连接中断或超时再试两次；HTTP 状态错误立即失败。"""
+
     if not url:
         raise EngineUnavailableError(f"{error_prefix} 缺少 URL")
-    request = urllib.request.Request(url, data=body, method=method)
-    for key, value in headers.items():
-        request.add_header(key, value)
-    try:
-        with urllib.request.urlopen(request, timeout=timeout_sec) as response:
-            return bytes(response.read())
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace") if exc.fp else str(exc)
-        raise EngineUnavailableError(f"{error_prefix} HTTP {exc.code}: {detail[:200]}") from exc
-    except urllib.error.URLError as exc:
-        raise EngineUnavailableError(f"{error_prefix} 网络失败: {exc.reason}") from exc
-    except (TimeoutError, OSError) as exc:
-        raise EngineUnavailableError(f"{error_prefix} 调用失败: {exc}") from exc
+    last_transport: BaseException | None = None
+    for attempt in range(_HTTP_ATTEMPTS):
+        request = urllib.request.Request(url, data=body, method=method)
+        for key, value in headers.items():
+            request.add_header(key, value)
+        try:
+            with urllib.request.urlopen(request, timeout=timeout_sec) as response:
+                return bytes(response.read())
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace") if exc.fp else str(exc)
+            raise EngineUnavailableError(f"{error_prefix} HTTP {exc.code}: {detail[:200]}") from exc
+        except urllib.error.URLError as exc:
+            last_transport = exc
+            if attempt == _HTTP_ATTEMPTS - 1:
+                raise EngineUnavailableError(f"{error_prefix} 网络失败: {exc.reason}") from exc
+        except (TimeoutError, OSError) as exc:
+            last_transport = exc
+            if attempt == _HTTP_ATTEMPTS - 1:
+                raise EngineUnavailableError(f"{error_prefix} 调用失败: {exc}") from exc
+    raise EngineUnavailableError(f"{error_prefix} 网络失败: {last_transport}")
 
 def _optional_str(raw: Any) -> str | None:
     if isinstance(raw, str) and raw.strip():

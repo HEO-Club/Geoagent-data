@@ -1,8 +1,7 @@
-"""reverse_image_search 共享执行器：本地裁剪后提交 SerpAPI Lens 或 Vision Web Detection。"""
+"""reverse_image_search 共享执行器：本地裁剪后只提交 SerpAPI Google Lens。"""
 
 from __future__ import annotations
 
-import base64
 import json
 import os
 import urllib.error
@@ -29,22 +28,13 @@ _TOP_K_MIN = 1
 _TOP_K_MAX = 100
 _JPEG_QUALITY = 95
 _ENGINE_SERPAPI = "serpapi"
-_ENGINE_VISION = "google_cloud_vision"
-_ENGINE_BAIDU_GRAPH = "baidu_graph"
 _DEFAULT_ENGINE = _ENGINE_SERPAPI
 _ENGINE_ALIASES = {
     "serpapi": _ENGINE_SERPAPI,
     "serpai": _ENGINE_SERPAPI,
     "google_lens": _ENGINE_SERPAPI,
     "lens": _ENGINE_SERPAPI,
-    "google_cloud_vision": _ENGINE_VISION,
-    "vision": _ENGINE_VISION,
-    "web_detection": _ENGINE_VISION,
-    "baidu": _ENGINE_BAIDU_GRAPH,
-    "baidu_graph": _ENGINE_BAIDU_GRAPH,
-    "baidu_graph_search": _ENGINE_BAIDU_GRAPH,
 }
-_DEFAULT_VISION_ENDPOINT = "https://vision.googleapis.com/v1/images:annotate"
 _DEFAULT_SERPAPI_SEARCH_ENDPOINT = "https://serpapi.com/search.json"
 _DEFAULT_SERPAPI_IMAGE_ENDPOINT = "https://serpapi.com/image"
 _DEFAULT_TIMEOUT_SEC = 30.0
@@ -86,63 +76,6 @@ class ReverseImageSearchEngine(Protocol):
 
     def search(self, image_bytes: bytes, *, top_k: int) -> dict[str, Any]:
         """提交图片字节，返回 Web Detection 风格载荷。"""
-
-class GoogleVisionWebDetectionEngine:
-    """Google Cloud Vision WEB_DETECTION 适配器；密钥与端点只读环境变量。"""
-
-    name = "google_cloud_vision"
-
-    def __init__(
-        self,
-        *,
-        api_key: str,
-        endpoint: str,
-        timeout_sec: float,
-    ) -> None:
-        self._api_key = api_key
-        self._endpoint = endpoint
-        self._timeout_sec = timeout_sec
-
-    def search(self, image_bytes: bytes, *, top_k: int) -> dict[str, Any]:
-        payload = {
-            "requests": [
-                {
-                    "image": {
-                        "content": base64.b64encode(image_bytes).decode("ascii"),
-                    },
-                    "features": [
-                        {
-                            "type": "WEB_DETECTION",
-                            "maxResults": top_k,
-                        }
-                    ],
-                }
-            ]
-        }
-        body = json.dumps(payload).encode("utf-8")
-        request = urllib.request.Request(
-            _endpoint_with_key(self._endpoint, self._api_key),
-            data=body,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=self._timeout_sec) as response:
-                raw = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace") if exc.fp else str(exc)
-            raise EngineUnavailableError(
-                f"Vision Web Detection HTTP {exc.code}: {detail[:200]}",
-            ) from exc
-        except urllib.error.URLError as exc:
-            raise EngineUnavailableError(
-                f"Vision Web Detection 网络失败: {exc.reason}",
-            ) from exc
-        except (json.JSONDecodeError, TimeoutError, OSError) as exc:
-            raise EngineUnavailableError(
-                f"Vision Web Detection 调用失败: {exc}",
-            ) from exc
-        return _extract_web_detection(raw)
 
 class SerpapiGoogleLensEngine:
     """SerpAPI Google Lens 适配器：先上传本地图拿 image_id，再搜视觉匹配。"""
@@ -238,13 +171,13 @@ def _run_search(
     ctx: RuntimeContext | None,
 ) -> Observation:
     if operation == "search_crop":
-        inputs = declared_inputs(inputs, "image", "region", "engines", "top_k")
+        inputs = declared_inputs(inputs, "image", "region", "top_k")
     else:
-        inputs = declared_inputs(inputs, "image", "engines", "top_k")
+        inputs = declared_inputs(inputs, "image", "top_k")
     try:
         source_id, source = _load_image(inputs, ctx)
         region = _parse_optional_region(operation, inputs, source.size, ctx)
-        engines, ignored_engines = _parse_engines(inputs.get("engines"))
+        engines, ignored_engines = _parse_engines(_engines_input(inputs))
         top_k = _parse_top_k(inputs.get("top_k"))
         engine, engine_name = _resolve_engine(ctx, requested=engines)
         query, query_id, query_path = _query_image(
@@ -341,27 +274,34 @@ def _query_image(
     image_id, path = put_image(cropped, source_id=source_id, suffix="jpeg", ctx=ctx)
     return cropped, image_id, path
 
+def _engines_input(inputs: dict[str, Any]) -> Any:
+    """目录已不再提供引擎选项；旧调用若仍写入 engines，从 extensions 读出并拒绝非 SerpAPI。"""
+
+    if "engines" in inputs:
+        return inputs.get("engines")
+    extensions = inputs.get("extensions")
+    if isinstance(extensions, dict) and "engines" in extensions:
+        return extensions.get("engines")
+    return None
+
+
 def _parse_engines(raw: Any) -> tuple[list[str], list[str]]:
     values = _parse_string_list(raw, field="engines", error_code="invalid_engines")
     if not values:
         return [_DEFAULT_ENGINE], []
     mapped: list[str] = []
-    ignored: list[str] = []
     seen: set[str] = set()
     for item in values:
         key = _ENGINE_ALIASES.get(item.strip().lower())
         if key is None:
-            ignored.append(item)
-            continue
+            raise SearchInputError(
+                f"反向搜图只使用 SerpAPI，不支持的 engines: {values}",
+                "unsupported_engine",
+            )
         if key not in seen:
             mapped.append(key)
             seen.add(key)
-    if not mapped:
-        raise SearchInputError(
-            f"不支持的 engines: {values}",
-            "unsupported_engine",
-        )
-    return mapped, ignored
+    return mapped, []
 
 def _parse_top_k(raw: Any) -> int:
     if raw is None or (isinstance(raw, str) and not raw.strip()):
@@ -447,25 +387,7 @@ def _build_engine(
             ),
             timeout_sec=timeout_sec,
         )
-    if name == _ENGINE_VISION:
-        api_key = os.environ.get("GOOGLE_VISION_API_KEY", "").strip()
-        if not api_key:
-            raise EngineUnavailableError("未配置 GOOGLE_VISION_API_KEY")
-        return GoogleVisionWebDetectionEngine(
-            api_key=api_key,
-            endpoint=_validated_endpoint(
-                "GOOGLE_VISION_ENDPOINT",
-                _DEFAULT_VISION_ENDPOINT,
-                allowed_hosts={"vision.googleapis.com"},
-            ),
-            timeout_sec=timeout_sec,
-        )
-    if name == _ENGINE_BAIDU_GRAPH:
-        from tool.reverse_image_search._baidu_graph import BaiduGraphEngine
-
-        session = extras.get("baidu_graph_session")
-        return BaiduGraphEngine(session=session, timeout_sec=timeout_sec)
-    raise EngineUnavailableError(f"不支持的 engines: {name}")
+    raise EngineUnavailableError("反向搜图只使用 SerpAPI")
 
 def _allow_real_tool_api() -> bool:
     raw = os.environ.get("ALLOW_REAL_TOOL_API", "false").strip().lower()
@@ -508,7 +430,7 @@ def _env_value(name: str, default: str) -> str:
     return raw or default
 
 def _env_timeout() -> float:
-    for name in ("SERPAPI_TIMEOUT_SEC", "GOOGLE_VISION_TIMEOUT_SEC"):
+    for name in ("SERPAPI_TIMEOUT_SEC",):
         raw = os.environ.get(name, "").strip()
         if not raw:
             continue
@@ -689,14 +611,6 @@ def _append_lens_page(
         key = "fullMatchingImages" if match == "full" else "partialMatchingImages"
         page[key] = [{"url": image_url}]
     pages.append(page)
-
-def _endpoint_with_key(endpoint: str, api_key: str) -> str:
-    parsed = urllib.parse.urlparse(endpoint)
-    query = dict(urllib.parse.parse_qsl(parsed.query, keep_blank_values=True))
-    query["key"] = api_key
-    return urllib.parse.urlunparse(
-        parsed._replace(query=urllib.parse.urlencode(query)),
-    )
 
 def _extract_web_detection(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):

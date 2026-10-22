@@ -38,6 +38,7 @@ _DEFAULT_WFS_VERSION = "2.0.0"
 _DEFAULT_CRS = "EPSG:4326"
 _DEFAULT_WIDTH = 800
 _DEFAULT_HEIGHT = 600
+_PLACE_NAME_RADIUS_M = 10_000
 _DEFAULT_MAX_FEATURES = 200
 _DEFAULT_UA = "geoagent-dataset/1.0 (map_layer_query; local)"
 _METERS_PER_DEG_LAT = 111_320.0
@@ -416,7 +417,6 @@ def execute_load_layer(
 ) -> Observation:
     """按范围加载地图图层。默认 terrestris 只出 roads/terrain 图片；当前不支持时间轴、历史地图和 WFS。"""
 
-    del purpose
     try:
         inputs = declared_inputs(inputs, "area", "layers", "time_range", "provider")
         _reject_unsupported_provider(inputs.get("provider"))
@@ -436,6 +436,27 @@ def execute_load_layer(
             raise LayerInputError("area 无法解析为范围", "invalid_area")
         time_range = _parse_time_range(inputs.get("time_range"))
         bbox = _bbox_from_area(area)
+        if bbox is None and area.text:
+            point, geocoded_bbox, geocode_applied = _geocode_place_name(
+                area.text,
+                ctx=ctx,
+                purpose=purpose,
+            )
+            if geocoded_bbox is not None:
+                bbox = geocoded_bbox
+                radius_m = None
+            else:
+                radius_m = _PLACE_NAME_RADIUS_M
+                bbox = _bbox_from_center(point, radius_m)
+            applied_area: dict[str, Any] = {"text": area.text}
+            applied_area.update(geocode_applied)
+            area = ParsedArea(
+                text=area.text,
+                center=point,
+                radius_m=radius_m,
+                bbox=bbox,
+                applied=applied_area,
+            )
         provider = _resolve_provider(ctx)
         if bbox is None and _is_ogc_provider(provider):
             raise LayerInputError(
@@ -719,6 +740,82 @@ def _parse_area(raw: Any) -> ParsedArea:
             return ParsedArea(text=text, applied=text)
         return ParsedArea(unsupported=raw)
     return ParsedArea(unsupported=raw)
+
+def _geocode_place_name(
+    query: str,
+    *,
+    ctx: RuntimeContext | None,
+    purpose: str,
+) -> tuple[GeoPoint, BBox | None, dict[str, Any]]:
+    """把 load_layer 的纯地名解析为点；有 bbox 时一并返回。"""
+
+    from tool.geocode.geocode import execute as execute_geocode
+
+    observation = execute_geocode(
+        purpose=purpose or "解析图层范围",
+        inputs={"query": query, "top_k": 1},
+        ctx=ctx,
+    )
+    if not observation.ok:
+        code = observation.error_code or "engine_unavailable"
+        message = observation.error or "内部 geocode 失败"
+        if code in {"missing_input", "invalid_input", "no_result"}:
+            raise LayerInputError(message, code)
+        raise EngineUnavailableError(message, code)
+    result = observation.result if isinstance(observation.result, dict) else {}
+    rows = result.get("candidates") or result.get("results") or []
+    first = rows[0] if isinstance(rows, list) and rows and isinstance(rows[0], dict) else {}
+    point = _point_from_mapping(first)
+    if point is None:
+        raise LayerInputError(f"无法解析地名: {query}", "no_result")
+    applied: dict[str, Any] = {"geocode_query": query}
+    provider = result.get("provider")
+    if provider is None and isinstance(result.get("applied"), dict):
+        provider = result["applied"].get("provider")
+    if provider:
+        applied["geocode_provider"] = provider
+    return point, _bbox_from_geocode_row(first), applied
+
+
+def _point_from_mapping(item: dict[str, Any]) -> GeoPoint | None:
+    lat = _as_float(item.get("latitude", item.get("lat")))
+    lon = _as_float(item.get("longitude", item.get("lon", item.get("lng"))))
+    if lat is None or lon is None:
+        location = item.get("location")
+        if isinstance(location, dict):
+            lat = _as_float(location.get("latitude", location.get("lat")))
+            lon = _as_float(location.get("longitude", location.get("lon", location.get("lng"))))
+        elif isinstance(location, str):
+            parts = [part.strip() for part in location.split(",") if part.strip()]
+            if len(parts) == 2:
+                first = _as_float(parts[0])
+                second = _as_float(parts[1])
+                if first is not None and second is not None:
+                    if abs(first) <= 90.0 and abs(second) > 90.0:
+                        lat, lon = first, second
+                    else:
+                        lat, lon = second, first
+    if lat is None or lon is None:
+        return None
+    if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+        return None
+    return GeoPoint(lat=lat, lon=lon)
+
+
+def _bbox_from_geocode_row(item: dict[str, Any]) -> BBox | None:
+    raw = item.get("bbox")
+    if not isinstance(raw, list) or len(raw) != 4:
+        return None
+    values = [_as_float(part) for part in raw]
+    if any(part is None for part in values):
+        return None
+    west, south, east, north = values
+    if west is None or south is None or east is None or north is None:
+        return None
+    if west >= east or south >= north:
+        return None
+    return BBox(west=west, south=south, east=east, north=north)
+
 
 def _bbox_from_area(area: ParsedArea) -> BBox | None:
     if area.bbox is not None:

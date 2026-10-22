@@ -7,7 +7,7 @@
   "canonical_tool": {
     "canonical": {
       "name": "reverse_image_search",
-      "description": "提交整图或裁剪图进行相似图片检索。",
+      "description": "提交整图或裁剪图进行相似图片检索。只使用 SerpAPI Google Lens，不选择其他搜图引擎。",
       "executor": "reverse_image_search_engine",
       "usage": "仅在需要访问该真实执行器并获得新证据时调用；先选择 operation，再按其 input_schema 填 inputs。缺少执行级参数时按 acquisition_hint 获取，不得编造坐标、文件、会话或前置结果。",
       "operations": [
@@ -16,7 +16,7 @@
           "description": "提交图片并返回相似图片或来源页面",
           "aliases": [],
           "input_schema": {
-            "description": "提交完整图片到反向搜图服务。",
+            "description": "提交完整图片到 SerpAPI Google Lens。不选择其他搜图引擎。",
             "fields": [
               {
                 "name": "image",
@@ -42,25 +42,6 @@
                 "minimum": null,
                 "maximum": null,
                 "example": "input_image_1"
-              },
-              {
-                "name": "engines",
-                "type": "array",
-                "required": false,
-                "requirement_level": "optional",
-                "description": "可选搜索引擎列表。",
-                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 engines；来源没有时不得编造。",
-                "context_sources": [],
-                "context_default": null,
-                "aliases": [
-                  "引擎",
-                  "providers"
-                ],
-                "allowed_values": [],
-                "item_type": "string",
-                "minimum": null,
-                "maximum": null,
-                "example": null
               },
               {
                 "name": "top_k",
@@ -93,7 +74,7 @@
           "description": "提交指定裁剪区域进行局部反向搜索",
           "aliases": [],
           "input_schema": {
-            "description": "提交指定裁剪区域进行局部反向搜图。",
+            "description": "提交指定裁剪区域到 SerpAPI Google Lens。不选择其他搜图引擎。",
             "fields": [
               {
                 "name": "image",
@@ -142,25 +123,6 @@
                 "minimum": null,
                 "maximum": null,
                 "example": "bridge_tower_top"
-              },
-              {
-                "name": "engines",
-                "type": "array",
-                "required": false,
-                "requirement_level": "optional",
-                "description": "可选搜索引擎列表。",
-                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 engines；来源没有时不得编造。",
-                "context_sources": [],
-                "context_default": null,
-                "aliases": [
-                  "引擎",
-                  "providers"
-                ],
-                "allowed_values": [],
-                "item_type": "string",
-                "minimum": null,
-                "maximum": null,
-                "example": null
               },
               {
                 "name": "top_k",
@@ -264,25 +226,6 @@
         "validation_note": "execution 级字段缺失时不得执行；按 how_to_obtain 先获取真实值。"
       },
       {
-        "name": "engines",
-        "type": "array",
-        "required": false,
-        "requirement_level": "optional",
-        "purpose": "可选搜索引擎列表。",
-        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 engines；来源没有时不得编造。",
-        "context_sources": [],
-        "context_default": null,
-        "allowed_values": [],
-        "minimum": null,
-        "maximum": null,
-        "example": null,
-        "aliases": [
-          "引擎",
-          "providers"
-        ],
-        "validation_note": "可选字段缺失不应自动判为不可执行。"
-      },
-      {
         "name": "top_k",
         "type": "integer",
         "required": false,
@@ -352,25 +295,6 @@
         "validation_note": "execution 级字段缺失时不得执行；按 how_to_obtain 先获取真实值。"
       },
       {
-        "name": "engines",
-        "type": "array",
-        "required": false,
-        "requirement_level": "optional",
-        "purpose": "可选搜索引擎列表。",
-        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 engines；来源没有时不得编造。",
-        "context_sources": [],
-        "context_default": null,
-        "allowed_values": [],
-        "minimum": null,
-        "maximum": null,
-        "example": null,
-        "aliases": [
-          "引擎",
-          "providers"
-        ],
-        "validation_note": "可选字段缺失不应自动判为不可执行。"
-      },
-      {
         "name": "top_k",
         "type": "integer",
         "required": false,
@@ -395,28 +319,12 @@
     "architecture": "external_index_with_local_crop",
     "backends": [
       {
-        "name": "Google Cloud Vision Web Detection",
-        "kind": "external_api",
-        "role": "匹配网页、完整/局部匹配图和视觉相似图",
-        "official_url": "https://docs.cloud.google.com/vision/docs/detecting-web",
-        "authentication": "Google Cloud 项目、启用 Vision、ADC/服务账号",
-        "license_note": "调用前核对图片上传、结果留存和训练用途条款。"
-      },
-      {
         "name": "SerpAPI Google Lens",
         "kind": "third_party_api",
         "role": "第三方 Lens 结果接口",
         "official_url": "https://serpapi.com/google-lens-api",
         "authentication": "SerpAPI Key",
-        "license_note": "不是 Google 官方 Lens API；需单独评估稳定性与许可。"
-      },
-      {
-        "name": "Baidu Graph Playwright",
-        "kind": "local_browser",
-        "role": "可选中文以图搜图：本机打开百度识图，抽取相似图来源页与猜测标签",
-        "official_url": "https://graph.baidu.com/",
-        "authentication": "无；需本机 Playwright / Chromium",
-        "license_note": "仅当 engines 含 baidu 时启用；验证码与拒绝处理不得绕过。"
+        "license_note": "不是 Google 官方 Lens API；反向搜图只使用这一路，不提供 Vision 或百度识图。"
       }
     ],
     "execution_flow": [

@@ -8,8 +8,8 @@ def test_v2_catalog_splits_broad_tools_and_maps_every_operation_once() -> None:
     stats = proposal["stats"]
     assert stats["source_tools"] == 17
     assert stats["proposed_tools"] == 31
-    assert stats["operations"] == 57
-    assert stats["parameter_fields"] == 233
+    assert stats["operations"] == 56
+    assert stats["parameter_fields"] == 227
     assert stats["missing_mappings"] == 0
     assert stats["duplicate_mappings"] == 0
 

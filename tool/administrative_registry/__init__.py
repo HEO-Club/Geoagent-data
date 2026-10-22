@@ -1,4 +1,4 @@
-"""administrative_registry：查询行政归属、标准地名和对象名录。"""
+"""administrative_registry：当前不可用；原用途为查询行政归属、标准地名和对象名录。地名行政归属改用 web_search。"""
 
 from __future__ import annotations
 

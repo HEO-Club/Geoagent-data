@@ -55,6 +55,9 @@ class ImageStore(Protocol):
     def register(self, path: Path, image_id: str | None = None) -> str:
         """把已有文件登记为图片 ID；未指定 ID 时自动分配。"""
 
+    def delete(self, image_id: str) -> None:
+        """删除已登记派生图文件并取消登记。"""
+
 
 class FilesystemImageStore:
     """把派生图写到会话目录，ID 形如 ``img_0001``。"""
@@ -104,6 +107,16 @@ class FilesystemImageStore:
             self._paths[image_id] = path
         return image_id
 
+    def delete(self, image_id: str) -> None:
+        with self._lock:
+            path = self._paths.pop(image_id, None)
+        if path is None:
+            return
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            return
+
     def _next_id(self) -> str:
         while True:
             self._counter += 1
@@ -136,7 +149,15 @@ def resolve_image_ref(
         raise ImageResolveError("image 不能为空", "missing_input")
     if token == CURRENT_IMAGE_REF:
         current = ctx.current_image if ctx is not None else None
+        images = list(ctx.current_images) if ctx is not None else []
+        if not current and len(images) == 1:
+            current = images[0]
         if not current:
+            if len(images) > 1:
+                raise ImageResolveError(
+                    "有多张当前图片，请指定其中一张",
+                    "image_not_found",
+                )
             raise ImageResolveError(
                 "未设置 $current_image",
                 "image_not_found",

@@ -343,7 +343,12 @@ def _retrieve_scene(
     label: Any,
     label_key: str,
 ) -> CapturedScene | None:
-    observation = execute_retrieve(purpose="compare_fetch", inputs=payload, ctx=ctx)
+    observation = execute_retrieve(
+        purpose="compare_fetch",
+        inputs=payload,
+        ctx=ctx,
+        geocode_place_names=False,
+    )
     if not observation.ok:
         raise CompareInputError(
             observation.error or "影像检索失败",

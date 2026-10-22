@@ -11,7 +11,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from io import BytesIO
 from typing import Any, Protocol, runtime_checkable
 
@@ -50,6 +50,9 @@ _DEFAULT_SEARCH_RADIUS_M = 2000
 _METERS_PER_DEG_LAT = 111_320.0
 _YEAR_MIN = 1940
 _YEAR_MAX = 2100
+_ARCHIVE_START = date(1940, 1, 1)
+_ARCHIVE_LAG_DAYS = 5
+_HTTP_ATTEMPTS = 3
 _HOURLY_SPAN_DAYS = 14
 _MAX_SERIES_POINTS = 366
 _GIBS_CLOUD_LAYER = "MODIS_Terra_CorrectedReflectance_TrueColor"
@@ -515,6 +518,7 @@ def _execute_query(
         layer_names = _layer_names(operation, specs) if want_layers else ()
         series_block: dict[str, Any] | None = None
         layers: list[dict[str, Any]] = []
+        layer_errors: list[dict[str, str]] = []
         artifacts: dict[str, Any] = {}
         if want_series:
             om_specs = [spec for spec in specs if spec.om_daily or spec.om_hourly]
@@ -529,15 +533,21 @@ def _execute_query(
             image_ids: list[str] = []
             image_paths: dict[str, str] = {}
             for layer_name in layer_names:
-                png = layer_provider.fetch_map(
-                    LayerFetchRequest(
-                        bbox=location.bbox,
-                        layer=layer_name,
-                        time=captured_on,
-                        width=_preview_width(),
-                        height=_preview_height(),
+                try:
+                    png = layer_provider.fetch_map(
+                        LayerFetchRequest(
+                            bbox=location.bbox,
+                            layer=layer_name,
+                            time=captured_on,
+                            width=_preview_width(),
+                            height=_preview_height(),
+                        )
                     )
-                )
+                except EngineUnavailableError as exc:
+                    if series_block is None:
+                        raise
+                    layer_errors.append({"layer": layer_name, "error": str(exc)})
+                    continue
                 image_id, image_path = _store_png(png, source_id=layer_name, ctx=ctx)
                 row = {
                     "provider": _PROVIDER_GIBS,
@@ -579,6 +589,8 @@ def _execute_query(
             result["series"] = series_block
         if layers:
             result["layers"] = layers
+        if layer_errors:
+            result["layer_errors"] = layer_errors
         if ctx is not None:
             ctx.previous_tool_result = result
             ctx.active_session = result_id
@@ -824,7 +836,24 @@ def _require_time_window(raw: Any) -> TimeWindow:
             "invalid_time_range",
         )
     del unsupported
+    _ensure_archive_window(window)
     return window
+
+
+def _ensure_archive_window(window: TimeWindow) -> None:
+    """档案只有 1940 起、且滞后数日的已发生日期；超出范围时不请求上游。"""
+
+    latest = date.today() - timedelta(days=_ARCHIVE_LAG_DAYS)
+    if window.start < _ARCHIVE_START or window.end < _ARCHIVE_START:
+        raise WeatherInputError(
+            f"气象档案从 {_ARCHIVE_START.isoformat()} 开始，不能查询更早的日期",
+            "invalid_time_range",
+        )
+    if window.start > latest or window.end > latest:
+        raise WeatherInputError(
+            f"气象档案最晚到 {latest.isoformat()}，不能查询更晚或未来的日期",
+            "invalid_time_range",
+        )
 
 def _parse_time_window(raw: Any) -> tuple[TimeWindow | None, Any | None]:
     if raw is None or raw == "":
@@ -1513,20 +1542,27 @@ def _http_bytes(
     timeout_sec: float,
     error_prefix: str,
 ) -> bytes:
-    request = urllib.request.Request(url, method="GET")
-    for key, value in headers.items():
-        request.add_header(key, value)
-    try:
-        with urllib.request.urlopen(request, timeout=timeout_sec) as response:
-            return bytes(response.read())
-    except urllib.error.HTTPError as exc:
-        detail = exc.read()[:200] if exc.fp else b""
-        text = detail.decode("utf-8", errors="replace")
-        raise EngineUnavailableError(f"{error_prefix} HTTP {exc.code}: {text}") from exc
-    except urllib.error.URLError as exc:
-        raise EngineUnavailableError(f"{error_prefix} 网络失败: {exc.reason}") from exc
-    except (TimeoutError, OSError) as exc:
-        raise EngineUnavailableError(f"{error_prefix} 调用失败: {exc}") from exc
+    last_transport: Exception | None = None
+    for attempt in range(_HTTP_ATTEMPTS):
+        request = urllib.request.Request(url, method="GET")
+        for key, value in headers.items():
+            request.add_header(key, value)
+        try:
+            with urllib.request.urlopen(request, timeout=timeout_sec) as response:
+                return bytes(response.read())
+        except urllib.error.HTTPError as exc:
+            detail = exc.read()[:200] if exc.fp else b""
+            text = detail.decode("utf-8", errors="replace")
+            raise EngineUnavailableError(f"{error_prefix} HTTP {exc.code}: {text}") from exc
+        except urllib.error.URLError as exc:
+            last_transport = exc
+            if attempt == _HTTP_ATTEMPTS - 1:
+                raise EngineUnavailableError(f"{error_prefix} 网络失败: {exc.reason}") from exc
+        except (TimeoutError, OSError) as exc:
+            last_transport = exc
+            if attempt == _HTTP_ATTEMPTS - 1:
+                raise EngineUnavailableError(f"{error_prefix} 调用失败: {exc}") from exc
+    raise EngineUnavailableError(f"{error_prefix} 网络失败: {last_transport}")
 
 def _append_query(endpoint: str, query: str) -> str:
     separator = "&" if urllib.parse.urlparse(endpoint).query else "?"

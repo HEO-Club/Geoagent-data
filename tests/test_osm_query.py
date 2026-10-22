@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import importlib
 from typing import Any
-from urllib.parse import parse_qs
+
+import urllib.error
+from urllib.parse import parse_qs, urlparse
+
+import pytest
 
 from tool import execute
 from tool.contract import Observation, RuntimeContext
@@ -247,6 +252,20 @@ class FakeOsmQueryProvider:
 
     def query(self, request: OsmQueryRequest) -> dict[str, Any]:
         self.calls.append(request)
+        if '["boundary"="administrative"]' in request.ql:
+            return {
+                "elements": [
+                    {
+                        "type": "area",
+                        "id": 3600123456,
+                        "tags": {
+                            "name": "郑州市",
+                            "boundary": "administrative",
+                            "admin_level": "5",
+                        },
+                    }
+                ]
+            }
         return self.payload
 
 
@@ -396,8 +415,15 @@ def test_structured_area_and_tags_generate_ql_without_agent_code() -> None:
     assert observation.ok is True
     assert observation.result is not None
     assert provider.calls
-    ql = provider.calls[0].ql
-    assert 'area["name"="郑州市"]->.searchArea' in ql
+    ql = provider.calls[-1].ql
+    lookup = provider.calls[0].ql
+    assert '["name"="郑州市"]' in lookup
+    assert '["alt_name"="郑州市"]' in lookup
+    assert '["official_name"="郑州市"]' in lookup
+    assert '["name:zh"="郑州市"]' in lookup
+    assert "area(3600123456)->.searchArea" in ql
+    assert observation.result["applied"]["area"]["query"] == "郑州市"
+    assert observation.result["applied"]["area"]["name"] == "郑州市"
     assert 'nwr["bridge"="yes"](area.searchArea)' in ql
     assert "out geom 200" in ql
     assert "{{" not in ql
@@ -412,7 +438,7 @@ def test_bbox_uses_overpass_south_west_north_east() -> None:
         provider=provider,
     )
     assert observation.ok is True
-    ql = provider.calls[0].ql
+    ql = provider.calls[-1].ql
     assert "(34.7,113.5,34.9,113.8)" in ql
     assert observation.result["applied"]["bbox"]["west"] == 113.5
     assert observation.result["applied"]["bbox"]["crs"] == "wgs84"
@@ -430,7 +456,7 @@ def test_center_radius_writes_around_filter() -> None:
         provider=provider,
     )
     assert observation.ok is True
-    ql = provider.calls[0].ql
+    ql = provider.calls[-1].ql
     assert "(around:1000,34.8,113.65)" in ql
 
 
@@ -441,7 +467,7 @@ def test_feature_types_bridge_maps_to_bridge_yes() -> None:
         provider=provider,
     )
     assert observation.ok is True
-    ql = provider.calls[0].ql
+    ql = provider.calls[-1].ql
     assert '["bridge"="yes"]' in ql
     assert observation.result["applied"]["feature_types"] == ["桥梁"]
 
@@ -462,7 +488,7 @@ def test_overpass_ql_is_executed_and_returned() -> None:
         provider=provider,
     )
     assert observation.ok is True
-    executed = provider.calls[0].ql
+    executed = provider.calls[-1].ql
     assert 'nwr["bridge"="yes"](34.7,113.5,34.9,113.8)' in executed
     assert "[out:json]" in executed
     assert observation.result["applied"]["overpass_ql"] == executed
@@ -523,7 +549,7 @@ def test_count_uses_out_count() -> None:
     observation = _count(provider=provider)
     assert observation.ok is True
     assert observation.result is not None
-    ql = provider.calls[0].ql
+    ql = provider.calls[-1].ql
     assert "out count;" in ql
     assert observation.result["count"] == 3
     assert observation.result["data_timestamp"] == "2026-09-10T00:00:00Z"
@@ -599,8 +625,25 @@ def test_overpass_http_posts_ql(monkeypatch: Any) -> None:
         body = request.data.decode("utf-8") if isinstance(request.data, bytes) else ""
         params = parse_qs(body)
         assert "data" in params
-        assert '["bridge"="yes"]' in params["data"][0]
         assert request.get_header("User-agent") == "geoagent-dataset/1.0 (osm_query; test)"
+        ql = params["data"][0]
+        if '["boundary"="administrative"]' in ql:
+            return _FakeHttpResponse(
+                {
+                    "elements": [
+                        {
+                            "type": "area",
+                            "id": 3600123456,
+                            "tags": {
+                                "name": "郑州市",
+                                "boundary": "administrative",
+                                "admin_level": "5",
+                            },
+                        }
+                    ]
+                }
+            )
+        assert '["bridge"="yes"]' in ql
         return _FakeHttpResponse(_sample_elements())
 
     monkeypatch.setenv("ALLOW_REAL_TOOL_API", "true")
@@ -621,6 +664,100 @@ def test_overpass_http_posts_ql(monkeypatch: Any) -> None:
     assert observation.result["applied"]["provider"] == "overpass"
     assert observation.result["elements"][0]["osm_id"] == 123
     assert any("WGS84" in item for item in observation.result["assumptions"])
+
+
+def _public_overpass_provider(**kwargs: Any) -> osm_mod.OverpassProvider:
+    settings: dict[str, Any] = {"retry_attempts": 1}
+    settings.update(kwargs)
+    return osm_mod.OverpassProvider(
+        endpoints=osm_mod._DEFAULT_ENDPOINTS,
+        user_agent="geoagent-dataset/1.0 (osm_query; test)",
+        timeout_sec=25,
+        **settings,
+    )
+
+
+def test_overpass_asks_next_public_server_after_502(monkeypatch: Any) -> None:
+    hosts: list[str] = []
+
+    def fake_urlopen(request: Any, timeout: float | None = None) -> _FakeHttpResponse:
+        del timeout
+        host = urlparse(request.full_url).hostname or ""
+        hosts.append(host)
+        if host == "overpass-api.de":
+            raise urllib.error.HTTPError(request.full_url, 502, "busy", hdrs=None, fp=None)
+        return _FakeHttpResponse(_sample_elements())
+
+    monkeypatch.setattr(osm_mod.urllib.request, "urlopen", fake_urlopen)
+    payload = _public_overpass_provider().query(
+        OsmQueryRequest(ql='[out:json];way["bridge"="yes"];out geom;', timeout_sec=25, operation="query")
+    )
+    assert hosts == ["overpass-api.de", "overpass.private.coffee"]
+    assert payload["elements"][0]["id"] == 123
+
+
+def test_overpass_retries_after_every_server_is_busy(monkeypatch: Any) -> None:
+    hosts: list[str] = []
+    delays: list[float] = []
+
+    def fake_urlopen(request: Any, timeout: float | None = None) -> _FakeHttpResponse:
+        del timeout
+        host = urlparse(request.full_url).hostname or ""
+        hosts.append(host)
+        if len(hosts) >= 8 and host == "overpass.private.coffee":
+            return _FakeHttpResponse(_sample_elements())
+        raise urllib.error.HTTPError(request.full_url, 502, "busy", hdrs=None, fp=None)
+
+    monkeypatch.setattr(osm_mod.urllib.request, "urlopen", fake_urlopen)
+    payload = _public_overpass_provider(retry_attempts=3, sleep=delays.append).query(
+        OsmQueryRequest(ql="busy", timeout_sec=25, operation="query")
+    )
+    assert hosts == [
+        "overpass-api.de",
+        "overpass.private.coffee",
+        "maps.mail.ru",
+        "overpass-api.de",
+        "overpass.private.coffee",
+        "maps.mail.ru",
+        "overpass-api.de",
+        "overpass.private.coffee",
+    ]
+    assert delays == [15.0, 30.0]
+    assert payload["elements"][0]["id"] == 123
+
+
+def test_overpass_stops_on_query_syntax_error(monkeypatch: Any) -> None:
+    hosts: list[str] = []
+
+    def fake_urlopen(request: Any, timeout: float | None = None) -> _FakeHttpResponse:
+        del timeout
+        host = urlparse(request.full_url).hostname or ""
+        hosts.append(host)
+        raise urllib.error.HTTPError(request.full_url, 400, "bad", hdrs=None, fp=None)
+
+    monkeypatch.setattr(osm_mod.urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(osm_mod.EngineUnavailableError, match="HTTP 400"):
+        _public_overpass_provider(retry_attempts=3, sleep=lambda _delay: None).query(
+            OsmQueryRequest(ql="bad", timeout_sec=25, operation="query")
+        )
+    assert hosts == ["overpass-api.de"]
+
+
+def test_overpass_reports_all_three_servers_when_each_is_busy(monkeypatch: Any) -> None:
+    hosts: list[str] = []
+
+    def fake_urlopen(request: Any, timeout: float | None = None) -> _FakeHttpResponse:
+        del timeout
+        host = urlparse(request.full_url).hostname or ""
+        hosts.append(host)
+        raise urllib.error.HTTPError(request.full_url, 502, "busy", hdrs=None, fp=None)
+
+    monkeypatch.setattr(osm_mod.urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(osm_mod.EngineUnavailableError, match="maps.mail.ru"):
+        _public_overpass_provider().query(
+            OsmQueryRequest(ql="busy", timeout_sec=25, operation="query")
+        )
+    assert hosts == ["overpass-api.de", "overpass.private.coffee", "maps.mail.ru"]
 
 
 def test_custom_overpass_endpoint_requires_explicit_opt_in(monkeypatch: Any) -> None:
@@ -649,15 +786,15 @@ def test_active_area_context_default() -> None:
         ctx=RuntimeContext(active_area="郑州市", extras={}),
     )
     assert observation.ok is True
-    ql = provider.calls[0].ql
-    assert 'area["name"="郑州市"]' in ql
+    ql = provider.calls[-1].ql
+    assert "area(3600123456)->.searchArea" in ql
 
 
 def test_return_geometry_false_uses_out_tags() -> None:
     provider = FakeOsmQueryProvider()
     observation = _query(inputs={"return_geometry": False}, provider=provider)
     assert observation.ok is True
-    assert "out tags 200" in provider.calls[0].ql
+    assert "out tags 200" in provider.calls[-1].ql
     assert "geometry" not in observation.result["elements"][0]
 
 
@@ -672,8 +809,8 @@ def test_overpass_ql_caps_timeout(monkeypatch: Any) -> None:
         provider=provider,
     )
     assert observation.ok is True
-    assert "[timeout:25]" in provider.calls[0].ql
-    assert "[timeout:90]" not in provider.calls[0].ql
+    assert "[timeout:25]" in provider.calls[-1].ql
+    assert "[timeout:90]" not in provider.calls[-1].ql
 
 
 def test_structured_unused_when_overpass_ql_present() -> None:
@@ -690,4 +827,4 @@ def test_structured_unused_when_overpass_ql_present() -> None:
     unused = observation.result["applied"]["unused"]
     assert unused["area"] == "郑州市"
     assert unused["tags"] == {"bridge": "yes"}
-    assert '["railway"]' in provider.calls[0].ql
+    assert '["railway"]' in provider.calls[-1].ql

@@ -15,6 +15,11 @@ from tool.image_measure._measure import _MEASURE_FIELDS
 from tool.infrastructure_registry._registry import _INPUT_FIELDS as _INFRA_FIELDS
 from tool.llm_query._query import _CONSULT_FIELDS, _ENUMERATE_FIELDS
 from tool.osm_query._query import _COUNT_INPUT_FIELDS, _QUERY_INPUT_FIELDS
+from tool.osm_query._relation import (
+    _CROSSINGS_INPUT_FIELDS,
+    _INTERSECT_INPUT_FIELDS,
+    _NEAR_INPUT_FIELDS,
+)
 from tool.route_query._route import _ROUTE_FIELDS
 from tool.weather_archive_query._archive import (
     _QUERY_INPUT_FIELDS as _WEATHER_QUERY_FIELDS,
@@ -40,7 +45,7 @@ def _catalog_tools() -> list[tuple[str, list[str]]]:
 def test_tool_package_matches_catalog_layout() -> None:
     catalog = _catalog_tools()
     assert len(catalog) == 31
-    assert sum(len(operations) for _, operations in catalog) == 57
+    assert sum(len(operations) for _, operations in catalog) == 59
     assert set(TOOLS) == {name for name, _ in catalog}
     for tool_name, operations in catalog:
         package_dir = TOOL_ROOT / tool_name
@@ -76,6 +81,9 @@ IMPLEMENTED_OPERATIONS = {
     ("map_layer_query", "load_layer"),
     ("osm_query", "query"),
     ("osm_query", "count"),
+    ("osm_query", "near"),
+    ("osm_query", "crossings"),
+    ("osm_query", "intersect"),
     ("osm_result_process", "filter"),
     ("osm_result_process", "export"),
     ("streetview_query", "open"),
@@ -84,7 +92,6 @@ IMPLEMENTED_OPERATIONS = {
     ("streetview_query", "capture"),
     ("satellite_imagery_query", "retrieve"),
     ("satellite_imagery_query", "change_time"),
-    ("satellite_imagery_query", "oblique_view"),
     ("satellite_imagery_compare", "compare_time"),
     ("satellite_imagery_compare", "compare_candidates"),
     ("distance_bearing_calculator", "distance"),
@@ -146,8 +153,8 @@ def _executor_input_fields() -> dict[tuple[str, str], set[str]]:
         ("image_compare", "compare"): {"images", "method", "region"},
         ("ocr_read", "recognize"): {"image", "region", "languages", "text_kind"},
         ("ocr_read", "decode"): {"image", "region", "code_types"},
-        ("reverse_image_search", "search"): {"image", "engines", "top_k"},
-        ("reverse_image_search", "search_crop"): {"image", "region", "engines", "top_k"},
+        ("reverse_image_search", "search"): {"image", "top_k"},
+        ("reverse_image_search", "search_crop"): {"image", "region", "top_k"},
         ("media_metadata_read", "exif"): {"file", "fields"},
         ("media_metadata_read", "file"): {"file", "fields"},
         ("web_search", "keyword_search"): {"query", "domains", "language", "time_range", "top_k"},
@@ -182,6 +189,9 @@ def _executor_input_fields() -> dict[tuple[str, str], set[str]]:
         ("map_layer_query", "load_layer"): {"area", "layers", "time_range", "provider"},
         ("osm_query", "query"): set(_QUERY_INPUT_FIELDS),
         ("osm_query", "count"): set(_COUNT_INPUT_FIELDS),
+        ("osm_query", "near"): set(_NEAR_INPUT_FIELDS),
+        ("osm_query", "crossings"): set(_CROSSINGS_INPUT_FIELDS),
+        ("osm_query", "intersect"): set(_INTERSECT_INPUT_FIELDS),
         ("osm_result_process", "filter"): {"source_result", "filters", "spatial_filter"},
         ("osm_result_process", "export"): {"source_result", "format", "include_geometry"},
         ("streetview_query", "open"): {"area", "coordinates", "provider"},
@@ -201,7 +211,6 @@ def _executor_input_fields() -> dict[tuple[str, str], set[str]]:
             "time_range",
             "source_result",
         },
-        ("satellite_imagery_query", "oblique_view"): {"area", "heading", "tilt", "time_range"},
         ("satellite_imagery_compare", "compare_time"): {"area", "times", "comparison"},
         ("satellite_imagery_compare", "compare_candidates"): {
             "candidates",

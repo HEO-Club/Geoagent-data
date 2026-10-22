@@ -44,9 +44,16 @@ def test_mcp_tool_table_matches_non_terminal_catalog() -> None:
     specs = load_mcp_tool_specs(CATALOG)
     names = [spec.name for spec in specs]
     assert CATALOG == DEFAULT_CATALOG_PATH
-    assert len(specs) == 56
+    assert len(specs) == 53
     assert "final_answer__submit" not in names
+    assert "satellite_imagery_query__oblique_view" not in names
+    assert "route_query__route" not in names
+    assert "infrastructure_registry__construction" not in names
+    assert "infrastructure_registry__permit" not in names
+    assert "administrative_registry__administrative" not in names
+    assert "administrative_registry__directory" not in names
     assert "web_search__keyword_search" in names
+    assert "osm_query__near" in names
     keyword = next(spec for spec in specs if spec.name == "web_search__keyword_search")
     properties = keyword.input_schema["properties"]
     assert "purpose" in properties

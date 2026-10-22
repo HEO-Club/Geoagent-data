@@ -455,6 +455,8 @@ def test_opensky_http_query_shape(monkeypatch: Any) -> None:
         url = str(request.full_url)
         calls.append(url)
         parsed = urlparse(url)
+        if parsed.path.endswith("/protocol/openid-connect/token"):
+            return _FakeHttpResponse(b'{"access_token":"test-token","expires_in":3600}')
         if parsed.path.endswith("/flights/departure") or parsed.path.endswith("/flights/arrival"):
             return _FakeHttpResponse(b"[]")
         return _FakeHttpResponse(b"{}")
@@ -527,3 +529,60 @@ def test_authenticated_state_lookback_one_hour(monkeypatch: Any) -> None:
     assert ok.ok is True
     assert provider.state_calls
     assert provider.state_calls[-1][1] is not None
+
+
+def test_transport_drop_is_retried_twice(monkeypatch: Any) -> None:
+    attempts = {"count": 0}
+
+    class _FakeHttpResponse:
+        def read(self) -> bytes:
+            return b"{}"
+
+        def __enter__(self) -> _FakeHttpResponse:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    def fake_urlopen(request: Any, timeout: float | None = None) -> _FakeHttpResponse:
+        del request, timeout
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise query_mod.urllib.error.URLError(OSError("UNEXPECTED_EOF_WHILE_READING"))
+        return _FakeHttpResponse()
+
+    monkeypatch.setattr(query_mod.urllib.request, "urlopen", fake_urlopen)
+    raw = query_mod._http_bytes(
+        "https://opensky-network.org/api/states/all",
+        headers={},
+        timeout_sec=1,
+        error_prefix="OpenSky",
+    )
+    assert attempts["count"] == 3
+    assert raw == b"{}"
+
+
+def test_http_error_is_not_retried(monkeypatch: Any) -> None:
+    attempts = {"count": 0}
+
+    def fake_urlopen(request: Any, timeout: float | None = None) -> Any:
+        del timeout
+        attempts["count"] += 1
+        raise query_mod.urllib.error.HTTPError(
+            str(request.full_url),
+            400,
+            "Bad Request",
+            hdrs=None,
+            fp=BytesIO(b"bad"),
+        )
+
+    monkeypatch.setattr(query_mod.urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(query_mod.EngineUnavailableError) as caught:
+        query_mod._http_bytes(
+            "https://opensky-network.org/api/states/all",
+            headers={},
+            timeout_sec=1,
+            error_prefix="OpenSky",
+        )
+    assert attempts["count"] == 1
+    assert caught.value.error_code != "network_error"

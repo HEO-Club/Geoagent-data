@@ -22,6 +22,7 @@ from tool._http_safety import (
 from tool.contract import Observation, RuntimeContext
 
 _DEFAULT_TIMEOUT_SEC = 30.0
+_HTTP_ATTEMPTS = 3
 _DEFAULT_MAX_BYTES = 2 * 1024 * 1024
 _DEFAULT_MAX_REDIRECTS = 5
 _DEFAULT_USER_AGENT = "geoagent-dataset/1.0 (web_page_read; local)"
@@ -524,38 +525,47 @@ def _http_get(
     max_redirects: int,
     user_agent: str,
 ) -> tuple[int, str, str, bytes | None]:
+    """读取网页。连接中断或超时再试两次；HTTP 状态错误立即失败。"""
+
     try:
         require_public_http_url(url)
     except UnsafeHttpUrlError as exc:
         raise FetchError(str(exc), "unsafe_url") from exc
-    request = urllib.request.Request(url, method="GET")
-    request.add_header("Accept", "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8")
-    request.add_header("User-Agent", user_agent)
-    opener = urllib.request.build_opener(PublicHttpRedirectHandler(max_redirects))
-    try:
-        with opener.open(request, timeout=timeout_sec) as response:
-            status = int(getattr(response, "status", 200) or 200)
-            final_url = str(response.geturl() or url)
-            require_public_http_url(final_url)
-            content_type = str(response.headers.get("Content-Type") or "")
-            body = _read_limited(response, max_bytes)
-    except urllib.error.HTTPError as exc:
-        status = int(exc.code)
-        final_url = str(exc.geturl() or url)
-        content_type = ""
-        if exc.headers is not None:
-            content_type = str(exc.headers.get("Content-Type") or "")
-        if status in {401, 402, 403, 407}:
-            return status, final_url, content_type, b""
-        detail = exc.read().decode("utf-8", errors="replace") if exc.fp else str(exc)
-        raise FetchError(f"网页 HTTP {status}: {detail[:200]}") from exc
-    except urllib.error.URLError as exc:
-        raise FetchError(f"网页网络失败: {exc.reason}") from exc
-    except UnsafeHttpUrlError as exc:
-        raise FetchError(str(exc), "unsafe_url") from exc
-    except (TimeoutError, OSError) as exc:
-        raise FetchError(f"网页调用失败: {exc}") from exc
-    return status, final_url, content_type, body
+    last_transport: BaseException | None = None
+    for attempt in range(_HTTP_ATTEMPTS):
+        request = urllib.request.Request(url, method="GET")
+        request.add_header("Accept", "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8")
+        request.add_header("User-Agent", user_agent)
+        opener = urllib.request.build_opener(PublicHttpRedirectHandler(max_redirects))
+        try:
+            with opener.open(request, timeout=timeout_sec) as response:
+                status = int(getattr(response, "status", 200) or 200)
+                final_url = str(response.geturl() or url)
+                require_public_http_url(final_url)
+                content_type = str(response.headers.get("Content-Type") or "")
+                body = _read_limited(response, max_bytes)
+                return status, final_url, content_type, body
+        except urllib.error.HTTPError as exc:
+            status = int(exc.code)
+            final_url = str(exc.geturl() or url)
+            content_type = ""
+            if exc.headers is not None:
+                content_type = str(exc.headers.get("Content-Type") or "")
+            if status in {401, 402, 403, 407}:
+                return status, final_url, content_type, b""
+            detail = exc.read().decode("utf-8", errors="replace") if exc.fp else str(exc)
+            raise FetchError(f"网页 HTTP {status}: {detail[:200]}") from exc
+        except urllib.error.URLError as exc:
+            last_transport = exc
+            if attempt == _HTTP_ATTEMPTS - 1:
+                raise FetchError(f"网页网络失败: {exc.reason}") from exc
+        except UnsafeHttpUrlError as exc:
+            raise FetchError(str(exc), "unsafe_url") from exc
+        except (TimeoutError, OSError) as exc:
+            last_transport = exc
+            if attempt == _HTTP_ATTEMPTS - 1:
+                raise FetchError(f"网页调用失败: {exc}") from exc
+    raise FetchError(f"网页网络失败: {last_transport}")
 
 def _read_limited(response: Any, max_bytes: int) -> bytes | None:
     chunks: list[bytes] = []

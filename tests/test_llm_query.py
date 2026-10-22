@@ -6,8 +6,11 @@ import json
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from tool import execute
 from tool.contract import Observation, RuntimeContext
+from tool.llm_query import _query as query_mod
 from tool.llm_query._query import (
     LlmQueryRequest,
     LlmQueryResponse,
@@ -413,12 +416,18 @@ def test_openai_compatible_client_is_relay(monkeypatch: Any) -> None:
     class _Completions:
         def create(self, **kwargs: Any) -> Any:
             captured.update(kwargs)
-            return SimpleNamespace(
-                model="qwen-relay-alias",
-                choices=[
-                    SimpleNamespace(message=SimpleNamespace(content="可能是铁路桥"))
-                ],
-            )
+
+            def chunks() -> Any:
+                yield SimpleNamespace(
+                    model="qwen-relay-alias",
+                    choices=[SimpleNamespace(delta=SimpleNamespace(content="可能是"))],
+                )
+                yield SimpleNamespace(
+                    model="qwen-relay-alias",
+                    choices=[SimpleNamespace(delta=SimpleNamespace(content="铁路桥"))],
+                )
+
+            return chunks()
 
     class _FakeOpenAI:
         def __init__(self, **kwargs: Any) -> None:
@@ -446,8 +455,130 @@ def test_openai_compatible_client_is_relay(monkeypatch: Any) -> None:
             user="这座桥可能是什么？",
         )
     )
+    assert captured["stream"] is True
+    assert "extra_body" not in captured
     assert captured["model"] == "qwen-flash"
     assert response.provider == "openai_compatible"
     assert response.endpoint_kind == "relay"
     assert response.response_model == "qwen-relay-alias"
     assert response.text == "可能是铁路桥"
+
+
+def test_kimi_stream_sends_reasoning_effort(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+
+    class _Completions:
+        def create(self, **kwargs: Any) -> Any:
+            captured.update(kwargs)
+
+            def chunks() -> Any:
+                yield SimpleNamespace(
+                    model="kimi-k3",
+                    choices=[SimpleNamespace(delta=SimpleNamespace(content="津湾广场"))],
+                )
+
+            return chunks()
+
+    class _FakeOpenAI:
+        def __init__(self, **kwargs: Any) -> None:
+            del kwargs
+            self.chat = SimpleNamespace(completions=_Completions())
+
+    import openai
+
+    monkeypatch.setattr(openai, "OpenAI", _FakeOpenAI)
+    from tool.llm_query._query import OpenAICompatibleClient
+
+    client = OpenAICompatibleClient(
+        api_key="sk-test",
+        base_url="https://api.moonshot.cn/v1",
+        default_model="kimi-k3",
+        timeout_sec=30.0,
+        max_output_tokens=256,
+        reasoning_effort="low",
+    )
+    response = client.complete(
+        LlmQueryRequest(
+            operation="consult",
+            prompt="这座楼可能是什么？",
+            model="kimi-k3",
+            system="",
+            user="这座楼可能是什么？",
+        )
+    )
+    assert captured["extra_body"] == {"reasoning_effort": "low"}
+    assert response.text == "津湾广场"
+
+
+def test_openai_stream_reports_reasoning_without_answer(monkeypatch: Any) -> None:
+    class _Completions:
+        def create(self, **kwargs: Any) -> Any:
+            del kwargs
+
+            def chunks() -> Any:
+                yield SimpleNamespace(
+                    model="kimi-k3",
+                    choices=[SimpleNamespace(delta=SimpleNamespace(content="", reasoning_content="先想"))],
+                )
+
+            return chunks()
+
+    class _FakeOpenAI:
+        def __init__(self, **kwargs: Any) -> None:
+            del kwargs
+            self.chat = SimpleNamespace(completions=_Completions())
+
+    import openai
+
+    monkeypatch.setattr(openai, "OpenAI", _FakeOpenAI)
+    from tool.llm_query._query import EngineUnavailableError, OpenAICompatibleClient
+
+    client = OpenAICompatibleClient(
+        api_key="sk-test",
+        base_url="https://api.moonshot.cn/v1",
+        default_model="kimi-k3",
+        timeout_sec=30.0,
+        max_output_tokens=256,
+    )
+    with pytest.raises(EngineUnavailableError, match="没有正文"):
+        client.complete(
+            LlmQueryRequest(
+                operation="consult",
+                prompt="问",
+                model="kimi-k3",
+                system="",
+                user="问",
+            )
+        )
+
+
+def test_provider_selects_its_own_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ALLOW_REAL_TOOL_API", "true")
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "dash-key")
+    monkeypatch.setenv("MOONSHOT_API_KEY", "moon-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    monkeypatch.setenv("LLM_BASE_URL", "https://api.example.test/v1")
+    monkeypatch.setenv("LLM_MODEL", "example-model")
+
+    monkeypatch.setenv("LLM_PROVIDER", "moonshot")
+    moonshot = query_mod._resolve_client(None)
+    assert moonshot._api_key == "moon-key"
+
+    monkeypatch.setenv("LLM_PROVIDER", "qwen")
+    qwen = query_mod._resolve_client(None)
+    assert qwen._api_key == "dash-key"
+
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
+    openai = query_mod._resolve_client(None)
+    assert openai._api_key == "openai-key"
+
+
+def test_moonshot_without_its_key_does_not_use_dashscope(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ALLOW_REAL_TOOL_API", "true")
+    monkeypatch.setenv("LLM_PROVIDER", "moonshot")
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "dash-key")
+    monkeypatch.setenv("MOONSHOT_API_KEY", "")
+    monkeypatch.setenv("LLM_BASE_URL", "https://api.example.test/v1")
+    monkeypatch.setenv("LLM_MODEL", "example-model")
+    with pytest.raises(query_mod.EngineUnavailableError, match="MOONSHOT_API_KEY"):
+        query_mod._resolve_client(None)

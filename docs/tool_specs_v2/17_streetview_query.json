@@ -13,7 +13,7 @@
       "operations": [
         {
           "name": "open",
-          "description": "打开指定地点或候选点的街景",
+          "description": "打开指定地点或候选点的街景；纯地名由本工具内部先 geocode，没有坐标再按名称查 POI",
           "aliases": [
             "retrieve",
             "query"
@@ -797,20 +797,28 @@
     "architecture": "licensed_imagery_session",
     "backends": [
       {
+        "name": "Baidu Panorama page endpoints",
+        "kind": "page_endpoint",
+        "role": "国内当前点全景、沿路相邻点、按朝向透视截图",
+        "official_url": "https://mapsv0.bdimg.com/",
+        "authentication": "无",
+        "license_note": "网页内部地址，接口改版即失效；测试取图。"
+      },
+      {
+        "name": "Google Street View page endpoints",
+        "kind": "page_endpoint",
+        "role": "国外当前点全景、邻近点、按朝向透视截图",
+        "official_url": "https://maps.googleapis.com/$rpc/google.internal.maps.mapsjs.v1.MapsJsInternalService/SingleImageSearch",
+        "authentication": "无",
+        "license_note": "网页内部地址，接口改版即失效；测试取图。"
+      },
+      {
         "name": "Mapillary API",
         "kind": "external_api",
-        "role": "众包街景、序列、位置与拍摄时间",
+        "role": "显式指定时的众包街景",
         "official_url": "https://help.mapillary.com/hc/en-us/articles/360010234680-Accessing-imagery-and-data-through-the-Mapillary-API",
         "authentication": "Mapillary access token",
         "license_note": "逐项确认图像下载、保留和训练使用范围。"
-      },
-      {
-        "name": "Google Street View",
-        "kind": "external_api_restricted",
-        "role": "全景打开、邻接和视角截图",
-        "official_url": "https://developers.google.com/maps/documentation/streetview/request-streetview",
-        "authentication": "Google Maps Platform Key",
-        "license_note": "通用条款限制批量提取、缓存及用于训练/测试模型；无额外授权不作为默认 SFT 数据源。"
       }
     ],
     "execution_flow": [

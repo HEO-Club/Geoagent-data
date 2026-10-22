@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
@@ -37,6 +39,10 @@ _KIND_BBOX = "bbox"
 _KIND_AROUND_POINT = "around_point"
 _KIND_AROUND_NAME = "around_name"
 _KIND_AREA_NAME = "area_name"
+_KIND_AREA_ID = "area_id"
+_AREA_NAME_KEYS = ("name", "alt_name", "official_name", "name:zh")
+_RELATION_AREA_OFFSET = 3_600_000_000
+_WAY_AREA_OFFSET = 2_400_000_000
 _KIND_POLY = "poly"
 _REL_WITHIN = "within"
 _REL_NEAR = "near"
@@ -45,7 +51,11 @@ _ELEMENT_NODE = "node"
 _ELEMENT_WAY = "way"
 _ELEMENT_RELATION = "relation"
 _ELEMENT_TYPES = (_ELEMENT_NODE, _ELEMENT_WAY, _ELEMENT_RELATION)
-_DEFAULT_ENDPOINT = "https://overpass-api.de/api/interpreter"
+_DEFAULT_ENDPOINTS = (
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
+    "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+)
 _DEFAULT_UA = "geoagent-dataset/1.0 (osm_query; local)"
 _DEFAULT_TIMEOUT_SEC = 25.0
 _DEFAULT_LIMIT = 200
@@ -58,8 +68,14 @@ _PUBLIC_OVERPASS_HOSTS = frozenset(
         "overpass-api.de",
         "overpass.kumi.systems",
         "overpass.private.coffee",
+        "maps.mail.ru",
     }
 )
+_FAILOVER_ERROR_CODES = frozenset(
+    {"provider_error", "rate_limited", "network_error", "timeout"}
+)
+_RETRY_ATTEMPTS = 3
+_RETRY_DELAYS_SEC = (15.0, 30.0)
 _COORD_SPLIT_RE = re.compile(r"[,;，、\s]+")
 _TIMEOUT_RE = re.compile(r"\[timeout\s*:\s*(\d+)\s*\]", re.IGNORECASE)
 _MAXSIZE_RE = re.compile(r"\[maxsize\s*:\s*(\d+)\s*\]", re.IGNORECASE)
@@ -216,6 +232,7 @@ class QueryScope:
     center: GeoPoint | None = None
     radius_m: int | None = None
     name: str | None = None
+    area_id: int | None = None
     polygon: tuple[tuple[float, float], ...] | None = None
     applied: Any = None
 
@@ -235,7 +252,7 @@ class OsmQueryProvider(Protocol):
         """提交 Overpass QL，返回可归一化的 JSON 对象。"""
 
 class OverpassProvider:
-    """Overpass interpreter 适配器；端点与 UA 只读环境变量。"""
+    """Overpass interpreter 适配器。未指定单一端点时按顺序询问三台公共服务器。"""
 
     name = _PROVIDER_OVERPASS
     crs = _CRS_WGS84
@@ -243,34 +260,89 @@ class OverpassProvider:
     def __init__(
         self,
         *,
-        endpoint: str,
+        endpoints: tuple[str, ...],
         user_agent: str,
         timeout_sec: float,
+        retry_attempts: int = _RETRY_ATTEMPTS,
+        retry_delays_sec: tuple[float, ...] = _RETRY_DELAYS_SEC,
+        sleep: Callable[[float], None] | None = None,
     ) -> None:
-        self._endpoint = endpoint
+        if not endpoints:
+            raise EngineUnavailableError("没有可用的 Overpass 端点", "invalid_provider")
+        self._endpoints = endpoints
         self._user_agent = user_agent
         self._timeout_sec = timeout_sec
+        self._retry_attempts = max(1, retry_attempts)
+        self._retry_delays_sec = retry_delays_sec
+        self._sleep = sleep or time.sleep
 
     def query(self, request: OsmQueryRequest) -> dict[str, Any]:
+        """依次询问端点。全部因 5xx、429、超时或网络失败而失败时，隔开后再整轮重试。"""
+
+        last_error: EngineUnavailableError | None = None
+        for attempt in range(self._retry_attempts):
+            try:
+                return self._query_once(request)
+            except EngineUnavailableError as exc:
+                if exc.error_code not in _FAILOVER_ERROR_CODES or attempt + 1 >= self._retry_attempts:
+                    raise
+                last_error = exc
+                self._sleep(self._retry_delay(attempt))
+        if last_error is not None:
+            raise last_error
+        raise EngineUnavailableError("Overpass 没有返回结果", "provider_error")
+
+    def _retry_delay(self, attempt: int) -> float:
+        if not self._retry_delays_sec:
+            return 0.0
+        index = min(attempt, len(self._retry_delays_sec) - 1)
+        return self._retry_delays_sec[index]
+
+    def _query_once(self, request: OsmQueryRequest) -> dict[str, Any]:
+        """问完当前端点列表。前一台 5xx、429、超时或网络失败时再问下一台。"""
+
         body = urllib.parse.urlencode({"data": request.ql}).encode("utf-8")
         http_timeout = max(self._timeout_sec, request.timeout_sec) + _HTTP_TIMEOUT_PAD_SEC
-        raw = _http_post_json(
-            self._endpoint,
-            body=body,
-            headers={
-                "Accept": "application/json",
-                "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
-                "User-Agent": self._user_agent,
-            },
-            timeout_sec=http_timeout,
-            error_prefix="Overpass",
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
+            "User-Agent": self._user_agent,
+        }
+        failures: list[str] = []
+        last_code = "provider_error"
+        for endpoint in self._endpoints:
+            try:
+                raw = _http_post_json(
+                    endpoint,
+                    body=body,
+                    headers=headers,
+                    timeout_sec=http_timeout,
+                    error_prefix="Overpass",
+                )
+            except EngineUnavailableError as exc:
+                if exc.error_code not in _FAILOVER_ERROR_CODES or endpoint == self._endpoints[-1]:
+                    if failures and exc.error_code in _FAILOVER_ERROR_CODES:
+                        failures.append(f"{_endpoint_host(endpoint)}: {exc}")
+                        break
+                    raise
+                failures.append(f"{_endpoint_host(endpoint)}: {exc}")
+                last_code = exc.error_code
+                continue
+            if not isinstance(raw, dict):
+                raise EngineUnavailableError("Overpass 回执不是 JSON 对象")
+            remark = raw.get("remark")
+            elements = raw.get("elements")
+            if isinstance(remark, str) and "error" in remark.lower() and not elements:
+                failures.append(f"{_endpoint_host(endpoint)}: {remark[:160]}")
+                continue
+            if isinstance(remark, str) and "error" in remark.lower():
+                raise EngineUnavailableError(f"Overpass 失败: {remark[:200]}")
+            return raw
+        detail = "; ".join(failures)[:500]
+        raise EngineUnavailableError(
+            f"Overpass 已询问的服务器都没有返回结果: {detail}",
+            last_code,
         )
-        if not isinstance(raw, dict):
-            raise EngineUnavailableError("Overpass 回执不是 JSON 对象")
-        remark = raw.get("remark")
-        if isinstance(remark, str) and "error" in remark.lower():
-            raise EngineUnavailableError(f"Overpass 失败: {remark[:200]}")
-        return raw
 
 def execute_query(
     *,
@@ -286,6 +358,7 @@ def execute_query(
         inputs = declared_inputs(inputs, *_QUERY_INPUT_FIELDS)
         parsed = _parse_query_inputs(inputs, ctx, original=original)
         provider = _resolve_provider(ctx)
+        parsed = _bind_named_area(parsed, provider, ctx)
         payload = provider.query(
             OsmQueryRequest(
                 ql=parsed["ql"],
@@ -320,6 +393,7 @@ def execute_count(
             return _ok_local_count(source, group_by=group_by)
         parsed = _parse_count_inputs(inputs, ctx)
         provider = _resolve_provider(ctx)
+        parsed = _bind_named_area(parsed, provider, ctx)
         payload = provider.query(
             OsmQueryRequest(
                 ql=parsed["ql"],
@@ -414,6 +488,7 @@ def _compile_structured_ql(
         "element_types": element_types,
         "spatial_relation": spatial_relation,
         "unused": {},
+        "as_count": as_count,
     }
 
 def _build_structured_ql(
@@ -463,6 +538,9 @@ def _scope_prefix_and_filter(scope: QueryScope) -> tuple[str, str]:
         escaped = _ql_escape(scope.name)
         prefix = f'nwr["name"="{escaped}"]->.center;\n'
         return prefix, f"(around.center:{scope.radius_m})"
+    if scope.kind == _KIND_AREA_ID and scope.area_id is not None:
+        prefix = f"area({scope.area_id})->.searchArea;\n"
+        return prefix, "(area.searchArea)"
     if scope.kind == _KIND_AREA_NAME and scope.name:
         escaped = _ql_escape(scope.name)
         prefix = f'area["name"="{escaped}"]->.searchArea;\n'
@@ -562,6 +640,183 @@ def _has_spatial_constraint(ql: str) -> bool:
         or _POLY_RE.search(ql)
         or _AREA_STMT_RE.search(ql)
     )
+
+def _bind_named_area(
+    parsed: dict[str, Any],
+    provider: OsmQueryProvider,
+    ctx: RuntimeContext | None,
+) -> dict[str, Any]:
+    """把纯地名解析成一个行政区，再重写地物查询。"""
+
+    scope = parsed.get("scope")
+    if not isinstance(scope, QueryScope) or scope.kind != _KIND_AREA_NAME or not scope.name:
+        return parsed
+    resolved = _resolve_admin_scope(
+        scope.name,
+        provider,
+        ctx,
+        timeout_sec=int(parsed["timeout_sec"]),
+    )
+    updated = dict(parsed)
+    updated["scope"] = resolved
+    updated["ql"] = _build_structured_ql(
+        scope=resolved,
+        tag_sets=_tag_sets(parsed.get("tags") or {}, parsed.get("feature_types") or ()),
+        element_types=parsed.get("element_types") or (),
+        timeout_sec=int(parsed["timeout_sec"]),
+        limit=parsed.get("limit") or _DEFAULT_LIMIT,
+        return_geometry=False if parsed.get("as_count") else bool(parsed.get("return_geometry")),
+        as_count=bool(parsed.get("as_count")),
+    )
+    return updated
+
+
+def _resolve_admin_scope(
+    query: str,
+    provider: OsmQueryProvider,
+    ctx: RuntimeContext | None,
+    *,
+    timeout_sec: int,
+) -> QueryScope:
+    payload = provider.query(
+        OsmQueryRequest(
+            ql=_admin_lookup_ql(query, timeout_sec),
+            timeout_sec=float(timeout_sec),
+            operation=_OP_QUERY,
+        )
+    )
+    chosen = _choose_admin_area(_admin_areas_from_payload(payload), query)
+    if chosen is not None:
+        return QueryScope(
+            kind=_KIND_AREA_ID,
+            name=str(chosen["name"]),
+            area_id=int(chosen["area_id"]),
+            applied={
+                "query": query,
+                "name": chosen["name"],
+                "osm_id": chosen["area_id"],
+                "admin_level": chosen.get("admin_level"),
+            },
+        )
+    return _admin_scope_from_geocode(query, ctx)
+
+
+def _admin_lookup_ql(query: str, timeout_sec: int) -> str:
+    escaped = _ql_escape(query)
+    statements = [
+        f'area["boundary"="administrative"]["{key}"="{escaped}"]'
+        for key in _AREA_NAME_KEYS
+    ]
+    inner = "\n  ".join(f"{item};" for item in statements)
+    return f"[out:json][timeout:{timeout_sec}];\n(\n  {inner}\n);\nout tags;"
+
+
+def _admin_areas_from_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = payload.get("elements")
+    if not isinstance(raw, list):
+        return []
+    found: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        tags = item.get("tags") if isinstance(item.get("tags"), dict) else {}
+        if item.get("type") != "area" and tags.get("boundary") != "administrative":
+            continue
+        area_id = _as_int(item.get("id"))
+        if area_id is None or area_id in seen:
+            continue
+        name = _optional_str(tags.get("name")) or _optional_str(tags.get("official_name"))
+        name = name or _optional_str(tags.get("name:zh")) or _optional_str(tags.get("alt_name"))
+        if not name:
+            continue
+        seen.add(area_id)
+        found.append(
+            {
+                "area_id": area_id,
+                "name": name,
+                "admin_level": _as_int(tags.get("admin_level")),
+            }
+        )
+    return found
+
+
+def _choose_admin_area(areas: list[dict[str, Any]], query: str) -> dict[str, Any] | None:
+    """名称完全相同的优先；否则取 admin_level 更大的。"""
+
+    if not areas:
+        return None
+    exact = [item for item in areas if item.get("name") == query]
+    pool = exact or areas
+
+    def _rank(item: dict[str, Any]) -> tuple[int, int]:
+        level = item.get("admin_level")
+        specificity = -(level if isinstance(level, int) else -1)
+        return (0 if item.get("name") == query else 1, specificity)
+
+    return sorted(pool, key=_rank)[0]
+
+
+def _admin_scope_from_geocode(query: str, ctx: RuntimeContext | None) -> QueryScope:
+    from tool.geocode.geocode import execute as execute_geocode
+
+    observation = execute_geocode(
+        purpose="解析 OSM 行政区",
+        inputs={"query": query, "top_k": 1},
+        ctx=ctx,
+    )
+    if not observation.ok:
+        code = observation.error_code or "engine_unavailable"
+        message = observation.error or "内部 geocode 失败"
+        if code in {"missing_input", "invalid_input", "no_result"}:
+            raise OsmQueryInputError(f"无法解析行政区: {query}", "no_result")
+        raise EngineUnavailableError(message, code)
+    result = observation.result if isinstance(observation.result, dict) else {}
+    rows = result.get("candidates") or result.get("results") or []
+    first = rows[0] if isinstance(rows, list) and rows and isinstance(rows[0], dict) else {}
+    area_id = _area_id_from_geocode_row(first)
+    if area_id is not None:
+        label = _optional_str(first.get("display_name")) or _optional_str(first.get("name")) or query
+        return QueryScope(
+            kind=_KIND_AREA_ID,
+            name=label,
+            area_id=area_id,
+            applied={"query": query, "name": label, "osm_id": area_id, "geocode": True},
+        )
+    bbox = _bbox_from_geocode_row(first)
+    if bbox is not None:
+        applied = _bbox_applied(bbox)
+        applied["geocode_query"] = query
+        return QueryScope(kind=_KIND_BBOX, bbox=bbox, applied=applied)
+    raise OsmQueryInputError(f"无法解析行政区: {query}", "no_result")
+
+
+def _area_id_from_geocode_row(item: dict[str, Any]) -> int | None:
+    osm_type = _optional_str(item.get("osm_type"))
+    osm_id = _as_int(item.get("osm_id"))
+    if osm_type is None or osm_id is None:
+        provider_id = _optional_str(item.get("provider_id"))
+        if provider_id and "/" in provider_id:
+            osm_type, _, raw_id = provider_id.partition("/")
+            osm_id = _as_int(raw_id)
+    if osm_type is None or osm_id is None:
+        return None
+    kind = osm_type.lower()
+    if kind == "relation":
+        return _RELATION_AREA_OFFSET + osm_id
+    if kind == "way":
+        return _WAY_AREA_OFFSET + osm_id
+    return None
+
+
+def _bbox_from_geocode_row(item: dict[str, Any]) -> BBox | None:
+    raw = item.get("bbox")
+    if isinstance(raw, (list, tuple)) and len(raw) == 4:
+        return _bbox_from_values(list(raw))
+    if isinstance(raw, dict):
+        return _bbox_from_mapping(raw)
+    return None
+
 
 def _resolve_scope(
     inputs: dict[str, Any],
@@ -1322,12 +1577,23 @@ def _resolve_provider(ctx: RuntimeContext | None) -> OsmQueryProvider:
     if not _allow_real_api():
         raise EngineUnavailableError("ALLOW_REAL_TOOL_API=false，禁止调用真实 OSM 查询 API")
     return OverpassProvider(
-        endpoint=_validated_overpass_endpoint(
-            _env_value("OSM_QUERY_OVERPASS_ENDPOINT", _DEFAULT_ENDPOINT)
-        ),
+        endpoints=_overpass_endpoints(),
         user_agent=_env_value("OSM_QUERY_OVERPASS_USER_AGENT", _DEFAULT_UA),
         timeout_sec=_env_timeout("OSM_QUERY_TIMEOUT_SEC"),
     )
+
+
+def _overpass_endpoints() -> tuple[str, ...]:
+    """环境变量指定一台时只用该台；未指定时按公共镜像顺序询问。"""
+
+    configured = os.environ.get("OSM_QUERY_OVERPASS_ENDPOINT", "").strip()
+    if configured:
+        return (_validated_overpass_endpoint(configured),)
+    return tuple(_validated_overpass_endpoint(item) for item in _DEFAULT_ENDPOINTS)
+
+
+def _endpoint_host(endpoint: str) -> str:
+    return urllib.parse.urlparse(endpoint).hostname or endpoint
 
 
 def _validated_overpass_endpoint(raw: str) -> str:

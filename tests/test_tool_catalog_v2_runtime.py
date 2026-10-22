@@ -22,7 +22,7 @@ from pipeline.tool_catalog_v2 import (
 def test_v2_catalog_has_granular_tools_and_contracts() -> None:
     forest = build_tool_forest_v2()
     assert len(forest.trees) == 31
-    assert sum(len(tree.canonical.operations) for tree in forest.trees) == 57
+    assert sum(len(tree.canonical.operations) for tree in forest.trees) == 56
     names = {tree.canonical.name for tree in forest.trees}
     assert {"osm_query", "osm_result_process"}.issubset(names)
     assert {"satellite_imagery_query", "satellite_imagery_compare"}.issubset(
@@ -34,6 +34,10 @@ def test_v2_catalog_has_granular_tools_and_contracts() -> None:
     assert infra.canonical.available is False
     route = next(tree for tree in forest.trees if tree.canonical.name == "route_query")
     assert route.canonical.available is False
+    admin = next(
+        tree for tree in forest.trees if tree.canonical.name == "administrative_registry"
+    )
+    assert admin.canonical.available is False
     for tree in forest.trees:
         if tree.canonical.is_terminal:
             continue
@@ -77,9 +81,12 @@ def test_guidance_explains_fixed_outer_contract_and_acquisition() -> None:
     assert "source_result" in guidance
     assert "infrastructure_registry" not in guidance
     assert "route_query" not in guidance
+    assert "administrative_registry" not in guidance
+    assert "web_search" in guidance
     offered = {item["canonical"] for item in _catalog_payload(forest)}
     assert "infrastructure_registry" not in offered
     assert "route_query" not in offered
+    assert "administrative_registry" not in offered
     assert "web_search" in offered
     official = load_forest(Path("canonical_tool_catalog_v2.json"))
     official_infra = next(
@@ -92,9 +99,16 @@ def test_guidance_explains_fixed_outer_contract_and_acquisition() -> None:
         tree for tree in official.trees if tree.canonical.name == "route_query"
     )
     assert official_route.canonical.available is False
+    official_admin = next(
+        tree
+        for tree in official.trees
+        if tree.canonical.name == "administrative_registry"
+    )
+    assert official_admin.canonical.available is False
     official_guidance = render_tool_contract_guidance(official)
     assert "infrastructure_registry" not in official_guidance
     assert "route_query" not in official_guidance
+    assert "administrative_registry" not in official_guidance
 
 
 def test_stage3_accepts_v2_nested_params_and_preserves_purpose() -> None:
@@ -165,6 +179,8 @@ def test_v2_catalog_loads_without_legacy_roots(
     names = {tree.canonical.name for tree in merged.trees}
     assert "map_query" not in names
     assert "poi_search" in names
+    assert "geo_feature_search" not in names
+    assert "osm_query" in names
     assert len(names) == 31
 
 
@@ -186,16 +202,6 @@ def test_narrative_step_reference_is_not_marked_executable() -> None:
 
 def test_grounded_values_are_coerced_without_requiring_full_params() -> None:
     forest = build_tool_forest_v2()
-    heading = normalize_and_validate_tool_inputs(
-        forest,
-        tool="satellite_imagery_query",
-        operation="oblique_view",
-        inputs={"area": "荔浦市", "heading": "朝西"},
-        step_index=1,
-    )
-    assert heading.readiness == "ready"
-    assert heading.normalized_inputs["heading"] == 270.0
-
     measurement = normalize_and_validate_tool_inputs(
         forest,
         tool="image_measure",
@@ -217,6 +223,49 @@ def test_grounded_values_are_coerced_without_requiring_full_params() -> None:
         step_index=3,
     )
     assert streetview.readiness == "ready"
+
+
+def test_osm_query_guidance_shows_feature_examples() -> None:
+    """阶段2 只渲染工具简介，地物例子必须出现在 osm_query 简介里。"""
+    forest = load_forest(Path("canonical_tool_catalog_v2.json"))
+    tree = next(item for item in forest.trees if item.canonical.name == "osm_query")
+    assert "桥梁" in tree.canonical.description
+    assert "feature_types" in tree.canonical.description
+    guidance = render_tool_contract_guidance(forest)
+    line = next(item for item in guidance.splitlines() if item.startswith("- osm_query:"))
+    assert "桥梁" in line
+    assert "河流" in line
+    assert "feature_types" in line
+
+
+def test_osm_near_guidance_is_visible() -> None:
+    """阶段2 只渲染工具简介，相邻地物检索必须出现在 osm_query 简介里。"""
+    forest = load_forest(Path("canonical_tool_catalog_v2.json"))
+    tree = next(item for item in forest.trees if item.canonical.name == "osm_query")
+    assert "near" in tree.canonical.description
+    guidance = render_tool_contract_guidance(forest)
+    line = next(item for item in guidance.splitlines() if item.startswith("- osm_query:"))
+    assert "near" in line
+    assert "subject" in line
+    assert "reference" in line
+
+
+def test_poi_search_contract_does_not_claim_osm_feature_mapping() -> None:
+    """poi_search 默认是名称/类型码检索，地物标签属于 osm_query。"""
+    forest = load_forest(Path("canonical_tool_catalog_v2.json"))
+    tree = next(item for item in forest.trees if item.canonical.name == "poi_search")
+    assert "osm_query" in tree.canonical.description
+    by_operation = {operation.name: operation for operation in tree.canonical.operations}
+    search = by_operation["poi_search"].input_schema
+    browse = by_operation["browse"].input_schema
+    assert search is not None and browse is not None
+    search_fields = {field.name: field.description for field in search.fields}
+    browse_fields = {field.name: field.description for field in browse.fields}
+    assert "安全映射" not in search_fields["categories"]
+    assert "高德" in search_fields["categories"]
+    assert "osm_query" in search_fields["query"]
+    assert "不是 OSM tag" in browse_fields["filters"]
+    assert "osm_query" in (search.description or "")
 
 
 def test_center_scoped_geo_queries_require_radius() -> None:

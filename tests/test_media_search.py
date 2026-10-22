@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -613,3 +614,77 @@ def test_top_k_is_capped_by_provider_limit() -> None:
     assert provider.calls[0].top_k == 50
     assert observation.result is not None
     assert observation.result["applied"]["top_k"] == 50
+
+
+def test_rate_limit_is_retried_then_succeeds(monkeypatch: Any) -> None:
+    attempts = {"count": 0}
+    sleeps: list[float] = []
+
+    class _FakeHttpResponse:
+        def read(self) -> bytes:
+            return json.dumps({"query": {"pages": []}}).encode("utf-8")
+
+        def __enter__(self) -> _FakeHttpResponse:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    def fake_urlopen(request: Any, timeout: float | None = None) -> _FakeHttpResponse:
+        del timeout
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise search_mod.urllib.error.HTTPError(
+                str(request.full_url),
+                429,
+                "Too Many Requests",
+                hdrs=None,
+                fp=BytesIO(b"rate limited"),
+            )
+        return _FakeHttpResponse()
+
+    monkeypatch.setenv("ALLOW_REAL_TOOL_API", "true")
+    monkeypatch.setattr(search_mod.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(search_mod.time, "sleep", sleeps.append)
+    observation = execute(
+        "media_search",
+        "photo_search",
+        purpose="限流后重试",
+        inputs={"query": "铁路桥"},
+        ctx=RuntimeContext(),
+    )
+    assert attempts["count"] == 3
+    assert sleeps == [1.0, 2.0]
+    assert observation.ok is True
+    assert observation.result is not None
+    assert observation.result["results"] == []
+
+
+def test_http_client_error_is_not_retried(monkeypatch: Any) -> None:
+    attempts = {"count": 0}
+
+    def fake_urlopen(request: Any, timeout: float | None = None) -> Any:
+        del timeout
+        attempts["count"] += 1
+        raise search_mod.urllib.error.HTTPError(
+            str(request.full_url),
+            400,
+            "Bad Request",
+            hdrs=None,
+            fp=BytesIO(b"bad"),
+        )
+
+    monkeypatch.setenv("ALLOW_REAL_TOOL_API", "true")
+    monkeypatch.setattr(search_mod.urllib.request, "urlopen", fake_urlopen)
+    observation = execute(
+        "media_search",
+        "photo_search",
+        purpose="上游拒绝不重试",
+        inputs={"query": "铁路桥"},
+        ctx=RuntimeContext(),
+    )
+    assert attempts["count"] == 1
+    assert observation.ok is False
+    assert observation.error_code == "engine_unavailable"
+    assert observation.error is not None
+    assert "HTTP 400" in observation.error

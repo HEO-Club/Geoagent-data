@@ -14,6 +14,6 @@ def execute(
     inputs: dict[str, Any],
     ctx: RuntimeContext | None = None,
 ) -> Observation:
-    """执行 streetview_query.capture：下载缩略图，全景按 heading/pitch/fov 投影。"""
+    """执行 streetview_query.capture：按朝向截取当前全景画面，用后删除本地文件。"""
 
     return execute_capture(purpose=purpose, inputs=inputs, ctx=ctx)

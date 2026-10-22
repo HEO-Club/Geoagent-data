@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 from datetime import date
 from io import BytesIO
 from typing import Any
 from urllib.parse import parse_qs
 
+import pytest
 from PIL import Image
 
 from tool import execute
 from tool.contract import Observation, RuntimeContext
 from tool.runtime import FilesystemImageStore
+from tool.satellite_imagery_query import _query as query_mod
 from tool.satellite_imagery_query._query import (
     BBox,
     CopernicusProvider,
@@ -177,12 +180,133 @@ def test_missing_area_coordinates_source_result_is_missing_input() -> None:
     assert observation.error_code == "missing_input"
 
 
-def test_place_name_without_geometry_is_invalid_area() -> None:
+class _PlaceNameGeocoder:
+    name = "fake_geocoder"
+
+    def __init__(self, rows: list[dict[str, Any]] | None = None) -> None:
+        self.rows = rows
+        self.search_calls: list[str] = []
+
+    def search(
+        self,
+        query: str,
+        *,
+        limit: int,
+        language: str | None,
+        viewbox: Any = None,
+    ) -> list[dict[str, Any]]:
+        del limit, language, viewbox
+        self.search_calls.append(query)
+        if self.rows is not None:
+            return list(self.rows)
+        return [{"lat": "34.80", "lon": "113.65", "display_name": query}]
+
+    def reverse(self, lat: float, lon: float, *, language: str | None) -> dict[str, Any]:
+        del language
+        return {"lat": str(lat), "lon": str(lon), "display_name": "reverse"}
+
+
+def test_place_name_uses_internal_geocode() -> None:
+    geocoder = _PlaceNameGeocoder()
+    provider = FakeSatelliteProvider()
+    observation = _call(
+        "retrieve",
+        inputs={"area": "郑州市"},
+        provider=provider,
+        ctx=RuntimeContext(
+            extras={
+                "satellite_imagery_query_provider": provider,
+                "geocode_client": geocoder,
+            }
+        ),
+    )
+    assert observation.ok is True
+    assert observation.result is not None
+    assert geocoder.search_calls == ["郑州市"]
+    assert observation.result["applied"]["geocode_query"] == "郑州市"
+    assert observation.result["applied"]["center"]["lat"] == 34.8
+    assert provider.search_calls
+    assert provider.search_calls[0].bbox.south < 34.8 < provider.search_calls[0].bbox.north
+
+
+def test_place_name_falls_back_to_poi(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_geocode(*, purpose: str, inputs: dict[str, Any], ctx: object = None) -> Observation:
+        del purpose, inputs, ctx
+        return Observation(ok=True, result={"results": [], "applied": {"provider": "amap"}})
+
+    def fake_poi(*, purpose: str, inputs: dict[str, Any], ctx: object = None) -> Observation:
+        del purpose, ctx
+        return Observation(
+            ok=True,
+            result={"candidates": [{"location": {"lat": 34.8, "lon": 113.65}}], "provider": "amap"},
+        )
+
+    monkeypatch.setattr(importlib.import_module("tool.geocode.geocode"), "execute", fake_geocode)
+    monkeypatch.setattr(importlib.import_module("tool.poi_search.poi_search"), "execute", fake_poi)
+    observation = _call("retrieve", inputs={"area": "某座桥梁"})
+    assert observation.ok is True
+    assert observation.result is not None
+    assert observation.result["applied"]["poi_query"] == "某座桥梁"
+    assert observation.result["applied"]["poi_provider"] == "amap"
+
+
+def test_place_name_without_geocode_hit_is_no_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    def empty(*, purpose: str, inputs: dict[str, Any], ctx: object = None) -> Observation:
+        del purpose, inputs, ctx
+        return Observation(ok=True, result={"results": []})
+
+    monkeypatch.setattr(importlib.import_module("tool.geocode.geocode"), "execute", empty)
+    monkeypatch.setattr(importlib.import_module("tool.poi_search.poi_search"), "execute", empty)
     observation = _call("retrieve", inputs={"area": "郑州市"})
     assert observation.ok is False
-    assert observation.error_code == "invalid_area"
+    assert observation.error_code == "no_result"
     assert observation.error is not None
-    assert "不接受地名" in observation.error
+    assert "无法解析地名" in observation.error
+
+
+def test_decade_before_sentinel_and_landsat8_does_not_call_catalog() -> None:
+    provider = FakeSatelliteProvider()
+    observation = _call(
+        "change_time",
+        inputs={"area": {"bbox": [113.5, 34.7, 113.8, 34.9]}, "time_range": "1990s"},
+        provider=provider,
+    )
+    assert provider.search_calls == []
+    assert observation.ok is True
+    assert observation.result is not None
+    assert observation.result["coverage"] is False
+    assert observation.result["applied"]["time_range"] == "1990s"
+    assert observation.result["applied"]["collections"] == []
+
+    decade_cn = FakeSatelliteProvider()
+    chinese = _call(
+        "retrieve",
+        inputs={"area": {"bbox": [113.5, 34.7, 113.8, 34.9]}, "time_range": "1990年代"},
+        provider=decade_cn,
+    )
+    assert decade_cn.search_calls == []
+    assert chinese.ok is True
+    assert chinese.result is not None
+    assert chinese.result["coverage"] is False
+
+    recent = FakeSatelliteProvider()
+    _call(
+        "retrieve",
+        inputs={"area": {"bbox": [113.5, 34.7, 113.8, 34.9]}, "time_range": "2010s"},
+        provider=recent,
+    )
+    assert recent.search_calls
+    assert recent.search_calls[0].datetime is not None
+    assert recent.search_calls[0].datetime.startswith("2010-01-01T00:00:00Z/")
+    assert "2019-12-31T" in recent.search_calls[0].datetime
+    assert recent.search_calls[0].collections == ("sentinel-2-l2a", "landsat-ot-l2")
+
+    bare = _call(
+        "retrieve",
+        inputs={"area": {"bbox": [113.5, 34.7, 113.8, 34.9]}, "time_range": "90年代"},
+    )
+    assert bare.ok is False
+    assert bare.error_code == "invalid_time_range"
 
 
 def test_retrieve_picks_lowest_cloud_and_reports_native_gsd() -> None:
@@ -306,13 +430,7 @@ def test_change_time_missing_time_range_is_missing_input() -> None:
     assert observation.error_code == "missing_input"
 
 
-def test_oblique_view_is_nadir_preview_not_true_oblique(tmp_path: Any) -> None:
-    provider = FakeSatelliteProvider()
-    store = FilesystemImageStore(tmp_path / "store")
-    ctx = RuntimeContext(
-        extras={"satellite_imagery_query_provider": provider},
-        image_store=store,
-    )
+def test_oblique_view_is_not_an_operation() -> None:
     observation = _call(
         "oblique_view",
         inputs={
@@ -320,21 +438,9 @@ def test_oblique_view_is_nadir_preview_not_true_oblique(tmp_path: Any) -> None:
             "heading": 45,
             "tilt": 30,
         },
-        provider=provider,
-        ctx=ctx,
     )
-    assert observation.ok is True
-    assert observation.result is not None
-    assert observation.result["coverage"] is True
-    assert observation.result["view_kind"] == "nadir_preview"
-    assert observation.result["is_true_oblique"] is False
-    assert observation.result["heading"] == 45
-    assert observation.result["tilt"] == 30
-    assert observation.result["applied"]["heading"] == 45
-    assert observation.result["applied"]["tilt"] == 30
-    assert any("真斜摄" in item or "Cesium" in item for item in observation.result["assumptions"])
-    stored = store.resolve(observation.result["image_id"])
-    assert Image.open(stored).size == (8, 8)
+    assert observation.ok is False
+    assert observation.error_code == "unknown_operation"
 
 
 def test_planet_provider_is_unsupported() -> None:
@@ -500,3 +606,144 @@ def test_copernicus_catalog_sends_bbox_and_bearer(monkeypatch: Any) -> None:
     assert payload["filter"]["op"] == "<"
     assert payload["filter"]["args"][1] == 20
     assert "query" not in payload
+
+
+def test_catalog_keeps_scenes_when_one_collection_cannot_be_resolved(
+    monkeypatch: Any,
+) -> None:
+    import urllib.error
+
+    def fake_urlopen(request: Any, timeout: float = 0) -> Any:
+        del timeout
+        if request.full_url.endswith("/token"):
+            return _JsonResponse(json.dumps({"access_token": "tok-1", "expires_in": 3600}).encode("utf-8"))
+        body = json.loads(request.data.decode("utf-8"))
+        collection = body["collections"][0]
+        if collection == "landsat-tm-l2":
+            raise urllib.error.HTTPError(
+                request.full_url,
+                500,
+                "error",
+                hdrs=None,  # type: ignore[arg-type]
+                fp=_BytesReader(b'{"code":500,"description":"Unable to resolve: LTML2"}'),
+            )
+        assert "datetime" in body
+        return _JsonResponse(
+            json.dumps(
+                {
+                    "features": [
+                        {
+                            "id": "S2_OK",
+                            "collection": "sentinel-2-l2a",
+                            "properties": {"datetime": "2024-06-12T03:11:00Z"},
+                        }
+                    ]
+                }
+            ).encode("utf-8")
+        )
+
+    monkeypatch.setattr("tool.satellite_imagery_query._query.urllib.request.urlopen", fake_urlopen)
+    provider = CopernicusProvider(
+        client_id="id-1",
+        client_secret="secret-1",
+        catalog_endpoint="https://catalog.example/search",
+        process_endpoint="https://process.example",
+        token_endpoint="https://identity.example/token",
+        timeout_sec=5.0,
+        user_agent="geoagent-test",
+        preview_width=64,
+        preview_height=64,
+    )
+    rows = provider.search_scenes(
+        SceneSearchRequest(
+            bbox=BBox(west=113.6, south=34.8, east=113.7, north=34.9),
+            collections=("landsat-tm-l2", "sentinel-2-l2a"),
+            limit=5,
+        )
+    )
+    assert [item["id"] for item in rows] == ["S2_OK"]
+
+
+def test_transport_drop_is_retried_twice(monkeypatch: Any) -> None:
+    attempts = {"count": 0}
+
+    class _FakeHttpResponse:
+        def read(self) -> bytes:
+            return b"{}"
+
+        def __enter__(self) -> _FakeHttpResponse:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    def fake_urlopen(request: Any, timeout: float = 0) -> _FakeHttpResponse:
+        del request, timeout
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise query_mod.urllib.error.URLError(OSError(10054, "远程主机强迫关闭了一个现有的连接"))
+        return _FakeHttpResponse()
+
+    monkeypatch.setattr(query_mod.urllib.request, "urlopen", fake_urlopen)
+    raw = query_mod._http_bytes(
+        "https://identity.example/token",
+        method="POST",
+        headers={},
+        body=b"grant_type=client_credentials",
+        timeout_sec=1,
+        error_prefix="Copernicus OAuth",
+    )
+    assert attempts["count"] == 3
+    assert raw == b"{}"
+
+
+def test_http_error_is_not_retried(monkeypatch: Any) -> None:
+    import urllib.error
+
+    attempts = {"count": 0}
+
+    def fake_urlopen(request: Any, timeout: float = 0) -> Any:
+        del timeout
+        attempts["count"] += 1
+        raise urllib.error.HTTPError(
+            request.full_url,
+            500,
+            "error",
+            hdrs=None,  # type: ignore[arg-type]
+            fp=_BytesReader(b'{"code":500,"description":"Unable to resolve: LETML2"}'),
+        )
+
+    monkeypatch.setattr(query_mod.urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(query_mod.EngineUnavailableError, match="HTTP 500"):
+        query_mod._http_bytes(
+            "https://catalog.example/search",
+            method="POST",
+            headers={},
+            body=b"{}",
+            timeout_sec=1,
+            error_prefix="Copernicus Catalog",
+        )
+    assert attempts["count"] == 1
+
+
+class _BytesReader:
+    def __init__(self, payload: bytes) -> None:
+        self._payload = payload
+
+    def read(self) -> bytes:
+        return self._payload
+
+
+class _JsonResponse:
+    def __init__(self, payload: bytes) -> None:
+        self._payload = payload
+
+    def read(self) -> bytes:
+        return self._payload
+
+    def __enter__(self) -> _JsonResponse:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+

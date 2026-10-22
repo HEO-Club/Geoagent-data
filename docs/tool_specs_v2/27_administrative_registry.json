@@ -7,8 +7,9 @@
   "canonical_tool": {
     "canonical": {
       "name": "administrative_registry",
-      "description": "查询行政归属、标准地名和对象名录。",
+      "description": "当前不可用，不要选用。原用途：查询行政归属、标准地名和对象名录。该步骤改用 web_search，坐标改用 geocode。",
       "executor": "administrative_registry",
+      "available": false,
       "usage": "仅在需要访问该真实执行器并获得新证据时调用；先选择 operation，再按其 input_schema 填 inputs。缺少执行级参数时按 acquisition_hint 获取，不得编造坐标、文件、会话或前置结果。",
       "operations": [
         {

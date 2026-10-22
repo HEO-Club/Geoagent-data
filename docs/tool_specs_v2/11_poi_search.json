@@ -7,16 +7,16 @@
   "canonical_tool": {
     "canonical": {
       "name": "poi_search",
-      "description": "搜索或浏览地图 POI。",
+      "description": "按名称关键词或高德类型码搜索兴趣点，或浏览已有候选。桥梁、河流、道路等地物用 osm_query。",
       "executor": "map_poi_service",
       "usage": "仅在需要访问该真实执行器并获得新证据时调用；先选择 operation，再按其 input_schema 填 inputs。缺少执行级参数时按 acquisition_hint 获取，不得编造坐标、文件、会话或前置结果。",
       "operations": [
         {
           "name": "poi_search",
-          "description": "按名称、类别和区域搜索兴趣点",
+          "description": "按兴趣点名称或高德类型码、在区域内搜索",
           "aliases": [],
           "input_schema": {
-            "description": "按名称搜索 POI，或在明确区域内按类别/OSM 属性搜索；结果是候选，不是最终地点。",
+            "description": "按名称关键词或高德 POI 类型码搜索兴趣点；结果是候选，不是最终地点。不按 OSM 标签检索地物，桥梁、河流、道路用 osm_query。",
             "fields": [
               {
                 "name": "area",
@@ -55,8 +55,8 @@
                 "type": "string_or_array",
                 "required": false,
                 "requirement_level": "optional",
-                "description": "提交给该服务的检索词、自然语言查询或明确对象描述。",
-                "acquisition_hint": "从本步 purpose/Thought 中提取明确检索对象和约束，不得只写“查询一下”。",
+                "description": "兴趣点名称关键词，按名称匹配。不是地物类型；桥梁、河流、道路、山、塔等地理特征用 osm_query。",
+                "acquisition_hint": "从本步 purpose/Thought 中提取明确兴趣点名称，不得把地物类型写成检索词。",
                 "context_sources": [],
                 "context_default": null,
                 "aliases": [
@@ -66,8 +66,6 @@
                   "检索对象",
                   "对象",
                   "目标",
-                  "特征组合",
-                  "筛选条件",
                   "material",
                   "keywords",
                   "问题",
@@ -78,7 +76,7 @@
                 "item_type": null,
                 "minimum": null,
                 "maximum": null,
-                "example": "铁路桥 石栏 历史照片"
+                "example": "梅林大桥"
               },
               {
                 "name": "bbox",
@@ -123,7 +121,7 @@
                 "type": "string_or_array",
                 "required": false,
                 "requirement_level": "optional",
-                "description": "POI 类别或类型；当前安全映射桥梁、河流、道路、学校、公园、电塔、建筑、车站、机场等常见 OSM 类型。",
+                "description": "高德 POI 类型码，原样作为 types 提交。不映射 OSM 标签，不能把「桥梁」「河流」写成地物检索。",
                 "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 categories；来源没有时不得编造。",
                 "context_sources": [],
                 "context_default": null,
@@ -143,14 +141,12 @@
                 "type": "object",
                 "required": false,
                 "requirement_level": "optional",
-                "description": "可选 OSM tag 过滤条件。",
-                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 filters；来源没有时不得编造。",
+                "description": "本 operation 不读取该字段，不能当作 OSM tag。对已有候选做名称、分页或详情筛选时使用 browse。",
+                "acquisition_hint": "poi_search 不使用 filters；需要筛选已有候选时改调用 browse。",
                 "context_sources": [],
                 "context_default": null,
                 "aliases": [
-                  "筛选条件",
-                  "标签",
-                  "tags"
+                  "筛选条件"
                 ],
                 "allowed_values": [],
                 "item_type": null,
@@ -230,13 +226,13 @@
         },
         {
           "name": "browse",
-          "description": "在指定区域内浏览地图并返回候选要素",
+          "description": "在已有候选上分页、按名称筛选或展开详情；没有已有结果时按区域重新检索兴趣点",
           "aliases": [
             "search",
             "query"
           ],
           "input_schema": {
-            "description": "在明确区域内按名称、类别或 OSM 属性浏览候选要素；禁止无过滤遍历。",
+            "description": "浏览已有兴趣点候选，或在明确区域内按名称重新检索。不按 OSM 标签检索地物；桥梁、河流、道路用 osm_query。",
             "fields": [
               {
                 "name": "area",
@@ -313,8 +309,8 @@
                 "type": "string_or_array",
                 "required": false,
                 "requirement_level": "optional",
-                "description": "提交给该服务的检索词、自然语言查询或明确对象描述。",
-                "acquisition_hint": "从本步 purpose/Thought 中提取明确检索对象和约束，不得只写“查询一下”。",
+                "description": "兴趣点名称关键词，按名称匹配。不是地物类型；桥梁、河流、道路、山、塔等地理特征用 osm_query。",
+                "acquisition_hint": "从本步 purpose/Thought 中提取明确兴趣点名称，不得把地物类型写成检索词。",
                 "context_sources": [],
                 "context_default": null,
                 "aliases": [
@@ -324,8 +320,6 @@
                   "检索对象",
                   "对象",
                   "目标",
-                  "特征组合",
-                  "筛选条件",
                   "material",
                   "keywords",
                   "问题",
@@ -336,15 +330,15 @@
                 "item_type": null,
                 "minimum": null,
                 "maximum": null,
-                "example": "铁路桥 石栏 历史照片"
+                "example": "梅林大桥"
               },
               {
                 "name": "categories",
                 "type": "string_or_array",
                 "required": false,
                 "requirement_level": "optional",
-                "description": "POI 类别或类型。",
-                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 categories；来源没有时不得编造。",
+                "description": "本 operation 不读取该字段。类别筛选写在 filters.category，不映射 OSM 标签。",
+                "acquisition_hint": "browse 不使用 categories；需要按类别筛选已有候选时写入 filters.category。",
                 "context_sources": [],
                 "context_default": null,
                 "aliases": [
@@ -363,15 +357,13 @@
                 "type": "object",
                 "required": false,
                 "requirement_level": "optional",
-                "description": "OSM tag 过滤条件。",
-                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 filters；来源没有时不得编造。",
+                "description": "对已有候选做本地筛选，可用 name、category、page、offset、poi_id 或 expand。不是 OSM tag。",
+                "acquisition_hint": "只填写已有候选上的名称、类别、分页或详情条件，不得编造 OSM 标签。",
                 "context_sources": [],
                 "context_default": null,
                 "aliases": [
                   "筛选条件",
-                  "条件",
-                  "标签",
-                  "tags"
+                  "条件"
                 ],
                 "allowed_values": [],
                 "item_type": null,
@@ -517,14 +509,14 @@
         "type": "string_or_array",
         "required": false,
         "requirement_level": "optional",
-        "purpose": "提交给该服务的检索词、自然语言查询或明确对象描述。",
-        "how_to_obtain": "从本步 purpose/Thought 中提取明确检索对象和约束，不得只写“查询一下”。",
+        "purpose": "兴趣点名称关键词，按名称匹配。不是地物类型；桥梁、河流、道路、山、塔等地理特征用 osm_query。",
+        "how_to_obtain": "从本步 purpose/Thought 中提取明确兴趣点名称，不得把地物类型写成检索词。",
         "context_sources": [],
         "context_default": null,
         "allowed_values": [],
         "minimum": null,
         "maximum": null,
-        "example": "铁路桥 石栏 历史照片",
+        "example": "梅林大桥",
         "aliases": [
           "关键词",
           "检索词",
@@ -532,8 +524,6 @@
           "检索对象",
           "对象",
           "目标",
-          "特征组合",
-          "筛选条件",
           "material",
           "keywords",
           "问题",
@@ -585,7 +575,7 @@
         "type": "string_or_array",
         "required": false,
         "requirement_level": "optional",
-        "purpose": "POI 类别或类型；当前安全映射桥梁、河流、道路、学校、公园、电塔、建筑、车站、机场等常见 OSM 类型。",
+        "purpose": "高德 POI 类型码，原样作为 types 提交。不映射 OSM 标签，不能把「桥梁」「河流」写成地物检索。",
         "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 categories；来源没有时不得编造。",
         "context_sources": [],
         "context_default": null,
@@ -605,8 +595,8 @@
         "type": "object",
         "required": false,
         "requirement_level": "optional",
-        "purpose": "可选 OSM tag 过滤条件。",
-        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 filters；来源没有时不得编造。",
+        "purpose": "本 operation 不读取该字段，不能当作 OSM tag。对已有候选做名称、分页或详情筛选时使用 browse。",
+        "how_to_obtain": "poi_search 不使用 filters；需要筛选已有候选时改调用 browse。",
         "context_sources": [],
         "context_default": null,
         "allowed_values": [],
@@ -614,9 +604,7 @@
         "maximum": null,
         "example": null,
         "aliases": [
-          "筛选条件",
-          "标签",
-          "tags"
+          "筛选条件"
         ],
         "validation_note": "可选字段缺失不应自动判为不可执行。"
       },
@@ -754,14 +742,14 @@
         "type": "string_or_array",
         "required": false,
         "requirement_level": "optional",
-        "purpose": "提交给该服务的检索词、自然语言查询或明确对象描述。",
-        "how_to_obtain": "从本步 purpose/Thought 中提取明确检索对象和约束，不得只写“查询一下”。",
+        "purpose": "兴趣点名称关键词，按名称匹配。不是地物类型；桥梁、河流、道路、山、塔等地理特征用 osm_query。",
+        "how_to_obtain": "从本步 purpose/Thought 中提取明确兴趣点名称，不得把地物类型写成检索词。",
         "context_sources": [],
         "context_default": null,
         "allowed_values": [],
         "minimum": null,
         "maximum": null,
-        "example": "铁路桥 石栏 历史照片",
+        "example": "梅林大桥",
         "aliases": [
           "关键词",
           "检索词",
@@ -769,8 +757,6 @@
           "检索对象",
           "对象",
           "目标",
-          "特征组合",
-          "筛选条件",
           "material",
           "keywords",
           "问题",
@@ -784,8 +770,8 @@
         "type": "string_or_array",
         "required": false,
         "requirement_level": "optional",
-        "purpose": "POI 类别或类型。",
-        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 categories；来源没有时不得编造。",
+        "purpose": "本 operation 不读取该字段。类别筛选写在 filters.category，不映射 OSM 标签。",
+        "how_to_obtain": "browse 不使用 categories；需要按类别筛选已有候选时写入 filters.category。",
         "context_sources": [],
         "context_default": null,
         "allowed_values": [],
@@ -804,8 +790,8 @@
         "type": "object",
         "required": false,
         "requirement_level": "optional",
-        "purpose": "OSM tag 过滤条件。",
-        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 filters；来源没有时不得编造。",
+        "purpose": "对已有候选做本地筛选，可用 name、category、page、offset、poi_id 或 expand。不是 OSM tag。",
+        "how_to_obtain": "只填写已有候选上的名称、类别、分页或详情条件，不得编造 OSM 标签。",
         "context_sources": [],
         "context_default": null,
         "allowed_values": [],
@@ -814,9 +800,7 @@
         "example": null,
         "aliases": [
           "筛选条件",
-          "条件",
-          "标签",
-          "tags"
+          "条件"
         ],
         "validation_note": "可选字段缺失不应自动判为不可执行。"
       },
@@ -888,7 +872,8 @@
     "limitations": [
       "POI 覆盖不完整",
       "行政区中心不是拍摄点",
-      "WGS84/GCJ02 等坐标系不得混用"
+      "WGS84/GCJ02 等坐标系不得混用",
+      "默认执行器是高德 POI：query 按名称匹配，categories 是类型码，不映射 OSM 地物；桥梁、河流、道路用 osm_query"
     ],
     "mcp_strategy": "国内可评估高德官方 MCP；开放数据使用自建 Overpass adapter。"
   },

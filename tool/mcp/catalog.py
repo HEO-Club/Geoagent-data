@@ -51,19 +51,22 @@ def parse_mcp_tool_name(name: str) -> tuple[str, str] | None:
 
 
 def load_mcp_tool_specs(catalog_path: Path | None = None) -> list[McpToolSpec]:
-    """读取目录并展开全部非终端 operation。"""
+    """读取目录并展开可供 MCP 调用的 operation。"""
 
     path = catalog_path or DEFAULT_CATALOG_PATH
     return specs_from_forest(load_forest(path))
 
 
 def specs_from_forest(forest: ToolForest) -> list[McpToolSpec]:
-    """把 ToolForest 转成 MCP 工具表；``is_terminal`` 工具不暴露。"""
+    """把 ToolForest 转成 MCP 工具表。
+
+    终端工具和目录中 ``available=false`` 的工具不暴露。
+    """
 
     specs: list[McpToolSpec] = []
     for tree in forest.trees:
         canonical = tree.canonical
-        if canonical.is_terminal:
+        if canonical.is_terminal or not canonical.available:
             continue
         for operation in canonical.operations:
             specs.append(_spec_for_operation(canonical, operation))

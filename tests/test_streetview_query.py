@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import importlib
 import json
+
+import pytest
 from io import BytesIO
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -201,12 +204,109 @@ def test_open_with_coordinates_creates_session() -> None:
     assert "raw_content" not in keys
 
 
-def test_open_place_name_is_missing_input() -> None:
+class _PlaceNameGeocoder:
+    name = "fake_geocoder"
+
+    def __init__(self) -> None:
+        self.search_calls: list[dict[str, Any]] = []
+
+    def search(
+        self,
+        query: str,
+        *,
+        limit: int,
+        language: str | None,
+        viewbox: tuple[float, float, float, float] | None,
+    ) -> list[dict[str, Any]]:
+        self.search_calls.append(
+            {"query": query, "limit": limit, "language": language, "viewbox": viewbox}
+        )
+        return [
+            {
+                "place_id": 1,
+                "lat": "34.8900",
+                "lon": "113.6700",
+                "display_name": query,
+            }
+        ]
+
+    def reverse(self, lat: float, lon: float, *, language: str | None) -> dict[str, Any]:
+        del language
+        return {"lat": str(lat), "lon": str(lon), "display_name": "reverse"}
+
+
+def test_open_place_name_uses_internal_geocode() -> None:
+    geocoder = _PlaceNameGeocoder()
+    provider = FakeStreetviewProvider()
+    ctx = RuntimeContext(
+        extras={
+            "streetview_query_provider": provider,
+            "geocode_client": geocoder,
+        }
+    )
+    observation = _call("open", inputs={"area": "郑州市"}, provider=provider, ctx=ctx)
+    assert observation.ok is True
+    assert observation.result is not None
+    assert geocoder.search_calls
+    assert geocoder.search_calls[0]["query"] == "郑州市"
+    assert observation.result["applied"]["geocode_query"] == "郑州市"
+    assert observation.result["applied"]["center"] == {"lat": 34.89, "lon": 113.67}
+
+
+def test_open_reads_nested_geocode_location(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_geocode(*, purpose: str, inputs: dict[str, Any], ctx: object = None) -> Observation:
+        del purpose, inputs, ctx
+        return Observation(
+            ok=True,
+            result={
+                "results": [
+                    {"location": {"lat": 34.89, "lon": 113.67, "crs": "EPSG:4326"}}
+                ],
+                "applied": {"provider": "amap"},
+            },
+        )
+
+    monkeypatch.setattr(importlib.import_module("tool.geocode.geocode"), "execute", fake_geocode)
+    provider = FakeStreetviewProvider()
+    observation = _call("open", inputs={"area": "郑州市"}, provider=provider)
+    assert observation.ok is True
+    assert observation.result is not None
+    assert observation.result["applied"]["center"] == {"lat": 34.89, "lon": 113.67}
+    assert observation.result["applied"]["geocode_provider"] == "amap"
+    assert "poi_query" not in observation.result["applied"]
+
+
+def test_open_place_name_falls_back_to_poi(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_geocode(*, purpose: str, inputs: dict[str, Any], ctx: object = None) -> Observation:
+        del purpose, inputs, ctx
+        return Observation(ok=True, result={"results": [], "applied": {"provider": "amap"}})
+
+    def fake_poi(*, purpose: str, inputs: dict[str, Any], ctx: object = None) -> Observation:
+        del purpose, ctx
+        assert inputs["query"]
+        return Observation(
+            ok=True,
+            result={
+                "candidates": [{"location": {"lat": 25.86, "lon": 115.01}}],
+                "provider": "amap",
+            },
+        )
+
+    monkeypatch.setattr(importlib.import_module("tool.geocode.geocode"), "execute", fake_geocode)
+    monkeypatch.setattr(importlib.import_module("tool.poi_search.poi_search"), "execute", fake_poi)
+    provider = FakeStreetviewProvider()
+    observation = _call("open", inputs={"area": "某地桥梁"}, provider=provider)
+    assert observation.ok is True
+    assert observation.result is not None
+    assert observation.result["applied"]["poi_query"] == "某地桥梁"
+    assert observation.result["applied"]["center"] == {"lat": 25.86, "lon": 115.01}
+
+
+def test_open_place_name_without_geocode_backend_is_unavailable() -> None:
     observation = _call("open", inputs={"area": "郑州市"})
     assert observation.ok is False
-    assert observation.error_code == "missing_input"
+    assert observation.error_code in {"engine_unavailable", "provider_unavailable"}
     assert observation.error is not None
-    assert "geocode" in observation.error
 
 
 def test_open_with_no_nearby_images_is_no_coverage() -> None:
@@ -327,9 +427,10 @@ def test_capture_writes_image_store_and_pano_heading(tmp_path: Any) -> None:
     assert pano.result is not None
     assert pano.result["applied"]["heading"] == 45
     assert pano.result["applied"]["pano"] is True
-    stored = store.resolve(pano.result["image_id"])
-    captured = Image.open(stored)
-    assert captured.size == (640, 480)
+    assert pano.result["applied"]["width"] == 640
+    assert pano.result["applied"]["height"] == 480
+    leftover = list((tmp_path / "store").glob("img_*.*"))
+    assert leftover == []
 
 
 def test_allow_real_api_false_without_provider_is_unavailable() -> None:
@@ -346,8 +447,9 @@ def test_allow_real_api_false_without_provider_is_unavailable() -> None:
     assert "ALLOW_REAL_TOOL_API" in observation.error
 
 
-def test_allow_real_api_true_missing_token_is_unavailable(monkeypatch: Any) -> None:
+def test_allow_real_api_true_mapillary_missing_token_is_unavailable(monkeypatch: Any) -> None:
     monkeypatch.setenv("ALLOW_REAL_TOOL_API", "true")
+    monkeypatch.setenv("STREETVIEW_PROVIDER", "mapillary")
     monkeypatch.setenv("MAPILLARY_ACCESS_TOKEN", "")
     monkeypatch.setenv("MAPILLARY_TOKEN", "")
     observation = execute(
@@ -361,17 +463,6 @@ def test_allow_real_api_true_missing_token_is_unavailable(monkeypatch: Any) -> N
     assert observation.error_code == "engine_unavailable"
     assert observation.error is not None
     assert "MAPILLARY" in observation.error
-
-
-def test_google_provider_is_unavailable() -> None:
-    observation = _call(
-        "open",
-        inputs={"coordinates": [113.67, 34.89], "provider": "google"},
-    )
-    assert observation.ok is False
-    assert observation.error_code == "engine_unavailable"
-    assert observation.error is not None
-    assert "Google" in observation.error
 
 
 def test_mapillary_search_sends_radius_and_token(monkeypatch: Any) -> None:
@@ -436,3 +527,303 @@ def test_mapillary_search_sends_radius_and_token(monkeypatch: Any) -> None:
     assert "id" in fields
     assert "geometry" in fields
     assert "thumb_1024_url" not in fields
+
+
+def _jpeg_bytes(color: tuple[int, int, int] = (40, 80, 120)) -> bytes:
+    image = Image.new("RGB", (32, 24), color=color)
+    buffer = BytesIO()
+    image.save(buffer, format="JPEG")
+    return buffer.getvalue()
+
+
+class _FakeHttpResponse:
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    def read(self) -> bytes:
+        return self._body
+
+    def __enter__(self) -> _FakeHttpResponse:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+
+def _google_ok_payload() -> list[Any]:
+    panoid = "ABCDEFGHIJKLMNOPQRSTUV"
+    hist_id = "HISTPANO1234567890123A"
+    return [
+        [0],
+        [
+            None,
+            [None, panoid],
+            None,
+            [None, None, [["Shibuya"]]],
+            None,
+            [
+                [
+                    None,
+                    [
+                        [None, None, 35.6595, 139.7005],
+                        None,
+                        [47.0],
+                    ],
+                    None,
+                    [
+                        [
+                            [
+                                [None, hist_id],
+                                None,
+                                [[None, None, 35.6600, 139.7010]],
+                            ]
+                        ]
+                    ],
+                    None,
+                    None,
+                    None,
+                    None,
+                    [[0, [2018, 7]]],
+                ]
+            ],
+            [None, None, None, None, None, None, None, [2019, 5]],
+        ],
+    ]
+
+
+def test_zhengzhou_open_uses_baidu_and_navigate_does_not_rescan(monkeypatch: Any) -> None:
+    calls: list[str] = []
+    jpeg = _jpeg_bytes()
+
+    def fake_urlopen(request: Any, timeout: float = 0) -> _FakeHttpResponse:
+        del timeout
+        url = request.full_url
+        calls.append(url)
+        parsed = urlparse(url)
+        query = parse_qs(parsed.query)
+        qt = (query.get("qt") or [""])[0]
+        if qt == "qsdata":
+            x = int(query["x"][0])
+            y = int(query["y"][0])
+            return _FakeHttpResponse(
+                json.dumps({"content": {"id": "bd_1", "x": x * 100, "y": y * 100}}).encode("utf-8")
+            )
+        if qt == "sdata":
+            base_x = 1_269_000_000
+            base_y = 356_000_000
+            for prior in calls:
+                prior_q = parse_qs(urlparse(prior).query)
+                if (prior_q.get("qt") or [""])[0] == "qsdata":
+                    base_x = int(prior_q["x"][0]) * 100
+                    base_y = int(prior_q["y"][0]) * 100
+                    break
+            payload = {
+                "content": [
+                    {
+                        "Date": "20170920",
+                        "X": base_x,
+                        "Y": base_y,
+                        "MoveDir": 90,
+                        "Roads": [
+                            {
+                                "Panos": [
+                                    {"PID": "bd_1", "X": base_x, "Y": base_y},
+                                    {"PID": "bd_2", "X": base_x + 50_000, "Y": base_y},
+                                ]
+                            }
+                        ],
+                        "TimeLine": [],
+                    }
+                ]
+            }
+            return _FakeHttpResponse(json.dumps(payload).encode("utf-8"))
+        if qt == "pr3d":
+            assert "heading=45.0" in url or "heading=45" in url
+            return _FakeHttpResponse(jpeg)
+        raise AssertionError(url)
+
+    monkeypatch.setenv("ALLOW_REAL_TOOL_API", "true")
+    monkeypatch.setenv("STREETVIEW_PROVIDER", "auto")
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    ctx = RuntimeContext()
+    opened = execute(
+        "streetview_query",
+        "open",
+        purpose="郑州",
+        inputs={"coordinates": [113.67, 34.89]},
+        ctx=ctx,
+    )
+    assert opened.ok is True
+    assert opened.result is not None
+    assert opened.result["coverage"] is True
+    assert opened.result["applied"]["provider"] == "baidu"
+    assert opened.result["viewpoint"]["image_id"] == "bd_1"
+    assert opened.result["viewpoint"]["captured_at"] == "2017-09-20"
+    assert all("mapsv0.bdimg.com" in item or "qt=qsdata" in item or "qt=sdata" in item for item in calls)
+    assert any("qt=qsdata" in item for item in calls)
+    assert any("qt=sdata" in item for item in calls)
+    open_calls = len(calls)
+    moved = execute(
+        "streetview_query",
+        "navigate",
+        purpose="转向",
+        inputs={"session": opened.session, "direction": "东"},
+        ctx=ctx,
+    )
+    assert moved.ok is True
+    assert moved.result is not None
+    assert moved.result["moved"] is True
+    assert moved.result["viewpoint"]["image_id"] == "bd_2"
+    assert len(calls) == open_calls
+    captured = execute(
+        "streetview_query",
+        "capture",
+        purpose="截图",
+        inputs={"session": opened.session, "heading": 45, "pitch": 0, "fov": 80},
+        ctx=ctx,
+    )
+    assert captured.ok is True
+    assert captured.result is not None
+    assert captured.result["applied"]["heading"] == 45
+    assert captured.result["applied"]["pano"] is True
+    assert "images" not in captured.artifacts
+    assert any("服务端按 heading" in item for item in captured.result["assumptions"])
+    assert any("用后删除" in item for item in captured.result["assumptions"])
+    assert any("qt=pr3d" in item for item in calls)
+
+
+def test_tokyo_open_uses_google_and_capture_sends_heading(monkeypatch: Any) -> None:
+    calls: list[tuple[str, str]] = []
+    jpeg = _jpeg_bytes((90, 20, 20))
+
+    def fake_urlopen(request: Any, timeout: float = 0) -> _FakeHttpResponse:
+        del timeout
+        url = request.full_url
+        method = request.get_method()
+        calls.append((method, url))
+        if "SingleImageSearch" in url:
+            body = json.dumps(_google_ok_payload()).encode("utf-8")
+            return _FakeHttpResponse(body)
+        if "streetviewpixels-pa.googleapis.com" in url:
+            query = parse_qs(urlparse(url).query)
+            assert query["yaw"] == ["90.0"]
+            assert query["panoid"] == ["ABCDEFGHIJKLMNOPQRSTUV"]
+            return _FakeHttpResponse(jpeg)
+        raise AssertionError(url)
+
+    monkeypatch.setenv("ALLOW_REAL_TOOL_API", "true")
+    monkeypatch.setenv("STREETVIEW_PROVIDER", "auto")
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    ctx = RuntimeContext()
+    opened = execute(
+        "streetview_query",
+        "open",
+        purpose="东京",
+        inputs={"coordinates": [139.7005, 35.6595]},
+        ctx=ctx,
+    )
+    assert opened.ok is True
+    assert opened.result is not None
+    assert opened.result["applied"]["provider"] == "google"
+    assert opened.result["viewpoint"]["image_id"] == "ABCDEFGHIJKLMNOPQRSTUV"
+    assert opened.result["viewpoint"]["captured_at"] == "2019-05-01"
+    assert calls[0][0] == "POST"
+    open_calls = len(calls)
+    captured = execute(
+        "streetview_query",
+        "capture",
+        purpose="截图",
+        inputs={"session": opened.session, "heading": 90, "pitch": 10, "fov": 90},
+        ctx=ctx,
+    )
+    assert captured.ok is True
+    assert captured.result is not None
+    assert captured.result["applied"]["heading"] == 90
+    assert "images" not in captured.artifacts
+    assert len(calls) == open_calls + 1
+    assert calls[-1][0] == "GET"
+    assert "streetviewpixels-pa.googleapis.com" in calls[-1][1]
+
+
+def test_google_no_images_is_no_coverage(monkeypatch: Any) -> None:
+    def fake_urlopen(request: Any, timeout: float = 0) -> _FakeHttpResponse:
+        del timeout
+        payload = [[5, "generic", "Search returned no images."]]
+        return _FakeHttpResponse(json.dumps(payload).encode("utf-8"))
+
+    monkeypatch.setenv("ALLOW_REAL_TOOL_API", "true")
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    observation = execute(
+        "streetview_query",
+        "open",
+        purpose="无覆盖",
+        inputs={"coordinates": [139.7, 35.6], "provider": "google"},
+        ctx=RuntimeContext(),
+    )
+    assert observation.ok is True
+    assert observation.result is not None
+    assert observation.result["coverage"] is False
+    assert observation.result["viewpoint"] is None
+
+
+def test_google_unreadable_reply_is_engine_unavailable(monkeypatch: Any) -> None:
+    def fake_urlopen(request: Any, timeout: float = 0) -> _FakeHttpResponse:
+        del timeout
+        return _FakeHttpResponse(b"<<<not-json>>>")
+
+    monkeypatch.setenv("ALLOW_REAL_TOOL_API", "true")
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    observation = execute(
+        "streetview_query",
+        "open",
+        purpose="坏回执",
+        inputs={"coordinates": [139.7, 35.6], "provider": "google"},
+        ctx=RuntimeContext(),
+    )
+    assert observation.ok is False
+    assert observation.error_code == "engine_unavailable"
+    assert observation.error is not None
+    assert "JSON" in observation.error
+
+
+def test_baidu_empty_content_is_no_coverage(monkeypatch: Any) -> None:
+    def fake_urlopen(request: Any, timeout: float = 0) -> _FakeHttpResponse:
+        del timeout
+        return _FakeHttpResponse(json.dumps({"content": None}).encode("utf-8"))
+
+    monkeypatch.setenv("ALLOW_REAL_TOOL_API", "true")
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    observation = execute(
+        "streetview_query",
+        "open",
+        purpose="无覆盖",
+        inputs={"coordinates": [113.67, 34.89], "provider": "baidu"},
+        ctx=RuntimeContext(),
+    )
+    assert observation.ok is True
+    assert observation.result is not None
+    assert observation.result["coverage"] is False
+
+
+def test_provider_google_override_in_china(monkeypatch: Any) -> None:
+    calls: list[str] = []
+
+    def fake_urlopen(request: Any, timeout: float = 0) -> _FakeHttpResponse:
+        del timeout
+        calls.append(request.full_url)
+        return _FakeHttpResponse(json.dumps(_google_ok_payload()).encode("utf-8"))
+
+    monkeypatch.setenv("ALLOW_REAL_TOOL_API", "true")
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    observation = execute(
+        "streetview_query",
+        "open",
+        purpose="强制谷歌",
+        inputs={"coordinates": [113.67, 34.89], "provider": "google"},
+        ctx=RuntimeContext(),
+    )
+    assert observation.ok is True
+    assert observation.result is not None
+    assert observation.result["applied"]["provider"] == "google"
+    assert any("SingleImageSearch" in item for item in calls)
+    assert all("mapsv0.bdimg.com" not in item for item in calls)

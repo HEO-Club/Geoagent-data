@@ -7,7 +7,7 @@
   "canonical_tool": {
     "canonical": {
       "name": "satellite_imagery_query",
-      "description": "按 bbox 或中心点加半径获取 Copernicus 卫星真彩预览图。不接受地名，不提供航片、地形、Planet 或 Google Earth。",
+      "description": "按地名、bbox 或中心点加半径获取 Copernicus 卫星真彩预览图。纯地名在执行器内 geocode。只提供 retrieve 与 change_time，不提供斜拍、航片、地形、Planet 或 Google Earth。",
       "executor": "satellite_imagery_service",
       "usage": "仅在需要访问该真实执行器并获得新证据时调用；先选择 operation，再按其 input_schema 填 inputs。缺少执行级参数时按 acquisition_hint 获取，不得编造坐标、文件、会话或前置结果。",
       "operations": [
@@ -19,14 +19,14 @@
             "query"
           ],
           "input_schema": {
-            "description": "按 WGS84 bbox 或中心点加半径返回 Copernicus 真彩预览。不接受地名。",
+            "description": "按地名、WGS84 bbox 或中心点加半径返回 Copernicus 真彩预览。纯地名在执行器内 geocode。",
             "fields": [
               {
                 "name": "area",
                 "type": "location",
                 "required": false,
                 "requirement_level": "optional",
-                "description": "WGS84 bbox [west,south,east,north]，或 {lat, lon, radius_m}。不接受地名。",
+                "description": "纯地名会在执行器内先 geocode，没有点再按同一名称查 POI，再用默认半径扩成框。也可以直接给 WGS84 bbox [west,south,east,north] 或 {lat, lon, radius_m}。",
                 "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
                 "context_sources": [
                   "active_area"
@@ -106,7 +106,7 @@
                 "type": "string_or_object",
                 "required": false,
                 "requirement_level": "optional",
-                "description": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。",
+                "description": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。四位年份加 s 或「年代」收成该十年，如 1990s、1990年代。",
                 "acquisition_hint": "从字幕、task 或已有结果提取真实时间范围；来源没有时不得猜测。",
                 "context_sources": [],
                 "context_default": null,
@@ -184,14 +184,14 @@
           "description": "在同一 bbox 或中心点上切换时间后再返回预览图。",
           "aliases": [],
           "input_schema": {
-            "description": "同一几何范围换时间后返回预览图。不接受地名。",
+            "description": "同一地名或几何范围换时间后返回预览图。纯地名在执行器内 geocode。",
             "fields": [
               {
                 "name": "area",
                 "type": "location",
                 "required": true,
                 "requirement_level": "semantic",
-                "description": "WGS84 bbox [west,south,east,north]，或 {lat, lon, radius_m}。不接受地名。",
+                "description": "纯地名会在执行器内先 geocode，没有点再按同一名称查 POI，再用默认半径扩成框。也可以直接给 WGS84 bbox [west,south,east,north] 或 {lat, lon, radius_m}。",
                 "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
                 "context_sources": [
                   "active_area"
@@ -227,7 +227,7 @@
                 "type": "string_or_object",
                 "required": true,
                 "requirement_level": "semantic",
-                "description": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。",
+                "description": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。四位年份加 s 或「年代」收成该十年，如 1990s、1990年代。",
                 "acquisition_hint": "从字幕、task 或已有结果提取真实时间范围；来源没有时不得猜测。",
                 "context_sources": [],
                 "context_default": null,
@@ -276,121 +276,6 @@
             "allow_extra": true,
             "examples": []
           }
-        },
-        {
-          "name": "oblique_view",
-          "description": "返回同一范围的正射预览，并记录 heading 与 tilt。",
-          "aliases": [],
-          "input_schema": {
-            "description": "返回正射预览并记录朝向。不是航片或三维地形。",
-            "fields": [
-              {
-                "name": "area",
-                "type": "location",
-                "required": true,
-                "requirement_level": "semantic",
-                "description": "WGS84 bbox [west,south,east,north]，或 {lat, lon, radius_m}。不接受地名。",
-                "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
-                "context_sources": [
-                  "active_area"
-                ],
-                "context_default": "$active_area",
-                "aliases": [
-                  "区域",
-                  "地区",
-                  "地点",
-                  "候选区域",
-                  "检索范围",
-                  "搜索区域",
-                  "省域范围",
-                  "region",
-                  "target_area",
-                  "search_area",
-                  "sample_area",
-                  "location",
-                  "cities"
-                ],
-                "allowed_values": [],
-                "item_type": null,
-                "minimum": null,
-                "maximum": null,
-                "example": {
-                  "lat": 34.75,
-                  "lon": 113.65,
-                  "radius_m": 2000
-                }
-              },
-              {
-                "name": "heading",
-                "type": "number",
-                "required": false,
-                "requirement_level": "optional",
-                "description": "观察朝向角（度）。",
-                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 heading；来源没有时不得编造。",
-                "context_sources": [],
-                "context_default": null,
-                "aliases": [
-                  "朝向",
-                  "方位角"
-                ],
-                "allowed_values": [],
-                "item_type": null,
-                "minimum": 0.0,
-                "maximum": 360.0,
-                "example": null
-              },
-              {
-                "name": "tilt",
-                "type": "number",
-                "required": false,
-                "requirement_level": "optional",
-                "description": "倾斜角（度）。",
-                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 tilt；来源没有时不得编造。",
-                "context_sources": [],
-                "context_default": null,
-                "aliases": [
-                  "倾角",
-                  "pitch"
-                ],
-                "allowed_values": [],
-                "item_type": null,
-                "minimum": 0.0,
-                "maximum": 90.0,
-                "example": null
-              },
-              {
-                "name": "time_range",
-                "type": "string_or_object",
-                "required": false,
-                "requirement_level": "optional",
-                "description": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。",
-                "acquisition_hint": "从字幕、task 或已有结果提取真实时间范围；来源没有时不得猜测。",
-                "context_sources": [],
-                "context_default": null,
-                "aliases": [
-                  "时期",
-                  "时间",
-                  "年份",
-                  "年代",
-                  "年代范围",
-                  "日期",
-                  "影像时期",
-                  "影像年份",
-                  "date_range",
-                  "year"
-                ],
-                "allowed_values": [],
-                "item_type": null,
-                "minimum": null,
-                "maximum": null,
-                "example": "1980-1995"
-              }
-            ],
-            "required_any": [],
-            "mutually_exclusive": [],
-            "allow_extra": true,
-            "examples": []
-          }
         }
       ],
       "params": [
@@ -401,8 +286,7 @@
           "description": "本次调用执行的 operation",
           "allowed_values": [
             "retrieve",
-            "change_time",
-            "oblique_view"
+            "change_time"
           ]
         },
         {
@@ -448,7 +332,7 @@
         "type": "location",
         "required": false,
         "requirement_level": "optional",
-        "purpose": "WGS84 bbox [west,south,east,north]，或 {lat, lon, radius_m}。不接受地名。",
+        "purpose": "纯地名会在执行器内先 geocode，没有点再按同一名称查 POI，再用默认半径扩成框。也可以直接给 WGS84 bbox [west,south,east,north] 或 {lat, lon, radius_m}。",
         "how_to_obtain": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
         "context_sources": [
           "active_area"
@@ -528,7 +412,7 @@
         "type": "string_or_object",
         "required": false,
         "requirement_level": "optional",
-        "purpose": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。",
+        "purpose": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。四位年份加 s 或「年代」收成该十年，如 1990s、1990年代。",
         "how_to_obtain": "从字幕、task 或已有结果提取真实时间范围；来源没有时不得猜测。",
         "context_sources": [],
         "context_default": null,
@@ -595,7 +479,7 @@
         "type": "location",
         "required": true,
         "requirement_level": "semantic",
-        "purpose": "WGS84 bbox [west,south,east,north]，或 {lat, lon, radius_m}。不接受地名。",
+        "purpose": "纯地名会在执行器内先 geocode，没有点再按同一名称查 POI，再用默认半径扩成框。也可以直接给 WGS84 bbox [west,south,east,north] 或 {lat, lon, radius_m}。",
         "how_to_obtain": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
         "context_sources": [
           "active_area"
@@ -631,7 +515,7 @@
         "type": "string_or_object",
         "required": true,
         "requirement_level": "semantic",
-        "purpose": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。",
+        "purpose": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。四位年份加 s 或「年代」收成该十年，如 1990s、1990年代。",
         "how_to_obtain": "从字幕、task 或已有结果提取真实时间范围；来源没有时不得猜测。",
         "context_sources": [],
         "context_default": null,
@@ -674,109 +558,6 @@
         ],
         "validation_note": "可选字段缺失不应自动判为不可执行。"
       }
-    ],
-    "oblique_view": [
-      {
-        "name": "area",
-        "type": "location",
-        "required": true,
-        "requirement_level": "semantic",
-        "purpose": "WGS84 bbox [west,south,east,north]，或 {lat, lon, radius_m}。不接受地名。",
-        "how_to_obtain": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
-        "context_sources": [
-          "active_area"
-        ],
-        "context_default": "$active_area",
-        "allowed_values": [],
-        "minimum": null,
-        "maximum": null,
-        "example": {
-          "lat": 34.75,
-          "lon": 113.65,
-          "radius_m": 2000
-        },
-        "aliases": [
-          "区域",
-          "地区",
-          "地点",
-          "候选区域",
-          "检索范围",
-          "搜索区域",
-          "省域范围",
-          "region",
-          "target_area",
-          "search_area",
-          "sample_area",
-          "location",
-          "cities"
-        ],
-        "validation_note": "可选字段缺失不应自动判为不可执行。"
-      },
-      {
-        "name": "heading",
-        "type": "number",
-        "required": false,
-        "requirement_level": "optional",
-        "purpose": "观察朝向角（度）。",
-        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 heading；来源没有时不得编造。",
-        "context_sources": [],
-        "context_default": null,
-        "allowed_values": [],
-        "minimum": 0.0,
-        "maximum": 360.0,
-        "example": null,
-        "aliases": [
-          "朝向",
-          "方位角"
-        ],
-        "validation_note": "可选字段缺失不应自动判为不可执行。"
-      },
-      {
-        "name": "tilt",
-        "type": "number",
-        "required": false,
-        "requirement_level": "optional",
-        "purpose": "倾斜角（度）。",
-        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 tilt；来源没有时不得编造。",
-        "context_sources": [],
-        "context_default": null,
-        "allowed_values": [],
-        "minimum": 0.0,
-        "maximum": 90.0,
-        "example": null,
-        "aliases": [
-          "倾角",
-          "pitch"
-        ],
-        "validation_note": "可选字段缺失不应自动判为不可执行。"
-      },
-      {
-        "name": "time_range",
-        "type": "string_or_object",
-        "required": false,
-        "requirement_level": "optional",
-        "purpose": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。",
-        "how_to_obtain": "从字幕、task 或已有结果提取真实时间范围；来源没有时不得猜测。",
-        "context_sources": [],
-        "context_default": null,
-        "allowed_values": [],
-        "minimum": null,
-        "maximum": null,
-        "example": "1980-1995",
-        "aliases": [
-          "时期",
-          "时间",
-          "年份",
-          "年代",
-          "年代范围",
-          "日期",
-          "影像时期",
-          "影像年份",
-          "date_range",
-          "year"
-        ],
-        "validation_note": "可选字段缺失不应自动判为不可执行。"
-      }
     ]
   },
   "implementation_research": {
@@ -799,7 +580,8 @@
     "limitations": [
       "resolution_m 不能创造不存在的分辨率",
       "云量/拼接/季节会影响判断",
-      "oblique_view 渲染不得冒充真实斜拍照片"
+      "不提供斜拍",
+      "登录、Catalog 和预览遇到连接中断或超时时再试两次，HTTP 状态错误不重试"
     ],
     "mcp_strategy": "自建 OAuth token 缓存的 API adapter；不要每次请求新 token。"
   },

@@ -155,6 +155,8 @@ def llm_compile_params(
         "已有 normalized_inputs 中的键不要覆盖、不要改掉。"
         "只填 schema 里有的字段；不确定就不要填。\n"
         "不得编造坐标、文件路径、Overpass QL 或来源中不存在的几何/数值。\n"
+        "schema 写明不接受地名或要求先 geocode 时，不得把纯地名写入该字段；"
+        "来源里没有 bbox 或中心点就留空。\n"
         "execution 字段不得填写“步骤3检索到的结果/上一步提取帧”这类自然语言占位；"
         "只能使用 available_context 中已有的 $step_…/$current_… 引用或来源里明确存在的真实 ID。\n"
         "枚举字段必须使用 schema 的 allowed_values。"

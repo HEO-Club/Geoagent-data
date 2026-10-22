@@ -6,6 +6,8 @@ import json
 from typing import Any, Self
 from urllib.parse import urlparse
 
+import pytest
+
 from tool import execute
 from tool.contract import Observation, RuntimeContext
 from tool.web_page_read import _read as read_mod
@@ -410,3 +412,75 @@ def test_http_reader_extracts_article_and_strips_html(monkeypatch: Any) -> None:
             observation.result["excerpts"][0]["text"],
         ]
     )
+
+
+def test_transport_drop_is_retried_twice(monkeypatch: Any) -> None:
+    attempts = {"count": 0}
+
+    class _Ok:
+        status = 200
+        headers = {"Content-Type": "text/html"}
+
+        def geturl(self) -> str:
+            return "https://example.com/"
+
+        def read(self, size: int = -1) -> bytes:
+            del size
+            return b""
+
+        def __enter__(self) -> _Ok:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    class _Opener:
+        def open(self, request: Any, timeout: float = 0) -> _Ok:
+            del request, timeout
+            attempts["count"] += 1
+            if attempts["count"] < 3:
+                raise read_mod.urllib.error.URLError(OSError("UNEXPECTED_EOF_WHILE_READING"))
+            return _Ok()
+
+    monkeypatch.setattr(read_mod.urllib.request, "build_opener", lambda *args, **kwargs: _Opener())
+    status, final_url, _content_type, body = read_mod._http_get(
+        "https://example.com/",
+        timeout_sec=1,
+        max_bytes=1000,
+        max_redirects=2,
+        user_agent="test",
+    )
+    assert attempts["count"] == 3
+    assert status == 200
+    assert final_url == "https://example.com/"
+    assert body == b""
+
+
+def test_http_error_is_not_retried(monkeypatch: Any) -> None:
+    import urllib.error
+    from io import BytesIO
+
+    attempts = {"count": 0}
+
+    class _Opener:
+        def open(self, request: Any, timeout: float = 0) -> Any:
+            del timeout
+            attempts["count"] += 1
+            raise urllib.error.HTTPError(
+                "https://example.com/missing",
+                404,
+                "missing",
+                hdrs=None,  # type: ignore[arg-type]
+                fp=BytesIO(b"missing"),
+            )
+
+    monkeypatch.setattr(read_mod.urllib.request, "build_opener", lambda *args, **kwargs: _Opener())
+    with pytest.raises(read_mod.FetchError, match="HTTP 404"):
+        read_mod._http_get(
+            "https://example.com/missing",
+            timeout_sec=1,
+            max_bytes=1000,
+            max_redirects=2,
+            user_agent="test",
+        )
+    assert attempts["count"] == 1

@@ -62,8 +62,8 @@
 
 - **抽取输入**：仅该 task 的字幕切片；**禁止**读 groundtruth。
 - **`raw_given_clue`**：问题设置段外部沟通原话；角色区分 `photo_location_constraint` / `person_or_social_attribute` / `other_non_location`。
-- **`working_scope`**：仅当存在拍摄地硬边界（`bound_kind=inside`）或可核验软先验（`bound_kind=near`，含「籍贯 ∧ 离家不远 ⇒ 籍贯地附近」）时规范化；`region` 为展示短语；**禁止**把软先验升格成「X内」。城市级「拍摄地/拍摄城市就是 X」属硬边界；抽取看约束语义而非来源渠道（渠道无关）。
-- **`candidate_hypothesis`**（博主演绎候选）：可抽取供审计，**不得**写入蒸馏 prompt 的已知范围块或训练 `user_query`。
+- **`working_scope`**：不是靠看图、方位、地物、日照或阴影等地理推理定位得到的范围和相关地点信息，一律规范化。包括出题给定的国家/地区/城市、IP 属地、籍贯地、活动地、评论或私信中的地点约束，不要求「离家不远」。`region` 只写地点短语，不写渠道；明确行政区用 `bound_kind=inside` 并保持原文粒度；「附近」类用 `bound_kind=near`，**禁止**把软先验升格成「X内」。抽取看约束是否来自推理，而非来源渠道（渠道无关）。
+- **`candidate_hypothesis`**（地理推理或博主演绎候选）：可抽取供审计，**不得**写入蒸馏 prompt 的已知范围块或训练 `user_query`。
 - **阶段2 蒸馏 prompt**：有有效 `working_scope` 时增加「Agent 已知工作范围」块；thought 须将其当先验，不得写「字幕/网友说」。
 - **阶段3 `user_query`**：无 scope 时为 `Locate the place shown in the image.`；有 scope 时追加一行 `Working scope: {region}`。
 
@@ -167,6 +167,17 @@ def run_stage4(*, task: GeoTaskSpec, transcript: list[TranscriptSegment],
 ## 6. Tool 树规则
 
 - 每棵树一个执行器级 canonical（本 task 内存中可临时挂 variants / variant_operations）；Tool 以真实 API/数据库/程序边界划分，不以自然语言动词划分
+- `streetview_query.open` 可写地名：内部先调用 `geocode`，没有坐标再按同一名称查 `poi_search`，然后开街景；模型不必拆成两步；`geocode` 仍保留给讲解里单独做地名→坐标的步骤
+- `satellite_imagery_query` 可写地名：内部先调用 `geocode`，没有坐标再按同一名称查 `poi_search`，再用默认半径扩成框后查 Copernicus；`time_range` 接受四位年份的十年写法，如 `1990s` 或 `1990年代`，收成该十年的 1 月 1 日到 12 月 31 日。只保留 `retrieve` 与 `change_time`，不提供斜拍。默认只查 Sentinel-2 与 Landsat 8；`landsat-etm-l2` 在 CDSE 上会解析成 LETML2 并返回 HTTP 500，不加入默认检索。该时段没有这两个集合时不请求 Catalog，返回无覆盖。登录、Catalog 和预览遇到连接中断或超时时，同一请求再试两次；HTTP 状态错误不重试。`satellite_imagery_compare` 取图走同一条请求
+- `flight_data_query` 连接中断或超时时，同一请求再试两次。HTTP 状态错误不重试
+- `map_layer_query.load_layer` 可写地名：内部调用 `geocode` 得到点或 bbox 后再请求 WMS，模型不必先单独 geocode
+- `reverse_image_search` 只使用 SerpAPI Google Lens。目录不提供搜图引擎选项；传入百度识图、Vision 或其他引擎名称时返回 `unsupported_engine`，不发起那些请求
+- `web_page_read` 连接中断或超时时，同一请求再试两次。HTTP 状态错误不重试
+- `llm_query` 按 `LLM_PROVIDER` 取对应密钥：`qwen` / `dashscope` 用 `DASHSCOPE_API_KEY`，`kimi` / `moonshot` 用 `MOONSHOT_API_KEY`，`openai` 用 `OPENAI_API_KEY`。不把另一家的密钥发给当前端点
+- `media_search` 遇到 Wikimedia 或 YouTube 的 HTTP 429、503，或连接中断时，同一请求再试两次。其他 HTTP 错误不重试
+- `weather_archive_query` 的 `time_range` 必须落在 1940-01-01 到当前日期减去 5 天之间；更早、更晚或未来日期在本地拒绝，不发给 Open-Meteo 或 GIBS。连接中断时同一请求再试两次。时序已经返回而图层下载失败时，保留时序，并把图层错误写入 `layer_errors`
+- `osm_query` 只保留一个执行器：`query` 按类型取地物；`near` 查找相距若干米的地点，范围过大时在执行器内切块，并在每个地点上当场筛选走向、方位、高程和建成区面；一次下载超时或被服务器拒绝时，改为按类型分别下载该块，再在本地做距离和走向筛选；`crossings` 查找落在线上的桥、坝、渡口或道口；`intersect` 计算两类线的交叉点。未设置 `OSM_QUERY_OVERPASS_ENDPOINT` 时按顺序询问 `overpass-api.de`、`overpass.private.coffee`、`maps.mail.ru`；前一台返回 5xx、429、超时或网络失败时再问下一台，查询语法错误不换服务器。这一轮都失败时隔 15 秒、30 秒再整轮重试，最多三轮；语法错误不重试。设置该变量时只用指定的一台，同一类失败同样重试。山地看高程，复用 `terrain_analysis` 的高程提供者：调用上下文已注入时用注入的，否则在 `ALLOW_REAL_TOOL_API=true` 且配置了 `OPENTOPOGRAPHY_API_KEY` 时使用 OpenTopography。没有 DEM 时这次调用不可用。城区看同一块里的建筑或居住用地面，缺面只说明没有面，不能当成没有城区。山、城区没有安全标签，不能当作类型。没有结果只表示 OSM 没有返回
+- `osm_query` 的纯地名先按行政区的 `name`、`alt_name`、`official_name`、`name:zh` 选一个区域；没有命中再 geocode。有 OSM 关系编号或 bbox 才继续查地物，只有点或无法解析时返回 `no_result`
 - 同一执行器通过不同 `operation` 和 `inputs` 完成 query/filter/export/compare 等用途；每次调用必须额外写 `purpose`，解释本次调用补齐什么证据
 - 匹配：当前官方目录精确名 → 本 task 语义归并/重分类 → 未知名四选一（`map` / `new_operation` / `create` / `reasoning`）；不得因输入字段略有差异直接失败或新建，也不得把不同执行器硬塞进已有名；**不**跨视频落盘积累别名
 - 检测为 `create`：本 task 用临时 tool slug 跑完，不写提案、不改官方 `canonical_tool_catalog_v2.json`；mapping 标记 `temporary_tools`，阶段4 `notes` 必须汇报；临时名不单独压 `decision`

@@ -210,8 +210,13 @@ def _parse_region(
         else:
             named = _named_regions(ctx).get(stripped)
             if named is None:
+                if _looks_like_description(stripped):
+                    raise RegionError(
+                        "region 写的是画面描述，裁剪需要像素框 [x1,y1,x2,y2]，或事先登记同名区域",
+                        "unresolved_region",
+                    )
                 raise RegionError(
-                    f"无法解析命名区域: {stripped}",
+                    f"未登记区域名: {stripped}",
                     "unresolved_region",
                 )
             value = named
@@ -460,6 +465,12 @@ def _clamp_box(
         max(0, min(width, x2)),
         max(0, min(height, y2)),
     )
+
+
+def _looks_like_description(text: str) -> bool:
+    if any(char.isspace() for char in text):
+        return True
+    return any("\u4e00" <= char <= "\u9fff" for char in text)
 
 
 def _named_regions(ctx: RuntimeContext | None) -> dict[str, Any]:

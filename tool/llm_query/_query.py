@@ -243,12 +243,14 @@ class OpenAICompatibleClient:
         default_model: str,
         timeout_sec: float,
         max_output_tokens: int,
+        reasoning_effort: str | None = None,
     ) -> None:
         self._api_key = api_key
         self._base_url = base_url
         self.default_model = default_model
         self._timeout_sec = timeout_sec
         self._max_output_tokens = max_output_tokens
+        self._reasoning_effort = reasoning_effort
         self.provider = _PROVIDER_OPENAI_COMPAT
         self.endpoint_kind = _ENDPOINT_RELAY
 
@@ -267,15 +269,20 @@ class OpenAICompatibleClient:
             messages.append({"role": "system", "content": request.system})
         messages.append({"role": "user", "content": request.user})
         try:
-            completion = client.chat.completions.create(
-                model=request.model,
-                max_tokens=self._max_output_tokens,
-                messages=messages,
-            )
+            create_kwargs: dict[str, Any] = {
+                "model": request.model,
+                "max_tokens": self._max_output_tokens,
+                "messages": messages,
+                "stream": True,
+            }
+            if self._reasoning_effort:
+                create_kwargs["extra_body"] = {"reasoning_effort": self._reasoning_effort}
+            stream = client.chat.completions.create(**create_kwargs)
+            text, response_model = _openai_stream_text(stream, fallback_model=request.model)
+        except EngineUnavailableError:
+            raise
         except Exception as exc:
             raise EngineUnavailableError(f"OpenAI 兼容调用失败: {exc}") from exc
-        text = _openai_text(completion)
-        response_model = str(getattr(completion, "model", "") or request.model)
         return LlmQueryResponse(
             text=text,
             requested_model=request.model,
@@ -568,7 +575,12 @@ def _resolve_client(ctx: RuntimeContext | None) -> ExternalLlmClient:
     if provider == _PROVIDER_ANTHROPIC:
         return _build_anthropic_client(timeout_sec=timeout_sec, max_tokens=max_tokens)
     if provider in _OPENAI_COMPAT_PROVIDERS:
-        return _build_openai_client(timeout_sec=timeout_sec, max_tokens=max_tokens)
+        return _build_openai_client(
+            provider=provider,
+            timeout_sec=timeout_sec,
+            max_tokens=max_tokens,
+            reasoning_effort=_kimi_reasoning_effort(provider),
+        )
     if not provider:
         raise EngineUnavailableError("未配置 LLM_QUERY_PROVIDER 或 LLM_PROVIDER")
     raise EngineUnavailableError(f"llm_query 暂不支持 provider={provider}")
@@ -600,20 +612,37 @@ def _build_anthropic_client(
         endpoint_kind=anthropic_endpoint_kind(base_url),
     )
 
+def _openai_api_key(provider: str) -> str:
+    """按当前供应商取密钥，避免把另一家的密钥发给当前端点。"""
+
+    if provider in {"qwen", "dashscope"}:
+        key = _env_value("DASHSCOPE_API_KEY")
+        missing = "未配置 DASHSCOPE_API_KEY"
+    elif provider in {"kimi", "moonshot"}:
+        key = _env_value("MOONSHOT_API_KEY")
+        missing = "未配置 MOONSHOT_API_KEY"
+    elif provider == "openai":
+        key = _env_value("OPENAI_API_KEY")
+        missing = "未配置 OPENAI_API_KEY"
+    else:
+        key = (
+            _env_value("DASHSCOPE_API_KEY")
+            or _env_value("OPENAI_API_KEY")
+            or _env_value("MOONSHOT_API_KEY")
+        )
+        missing = "未配置 DASHSCOPE_API_KEY、OPENAI_API_KEY 或 MOONSHOT_API_KEY"
+    if not key:
+        raise EngineUnavailableError(missing)
+    return key
+
 def _build_openai_client(
     *,
+    provider: str,
     timeout_sec: float,
     max_tokens: int,
+    reasoning_effort: str | None = None,
 ) -> OpenAICompatibleClient:
-    api_key = (
-        _env_value("DASHSCOPE_API_KEY")
-        or _env_value("OPENAI_API_KEY")
-        or _env_value("MOONSHOT_API_KEY")
-    )
-    if not api_key:
-        raise EngineUnavailableError(
-            "未配置 DASHSCOPE_API_KEY、OPENAI_API_KEY 或 MOONSHOT_API_KEY"
-        )
+    api_key = _openai_api_key(provider)
     base_url = _env_value("LLM_BASE_URL")
     if not base_url:
         raise EngineUnavailableError("未配置 LLM_BASE_URL")
@@ -628,7 +657,19 @@ def _build_openai_client(
         default_model=model,
         timeout_sec=timeout_sec,
         max_output_tokens=max_tokens,
+        reasoning_effort=reasoning_effort,
     )
+
+def _kimi_reasoning_effort(provider: str) -> str | None:
+    """Kimi 的思考和正文共用输出额度。未设置时用 low，给正文留位置。"""
+
+    if provider not in {"kimi", "moonshot"}:
+        return None
+    effort = _env_value("KIMI_REASONING_EFFORT", "low").lower()
+    if effort not in {"low", "high", "max"}:
+        raise EngineUnavailableError(f"KIMI_REASONING_EFFORT 无效: {effort!r}", "invalid_input")
+    return effort
+
 
 def _anthropic_text(message: Any) -> str:
     content = getattr(message, "content", None)
@@ -652,15 +693,56 @@ def _anthropic_text(message: Any) -> str:
             parts.append(text)
     return "".join(parts)
 
-def _openai_text(completion: Any) -> str:
-    choices = getattr(completion, "choices", None)
-    if not isinstance(choices, list) or not choices:
-        return ""
-    message = getattr(choices[0], "message", None)
-    content = getattr(message, "content", None) if message is not None else None
+def _openai_stream_text(stream: Any, *, fallback_model: str) -> tuple[str, str]:
+    """拼接流式增量。读超时按相邻两段计算，不必等整段回答写完。"""
+
+    parts: list[str] = []
+    reasoning_chars = 0
+    response_model = fallback_model
+    for chunk in stream:
+        model = str(getattr(chunk, "model", "") or "")
+        if model:
+            response_model = model
+        choices = getattr(chunk, "choices", None)
+        if not isinstance(choices, list) or not choices:
+            continue
+        delta = getattr(choices[0], "delta", None)
+        text = _delta_text(delta)
+        if text:
+            parts.append(text)
+        reasoning_chars += len(_reasoning_text(delta))
+    if not parts and reasoning_chars:
+        raise EngineUnavailableError(
+            "模型流式返回了推理过程，但没有正文。输出上限被推理占满时会出现这种情况。"
+        )
+    return "".join(parts), response_model
+
+
+def _reasoning_text(delta: Any) -> str:
+    raw = getattr(delta, "reasoning_content", None)
+    if raw is None and isinstance(delta, dict):
+        raw = delta.get("reasoning_content")
+    return raw if isinstance(raw, str) else ""
+
+
+def _delta_text(delta: Any) -> str:
+    content = getattr(delta, "content", None)
+    if content is None and isinstance(delta, dict):
+        content = delta.get("content")
     if isinstance(content, str):
         return content
+    if isinstance(content, list):
+        pieces: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                pieces.append(item)
+                continue
+            text = item.get("text") if isinstance(item, dict) else getattr(item, "text", None)
+            if isinstance(text, str):
+                pieces.append(text)
+        return "".join(pieces)
     return ""
+
 
 def _normalize_provider(provider: str) -> str:
     normalized = provider.strip().lower()

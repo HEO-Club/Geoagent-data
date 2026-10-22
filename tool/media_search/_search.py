@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -33,6 +34,10 @@ _DEFAULT_COMMONS_ENDPOINT = "https://commons.wikimedia.org/w/api.php"
 _DEFAULT_YOUTUBE_ENDPOINT = "https://www.googleapis.com/youtube/v3/search"
 _YOUTUBE_MAX_TOP_K = 50
 _DEFAULT_TIMEOUT_SEC = 30.0
+_HTTP_ATTEMPTS = 3
+_RETRY_HTTP_STATUS = frozenset({429, 503})
+_RETRY_DELAYS_SEC = (1.0, 2.0)
+_RETRY_DELAY_CAP_SEC = 5.0
 _DEFAULT_USER_AGENT = "geoagent-dataset/1.0 (media_search; local)"
 _GEO_RADIUS_MIN = 10
 _GEO_RADIUS_MAX = 10000
@@ -702,28 +707,60 @@ def _http_json(
     timeout_sec: float,
     error_prefix: str,
 ) -> Any:
-    request = urllib.request.Request(url, method="GET")
-    for key, value in headers.items():
-        request.add_header(key, value)
-    try:
-        with urllib.request.urlopen(request, timeout=timeout_sec) as response:
-            raw = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace") if exc.fp else str(exc)
-        raise EngineUnavailableError(
-            _redact_secrets(f"{error_prefix} HTTP {exc.code}: {detail[:200]}"),
-        ) from exc
-    except urllib.error.URLError as exc:
-        raise EngineUnavailableError(
-            f"{error_prefix} 网络失败: {exc.reason}",
-        ) from exc
-    except (json.JSONDecodeError, TimeoutError, OSError) as exc:
-        raise EngineUnavailableError(f"{error_prefix} 调用失败: {exc}") from exc
-    if isinstance(raw, dict) and raw.get("error"):
-        raise EngineUnavailableError(
-            _redact_secrets(f"{error_prefix} 失败: {raw['error']}")[:400],
-        )
-    return raw
+    """请求 JSON。429/503 和连接中断再试两次；其他 HTTP 状态立即失败。"""
+
+    last_transport: Exception | None = None
+    for attempt in range(_HTTP_ATTEMPTS):
+        request = urllib.request.Request(url, method="GET")
+        for key, value in headers.items():
+            request.add_header(key, value)
+        try:
+            with urllib.request.urlopen(request, timeout=timeout_sec) as response:
+                raw = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            if exc.code not in _RETRY_HTTP_STATUS or attempt == _HTTP_ATTEMPTS - 1:
+                detail = exc.read().decode("utf-8", errors="replace") if exc.fp else str(exc)
+                raise EngineUnavailableError(
+                    _redact_secrets(f"{error_prefix} HTTP {exc.code}: {detail[:200]}"),
+                ) from exc
+            time.sleep(_retry_delay(attempt, exc))
+            continue
+        except urllib.error.URLError as exc:
+            last_transport = exc
+            if attempt == _HTTP_ATTEMPTS - 1:
+                raise EngineUnavailableError(f"{error_prefix} 网络失败: {exc.reason}") from exc
+            time.sleep(_retry_delay(attempt))
+            continue
+        except json.JSONDecodeError as exc:
+            raise EngineUnavailableError(f"{error_prefix} 调用失败: {exc}") from exc
+        except (TimeoutError, OSError) as exc:
+            last_transport = exc
+            if attempt == _HTTP_ATTEMPTS - 1:
+                raise EngineUnavailableError(f"{error_prefix} 调用失败: {exc}") from exc
+            time.sleep(_retry_delay(attempt))
+            continue
+        if isinstance(raw, dict) and raw.get("error"):
+            raise EngineUnavailableError(
+                _redact_secrets(f"{error_prefix} 失败: {raw['error']}")[:400],
+            )
+        return raw
+    raise EngineUnavailableError(f"{error_prefix} 网络失败: {last_transport}")
+
+
+def _retry_delay(attempt: int, exc: urllib.error.HTTPError | None = None) -> float:
+    """限流时优先采用 Retry-After，并限制单次等待。"""
+
+    if exc is not None and exc.headers is not None:
+        raw = exc.headers.get("Retry-After")
+        if raw:
+            try:
+                parsed = float(str(raw).strip())
+            except ValueError:
+                parsed = -1.0
+            if parsed >= 0:
+                return min(parsed, _RETRY_DELAY_CAP_SEC)
+    index = min(attempt, len(_RETRY_DELAYS_SEC) - 1)
+    return _RETRY_DELAYS_SEC[index]
 
 def _append_query(endpoint: str, query: str) -> str:
     separator = "&" if urllib.parse.urlparse(endpoint).query else "?"

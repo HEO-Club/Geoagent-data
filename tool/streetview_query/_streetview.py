@@ -1,4 +1,4 @@
-"""streetview_query 共享执行器：Mapillary 自建街景会话。"""
+"""streetview_query 共享执行器：默认百度全景 / Google 街景网页取图。"""
 
 from __future__ import annotations
 
@@ -9,19 +9,24 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from io import BytesIO
+from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from PIL import Image
 
+from tool._crs import in_china
 from tool._gate import allow_real_api as _allow_real_api
 from tool._gate import load_tool_dotenv as _load_dotenv
 from tool.contract import Observation, RuntimeContext, declared_inputs
 from tool.runtime.image_store import put_image
 
+_PROVIDER_AUTO = "auto"
 _PROVIDER_MAPILLARY = "mapillary"
+_PROVIDER_BAIDU = "baidu"
+_PROVIDER_GOOGLE = "google"
 _CRS_WGS84 = "wgs84"
 _OP_OPEN = "open"
 _OP_NAVIGATE = "navigate"
@@ -30,6 +35,10 @@ _OP_CAPTURE = "capture"
 _DEFAULT_ENDPOINT = "https://graph.mapillary.com"
 _DEFAULT_TIMEOUT_SEC = 30.0
 _DEFAULT_UA = "geoagent-dataset/1.0 (streetview_query; local)"
+_BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
 _DEFAULT_SEARCH_RADIUS_M = 50
 _SEARCH_RADIUS_MIN = 1
 _SEARCH_RADIUS_MAX = 5000
@@ -100,9 +109,13 @@ _EARLIEST_ALIASES = frozenset(
 )
 _LATEST_ALIASES = frozenset({"latest", "newest", "最晚", "最新", "最晚可用"})
 _MAPILLARY_ALIASES = frozenset({"mapillary", "mapillary.com"})
+_BAIDU_ALIASES = frozenset(
+    {"baidu", "baidu_pano", "baidu_panorama", "baidu panorama", "百度", "百度全景"}
+)
 _GOOGLE_ALIASES = frozenset(
     {"google", "google_street_view", "google street view", "streetview", "gsw"}
 )
+_AUTO_ALIASES = frozenset({"auto", "default", "auto_detect"})
 _FORBIDDEN_KEYS = frozenset(
     {
         "answer",
@@ -118,15 +131,15 @@ _FORBIDDEN_KEYS = frozenset(
     }
 )
 _ASSUMPTIONS = [
-    "拍摄日期来自 Mapillary captured_at，不是网站上可选的任意年份",
+    "拍摄日期来自该点已返回的 captured_at，不是网站上可选的任意年份",
     "指定年代没有覆盖时返回无覆盖，不会用当前街景证明过去",
-    "Mapillary 影像为 CC BY-SA，需署名，不授予再分发或训练使用权",
-    "当前仅接入 Mapillary，未接 Google Street View",
+    "默认国内走百度全景网页接口，国外走 Google 街景网页接口；Mapillary 仅在显式指定时使用",
     "无法唯一判定时，坐标串按 lon,lat 解析",
-    "纯地名未在本步 geocode，需要 bbox 或中心点加半径",
-    "Mapillary 只按中心点检索，半径最大 50 米；更大的范围不会扩大检索",
-    "Mapillary 在部分地区覆盖稀疏，无图即无覆盖",
-    "available_dates 仅来自本次检索返回的影像，不是全局完整编年史",
+    "open 遇到纯地名时内部先 geocode，没有坐标再按名称查 POI，不要求模型拆成两步",
+    "open 只查当前点最近一张全景，不扫区域网格",
+    "接口报错或回执无法解析不是无覆盖",
+    "available_dates 仅来自当前点已返回的拍摄，不是全局完整编年史",
+    "街景截图只供本次查看，用后删除本地文件",
 ]
 
 class StreetviewInputError(Exception):
@@ -209,6 +222,8 @@ class ImageRecord:
     sequence_id: str | None = None
     is_pano: bool = False
     thumb_url: str | None = None
+    neighbors: tuple[ImageRecord, ...] = ()
+    history: tuple[ImageRecord, ...] = ()
 
 @dataclass
 class StreetviewSession:
@@ -225,6 +240,9 @@ class StreetviewSession:
     is_pano: bool = False
     thumb_url: str | None = None
     coverage: bool = False
+    neighbors: list[ImageRecord] = field(default_factory=list)
+    history: list[ImageRecord] = field(default_factory=list)
+    renders_perspective: bool = False
 
 @runtime_checkable
 class StreetviewProvider(Protocol):
@@ -350,19 +368,26 @@ def execute_open(
 ) -> Observation:
     """打开指定地点或坐标的街景会话。"""
 
-    del purpose
     try:
         inputs = declared_inputs(inputs, "area", "coordinates", "provider")
-        _reject_unsupported_provider(inputs.get("provider"))
-        location = _resolve_search_location(inputs, ctx, require_geometry=True)
-        provider = _resolve_provider(ctx)
+        requested = inputs.get("provider")
+        _reject_unsupported_provider(requested)
+        location = _resolve_search_location(
+            inputs,
+            ctx,
+            require_geometry=True,
+            geocode_place_names=True,
+            purpose=purpose,
+        )
+        provider = _resolve_provider(ctx, requested=requested, location=location)
         records = _search_records(provider, location.bbox, location.center)
-        chosen = _closest_record(records, location.center)
+        chosen = _closest_within_radius(records, location.center, location.radius_m)
         session = _new_session(
             ctx,
             provider_name=_provider_name(provider),
             lat=location.center.lat,
             lon=location.center.lon,
+            renders_perspective=_provider_renders_perspective(provider),
         )
         _apply_record(session, chosen)
         _store_session(ctx, session)
@@ -373,7 +398,10 @@ def execute_open(
             applied=_applied(
                 provider,
                 location=location,
-                extra={"search_radius_m": _radius_m_for_bbox(location.bbox)},
+                extra={
+                    "search_radius_m": location.radius_m,
+                    **location.geocode_applied,
+                },
             ),
             ctx=ctx,
         )
@@ -399,22 +427,36 @@ def execute_navigate(
         bearing, step_sign = _parse_direction(direction_raw)
         distance_m = _parse_distance_m(inputs.get("distance_m"))
         session, location = _resolve_session_or_location(inputs, ctx)
-        provider = _resolve_provider(ctx)
+        provider = _resolve_provider(
+            ctx,
+            location=location,
+            session=session,
+        )
+        session.provider = _provider_name(provider)
+        session.renders_perspective = session.renders_perspective or _provider_renders_perspective(provider)
         if session.image_id is None:
             records = _search_records(provider, location.bbox, location.center)
-            chosen = _closest_record(records, location.center)
+            chosen = _closest_within_radius(records, location.center, location.radius_m)
             _apply_record(session, chosen)
         moved = False
         if session.image_id is not None:
-            target = _step_along_sequence(
-                provider,
-                session,
-                bearing=bearing,
-                step_sign=step_sign,
-                distance_m=distance_m,
-            )
+            if session.neighbors:
+                target = _step_along_neighbors(
+                    session,
+                    bearing=bearing,
+                    step_sign=step_sign,
+                    distance_m=distance_m,
+                )
+            else:
+                target = _step_along_sequence(
+                    provider,
+                    session,
+                    bearing=bearing,
+                    step_sign=step_sign,
+                    distance_m=distance_m,
+                )
             if target is not None and target.image_id != session.image_id:
-                _apply_record(session, target)
+                _apply_record(session, target, keep_neighbors=True)
                 moved = True
         _store_session(ctx, session)
         extra: dict[str, Any] = {"direction": _stringify(direction_raw)}
@@ -452,14 +494,19 @@ def execute_change_time(
             raise StreetviewInputError("缺少必填输入 time_range", "missing_input")
         spec = _parse_time_spec(inputs.get("time_range"))
         session, location = _resolve_session_or_location(inputs, ctx)
-        provider = _resolve_provider(ctx)
-        records = _search_records(provider, location.bbox, location.center)
+        provider = _resolve_provider(ctx, location=location, session=session)
+        session.provider = _provider_name(provider)
+        session.renders_perspective = session.renders_perspective or _provider_renders_perspective(provider)
+        if session.history or session.renders_perspective:
+            records = _session_time_records(session)
+        else:
+            records = _search_records(provider, location.bbox, location.center)
         available_dates = _available_dates(records)
         chosen = _select_by_time(records, spec, location.center)
         if chosen is None:
             _clear_image_evidence(session)
         else:
-            _apply_record(session, chosen)
+            _apply_record(session, chosen, keep_neighbors=True)
         _store_session(ctx, session)
         extra: dict[str, Any] = {"time_range": spec.applied}
         return _ok(
@@ -492,20 +539,41 @@ def execute_capture(
         heading = _parse_angle(inputs.get("heading"), "heading", 0.0, 360.0)
         pitch = _parse_angle(inputs.get("pitch"), "pitch", -90.0, 90.0)
         fov = _parse_angle(inputs.get("fov"), "fov", 1.0, 180.0)
-        provider = _resolve_provider(ctx)
-        record = _image_record(provider, session.image_id, {})
-        if record.thumb_url:
-            session.thumb_url = record.thumb_url
-        image_bytes = provider.fetch_image_bytes(record.thumb_url or session.thumb_url or "")
+        provider = _resolve_provider(ctx, session=session)
+        applied_heading = heading
+        applied_pitch = 0.0 if pitch is None else pitch
+        applied_fov = _DEFAULT_FOV if fov is None else fov
+        perspective = session.renders_perspective or _provider_renders_perspective(provider)
+        record: ImageRecord | None = None
+        if not perspective:
+            record = _image_record(provider, session.image_id, {})
+            if record.thumb_url:
+                session.thumb_url = record.thumb_url
+        pano = bool(session.is_pano or (record.is_pano if record is not None else False))
+        if perspective:
+            if applied_heading is None:
+                applied_heading = session.compass_angle if session.compass_angle is not None else 0.0
+            renderer = getattr(provider, "render_view", None)
+            if not callable(renderer):
+                raise EngineUnavailableError("街景后端未提供按朝向截图")
+            image_bytes = renderer(
+                session.image_id,
+                heading=applied_heading,
+                pitch=applied_pitch,
+                fov=applied_fov,
+                width=_DEFAULT_CAPTURE_WIDTH,
+                height=_DEFAULT_CAPTURE_HEIGHT,
+            )
+            pano = True
+        else:
+            image_bytes = provider.fetch_image_bytes(
+                (record.thumb_url if record is not None else None) or session.thumb_url or ""
+            )
         if not image_bytes:
             raise EngineUnavailableError("街景缩略图为空")
         pil = Image.open(BytesIO(image_bytes))
         pil.load()
-        applied_heading = heading
-        applied_pitch = 0.0 if pitch is None else pitch
-        applied_fov = _DEFAULT_FOV if fov is None else fov
-        pano = bool(session.is_pano or record.is_pano)
-        if pano:
+        if pano and not perspective:
             if applied_heading is None:
                 applied_heading = session.compass_angle if session.compass_angle is not None else 0.0
             pil = _project_pano(
@@ -514,20 +582,24 @@ def execute_capture(
                 pitch=applied_pitch,
                 fov=applied_fov,
             )
-        else:
+        elif not pano:
             applied_heading = session.compass_angle
             applied_pitch = None
             applied_fov = None
-        image_id, path = put_image(pil, source_id=session.image_id, suffix="jpeg", ctx=ctx)
-        extra: dict[str, Any] = {"pano": pano}
+        extra: dict[str, Any] = {
+            "pano": pano,
+            "width": pil.width,
+            "height": pil.height,
+        }
         if applied_heading is not None:
             extra["heading"] = applied_heading
         if applied_pitch is not None:
             extra["pitch"] = applied_pitch
         if applied_fov is not None:
             extra["fov"] = applied_fov
-        artifacts = {"image_ids": [image_id], "images": {image_id: str(path)}}
-        return _ok(
+        image_id, path = put_image(pil, source_id=session.image_id, suffix="jpeg", ctx=ctx)
+        artifacts = {"image_ids": [image_id]}
+        observation = _ok(
             _OP_CAPTURE,
             session,
             coverage=True,
@@ -536,7 +608,10 @@ def execute_capture(
             artifacts=artifacts,
             ctx=ctx,
             pano=pano,
+            perspective=perspective,
         )
+        _discard_captured_image(ctx, image_id, path)
+        return observation
     except StreetviewInputError as exc:
         return _fail(str(exc), exc.error_code)
     except EngineUnavailableError as exc:
@@ -554,6 +629,7 @@ def _ok(
     image_id: str | None = None,
     artifacts: dict[str, Any] | None = None,
     pano: bool | None = None,
+    perspective: bool | None = None,
 ) -> Observation:
     result: dict[str, Any] = {
         "operation": operation,
@@ -561,7 +637,7 @@ def _ok(
         "session": session.session_id,
         "viewpoint": _viewpoint(session) if coverage and session.image_id else None,
         "applied": applied,
-        "assumptions": _assumptions(pano=pano),
+        "assumptions": _assumptions(pano=pano, perspective=perspective),
     }
     if moved is not None:
         result["moved"] = moved
@@ -578,10 +654,12 @@ def _ok(
         session=session.session_id,
     )
 
-def _assumptions(*, pano: bool | None) -> list[str]:
+def _assumptions(*, pano: bool | None, perspective: bool | None = None) -> list[str]:
     items = list(_ASSUMPTIONS)
     if pano is False:
         items.append("当前影像不是全景，capture 返回原图朝向，不能按任意 heading/pitch 重投影")
+    elif pano is True and perspective:
+        items.append("全景由服务端按 heading/pitch/fov 截透视图片")
     elif pano is True:
         items.append("全景按 heading/pitch/fov 从等距柱状图投影，不是服务端任意年份截图")
     return items
@@ -649,6 +727,106 @@ def _closest_record(records: list[ImageRecord], center: GeoPoint) -> ImageRecord
             best = record
             best_dist = dist
     return best
+
+
+def _closest_within_radius(
+    records: list[ImageRecord],
+    center: GeoPoint,
+    radius_m: int,
+) -> ImageRecord | None:
+    chosen = _closest_record(records, center)
+    if chosen is None:
+        return None
+    point = _record_point(chosen)
+    if point is not None and _haversine_m(center, point) > float(max(radius_m, 1)):
+        return None
+    return chosen
+
+
+def _session_time_records(session: StreetviewSession) -> list[ImageRecord]:
+    records: list[ImageRecord] = []
+    if session.image_id:
+        captured_at, captured_date = _parse_captured_at(session.captured_at)
+        records.append(
+            ImageRecord(
+                image_id=session.image_id,
+                lat=session.lat,
+                lon=session.lon,
+                captured_at=captured_at,
+                captured_date=captured_date,
+                compass_angle=session.compass_angle,
+                sequence_id=session.sequence_id,
+                is_pano=session.is_pano,
+                thumb_url=session.thumb_url,
+                neighbors=tuple(session.neighbors),
+                history=tuple(session.history),
+            )
+        )
+    records.extend(session.history)
+    return records
+
+
+def _step_along_neighbors(
+    session: StreetviewSession,
+    *,
+    bearing: float | None,
+    step_sign: int | None,
+    distance_m: float | None,
+) -> ImageRecord | None:
+    """在 open 已保存的相邻点中走一步，不再重新检索。"""
+
+    origin = (
+        GeoPoint(lat=session.lat, lon=session.lon)
+        if session.lat is not None and session.lon is not None
+        else None
+    )
+    wanted = bearing
+    if step_sign is not None:
+        base = wanted if wanted is not None else session.compass_angle
+        if base is None:
+            base = 0.0
+        wanted = base if step_sign > 0 else (base + 180.0) % 360.0
+    remaining = [item for item in session.neighbors if item.image_id != session.image_id]
+    if not remaining:
+        return None
+
+    def pick(from_point: GeoPoint | None, options: list[ImageRecord]) -> ImageRecord | None:
+        if wanted is None:
+            return options[0]
+        best: ImageRecord | None = None
+        best_diff = math.inf
+        for item in options:
+            dest = _record_point(item)
+            if from_point is None or dest is None:
+                diff = 90.0
+            else:
+                diff = _angle_diff(_bearing_deg(from_point, dest), wanted)
+            if diff < best_diff:
+                best_diff = diff
+                best = item
+        return best
+
+    if distance_m is None or distance_m <= 0:
+        return pick(origin, remaining)
+    traveled = 0.0
+    last: ImageRecord | None = None
+    cursor = origin
+    unused = list(remaining)
+    while unused:
+        nxt = pick(cursor, unused)
+        if nxt is None:
+            break
+        dest = _record_point(nxt)
+        if cursor is not None and dest is not None:
+            traveled += _haversine_m(cursor, dest)
+        else:
+            traveled += 1.0
+        last = nxt
+        unused = [item for item in unused if item.image_id != nxt.image_id]
+        cursor = dest
+        if traveled >= distance_m:
+            break
+    return last
 
 def _select_by_time(
     records: list[ImageRecord],
@@ -798,7 +976,12 @@ def _image_record(
     cache[image_id] = record
     return record
 
-def _normalize_image(raw: dict[str, Any], *, image_id: str | None = None) -> ImageRecord | None:
+def _normalize_image(
+    raw: dict[str, Any],
+    *,
+    image_id: str | None = None,
+    nested: bool = False,
+) -> ImageRecord | None:
     token = image_id or _optional_str(raw.get("id", raw.get("image_id")))
     if not token:
         return None
@@ -810,6 +993,23 @@ def _normalize_image(raw: dict[str, Any], *, image_id: str | None = None) -> Ima
     sequence = _optional_str(raw.get("sequence", raw.get("sequence_id")))
     thumb = _optional_str(raw.get("thumb_2048_url") or raw.get("thumb_1024_url") or raw.get("thumb_url"))
     is_pano = bool(raw.get("is_pano", False))
+    neighbors: tuple[ImageRecord, ...] = ()
+    history: tuple[ImageRecord, ...] = ()
+    if not nested:
+        neighbor_rows: list[ImageRecord] = []
+        for item in raw.get("neighbors") or []:
+            if isinstance(item, dict):
+                parsed = _normalize_image(item, nested=True)
+                if parsed is not None:
+                    neighbor_rows.append(parsed)
+        neighbors = tuple(neighbor_rows)
+        history_rows: list[ImageRecord] = []
+        for item in raw.get("history") or []:
+            if isinstance(item, dict):
+                parsed = _normalize_image(item, nested=True)
+                if parsed is not None:
+                    history_rows.append(parsed)
+        history = tuple(history_rows)
     return ImageRecord(
         image_id=token,
         lat=lat,
@@ -820,6 +1020,8 @@ def _normalize_image(raw: dict[str, Any], *, image_id: str | None = None) -> Ima
         sequence_id=sequence,
         is_pano=is_pano,
         thumb_url=thumb,
+        neighbors=neighbors,
+        history=history,
     )
 
 def _geometry_point(raw: dict[str, Any]) -> tuple[float | None, float | None]:
@@ -859,7 +1061,18 @@ def _parse_captured_at(raw: Any) -> tuple[str | None, date | None]:
         if not text:
             return None, None
         if text.isdigit():
+            if len(text) == 8:
+                parsed = _parse_iso_date(f"{text[0:4]}-{text[4:6]}-{text[6:8]}")
+                if parsed is not None:
+                    return parsed.isoformat(), parsed
             return _parse_captured_at(int(text))
+        month_only = re.fullmatch(r"^(\d{4})-(\d{2})$", text)
+        if month_only:
+            year = int(month_only.group(1))
+            month = int(month_only.group(2))
+            if _YEAR_MIN <= year <= _YEAR_MAX and 1 <= month <= 12:
+                parsed = date(year, month, 1)
+                return parsed.isoformat(), parsed
         iso = text.replace("Z", "+00:00")
         try:
             moment = datetime.fromisoformat(iso)
@@ -878,7 +1091,12 @@ def _record_point(record: ImageRecord) -> GeoPoint | None:
         return None
     return GeoPoint(lat=record.lat, lon=record.lon)
 
-def _apply_record(session: StreetviewSession, record: ImageRecord | None) -> None:
+def _apply_record(
+    session: StreetviewSession,
+    record: ImageRecord | None,
+    *,
+    keep_neighbors: bool = False,
+) -> None:
     if record is None:
         _clear_image_evidence(session)
         return
@@ -893,6 +1111,14 @@ def _apply_record(session: StreetviewSession, record: ImageRecord | None) -> Non
     session.is_pano = record.is_pano
     session.thumb_url = record.thumb_url
     session.coverage = True
+    if record.neighbors:
+        session.neighbors = list(record.neighbors)
+    elif not keep_neighbors:
+        session.neighbors = []
+    if record.history:
+        session.history = list(record.history)
+    elif not keep_neighbors:
+        session.history = []
 
 def _clear_image_evidence(session: StreetviewSession) -> None:
     session.image_id = None
@@ -902,6 +1128,8 @@ def _clear_image_evidence(session: StreetviewSession) -> None:
     session.is_pano = False
     session.thumb_url = None
     session.coverage = False
+    session.neighbors = []
+    session.history = []
 
 def _new_session(
     ctx: RuntimeContext | None,
@@ -909,6 +1137,7 @@ def _new_session(
     provider_name: str,
     lat: float | None,
     lon: float | None,
+    renders_perspective: bool = False,
 ) -> StreetviewSession:
     extras = _extras(ctx)
     extras[_SESSION_COUNTER_KEY] = int(extras.get(_SESSION_COUNTER_KEY) or 0) + 1
@@ -918,6 +1147,7 @@ def _new_session(
         provider=provider_name,
         lat=lat,
         lon=lon,
+        renders_perspective=renders_perspective,
     )
 
 def _store_session(ctx: RuntimeContext | None, session: StreetviewSession) -> None:
@@ -936,9 +1166,10 @@ def restore_runtime_context(result: dict[str, Any], ctx: RuntimeContext) -> None
         return
     viewpoint = result.get("viewpoint") if isinstance(result.get("viewpoint"), dict) else {}
     applied = result.get("applied") if isinstance(result.get("applied"), dict) else {}
+    provider_name = str(applied.get("provider") or _PROVIDER_AUTO)
     session = StreetviewSession(
         session_id=session_id,
-        provider=str(applied.get("provider") or _PROVIDER_MAPILLARY),
+        provider=provider_name,
         lat=_as_float(viewpoint.get("lat")),
         lon=_as_float(viewpoint.get("lon")),
         image_id=_optional_str(viewpoint.get("image_id")),
@@ -947,6 +1178,7 @@ def restore_runtime_context(result: dict[str, Any], ctx: RuntimeContext) -> None
         compass_angle=_as_float(viewpoint.get("compass_angle")),
         is_pano=bool(viewpoint.get("is_pano", False)),
         coverage=bool(result.get("coverage", False)),
+        renders_perspective=provider_name in {_PROVIDER_BAIDU, _PROVIDER_GOOGLE},
     )
     _store_session(ctx, session)
     suffix = session_id.rsplit("_", 1)[-1]
@@ -990,6 +1222,7 @@ class _SearchLocation:
     center: GeoPoint
     radius_m: int
     area: ParsedArea
+    geocode_applied: dict[str, Any] = field(default_factory=dict)
 
 def _resolve_session_or_location(
     inputs: dict[str, Any],
@@ -1021,7 +1254,7 @@ def _resolve_session_or_location(
     if session is None:
         session = _new_session(
             ctx,
-            provider_name=_PROVIDER_MAPILLARY,
+            provider_name=_PROVIDER_AUTO,
             lat=location.center.lat,
             lon=location.center.lon,
         )
@@ -1035,12 +1268,15 @@ def _resolve_search_location(
     ctx: RuntimeContext | None,
     *,
     require_geometry: bool,
+    geocode_place_names: bool = False,
+    purpose: str = "",
 ) -> _SearchLocation:
     point = _parse_coordinates(inputs.get("coordinates"))
     area = _parse_area(_resolve_area(inputs.get("area"), ctx))
     center = point or area.center
     bbox = area.bbox
     radius = area.radius_m if area.radius_m is not None else _search_radius()
+    geocode_applied: dict[str, Any] = {}
     if bbox is None and area.polygon is not None:
         bbox = _bbox_from_polygon(area.polygon)
         if center is None:
@@ -1048,6 +1284,12 @@ def _resolve_search_location(
                 lat=(bbox.south + bbox.north) / 2.0,
                 lon=(bbox.west + bbox.east) / 2.0,
             )
+    if center is None and bbox is None and area.text and geocode_place_names:
+        center, geocode_applied = _geocode_place_name(
+            area.text,
+            ctx=ctx,
+            purpose=purpose,
+        )
     if center is not None and bbox is None:
         bbox = _bbox_from_center(center, radius)
     if bbox is not None and center is None:
@@ -1059,12 +1301,135 @@ def _resolve_search_location(
         if require_geometry:
             if area.text:
                 raise StreetviewInputError(
-                    "需要 bbox 或中心点加半径；纯地名请先 geocode",
+                    "需要 bbox、中心点加半径或可解析地名",
                     "missing_input",
                 )
             raise StreetviewInputError("缺少必填输入 area 或 coordinates", "missing_input")
         raise StreetviewInputError("无法解析查询位置", "invalid_area")
-    return _SearchLocation(bbox=bbox, center=center, radius_m=radius, area=area)
+    return _SearchLocation(
+        bbox=bbox,
+        center=center,
+        radius_m=radius,
+        area=area,
+        geocode_applied=geocode_applied,
+    )
+
+
+def _geocode_place_name(
+    query: str,
+    *,
+    ctx: RuntimeContext | None,
+    purpose: str,
+) -> tuple[GeoPoint, dict[str, Any]]:
+    """把 open 的纯地名交给 geocode；没有点时再按同一名称查 POI。"""
+
+    from tool.geocode.geocode import execute as execute_geocode
+
+    observation = execute_geocode(
+        purpose=purpose or "解析街景打开地点",
+        inputs={"query": query, "top_k": 1},
+        ctx=ctx,
+    )
+    applied: dict[str, Any] = {"geocode_query": query}
+    if not observation.ok:
+        code = observation.error_code or "engine_unavailable"
+        message = observation.error or "内部 geocode 失败"
+        if code in {"missing_input", "invalid_input"}:
+            raise StreetviewInputError(message, code)
+        if code != "no_result":
+            raise EngineUnavailableError(message, code)
+        point = None
+    else:
+        result = observation.result if isinstance(observation.result, dict) else {}
+        provider = result.get("provider")
+        if provider is None and isinstance(result.get("applied"), dict):
+            provider = result["applied"].get("provider")
+        if provider:
+            applied["geocode_provider"] = provider
+        point = _point_from_rows(result.get("candidates") or result.get("results") or [])
+    if point is not None:
+        return point, applied
+    poi_point, poi_applied = _poi_place_name(query, ctx=ctx, purpose=purpose)
+    if poi_point is None:
+        raise StreetviewInputError(f"无法解析地名: {query}", "no_result")
+    applied.update(poi_applied)
+    return poi_point, applied
+
+
+def _poi_place_name(
+    query: str,
+    *,
+    ctx: RuntimeContext | None,
+    purpose: str,
+) -> tuple[GeoPoint | None, dict[str, Any]]:
+    """地理编码没有点时，按名称取第一个 POI 坐标。"""
+
+    from tool.poi_search.poi_search import execute as execute_poi_search
+
+    observation = execute_poi_search(
+        purpose=purpose or "解析街景打开地点",
+        inputs={"query": query, "top_k": 1},
+        ctx=ctx,
+    )
+    if not observation.ok:
+        code = observation.error_code or "engine_unavailable"
+        message = observation.error or "内部 POI 检索失败"
+        if code in {"missing_input", "invalid_input", "no_result", "needs_acquisition"}:
+            return None, {}
+        raise EngineUnavailableError(message, code)
+    result = observation.result if isinstance(observation.result, dict) else {}
+    point = _point_from_rows(result.get("candidates") or result.get("results") or [])
+    if point is None:
+        return None, {}
+    applied: dict[str, Any] = {"poi_query": query}
+    provider = result.get("provider")
+    if provider is None and isinstance(result.get("applied"), dict):
+        provider = result["applied"].get("provider")
+    if provider:
+        applied["poi_provider"] = provider
+    return point, applied
+
+
+def _point_from_rows(rows: Any) -> GeoPoint | None:
+    if not isinstance(rows, list):
+        return None
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        point = _point_from_mapping(item)
+        if point is not None:
+            return point
+    return None
+
+
+def _point_from_mapping(item: dict[str, Any]) -> GeoPoint | None:
+    lat = _as_float(item.get("latitude", item.get("lat")))
+    lon = _as_float(item.get("longitude", item.get("lon", item.get("lng"))))
+    if lat is None or lon is None:
+        location = item.get("location")
+        if isinstance(location, dict):
+            lat = _as_float(location.get("latitude", location.get("lat")))
+            lon = _as_float(location.get("longitude", location.get("lon", location.get("lng"))))
+        elif isinstance(location, str):
+            lat, lon = _lat_lon_from_text(location)
+    if lat is None or lon is None:
+        return None
+    if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+        return None
+    return GeoPoint(lat=lat, lon=lon)
+
+
+def _lat_lon_from_text(text: str) -> tuple[float | None, float | None]:
+    parts = [part.strip() for part in text.split(",") if part.strip()]
+    if len(parts) != 2:
+        return None, None
+    first = _as_float(parts[0])
+    second = _as_float(parts[1])
+    if first is None or second is None:
+        return None, None
+    if abs(first) <= 90.0 and abs(second) > 90.0:
+        return first, second
+    return second, first
 
 def _resolve_area(raw: Any, ctx: RuntimeContext | None) -> Any:
     if raw is None or raw == "" or raw == "$active_area":
@@ -1405,13 +1770,39 @@ def _reject_unsupported_provider(raw: Any) -> None:
     if not isinstance(raw, str):
         raise StreetviewInputError("provider 必须是字符串", "invalid_provider")
     name = raw.strip().lower()
-    if name in _MAPILLARY_ALIASES:
+    if name in _MAPILLARY_ALIASES or name in _BAIDU_ALIASES or name in _GOOGLE_ALIASES or name in _AUTO_ALIASES:
         return
-    if name in _GOOGLE_ALIASES:
-        raise EngineUnavailableError("本阶段仅接入 Mapillary，未实现 Google Street View")
     raise EngineUnavailableError(f"未知 streetview provider: {raw}")
 
-def _resolve_provider(ctx: RuntimeContext | None) -> StreetviewProvider:
+
+def _canonical_provider_name(raw: str) -> str:
+    name = raw.strip().lower()
+    if name in _MAPILLARY_ALIASES:
+        return _PROVIDER_MAPILLARY
+    if name in _BAIDU_ALIASES:
+        return _PROVIDER_BAIDU
+    if name in _GOOGLE_ALIASES:
+        return _PROVIDER_GOOGLE
+    if name in _AUTO_ALIASES:
+        return _PROVIDER_AUTO
+    return name
+
+
+def _in_baidu_coverage(point: GeoPoint) -> bool:
+    return in_china(point.lon, point.lat)
+
+
+def _provider_renders_perspective(provider: StreetviewProvider) -> bool:
+    return bool(getattr(provider, "renders_perspective", False))
+
+
+def _resolve_provider(
+    ctx: RuntimeContext | None,
+    *,
+    requested: Any = None,
+    location: _SearchLocation | None = None,
+    session: StreetviewSession | None = None,
+) -> StreetviewProvider:
     extras = _extras(ctx)
     injected = extras.get("streetview_query_provider")
     if injected is not None:
@@ -1423,20 +1814,53 @@ def _resolve_provider(ctx: RuntimeContext | None) -> StreetviewProvider:
     _load_dotenv()
     if not _allow_real_api():
         raise EngineUnavailableError("ALLOW_REAL_TOOL_API=false，禁止调用真实街景 API")
-    name = _env_value("STREETVIEW_PROVIDER", _PROVIDER_MAPILLARY).lower()
-    if name in _GOOGLE_ALIASES:
-        raise EngineUnavailableError("本阶段仅接入 Mapillary，未实现 Google Street View")
-    if name not in _MAPILLARY_ALIASES:
-        raise EngineUnavailableError(f"未知 STREETVIEW_PROVIDER: {name}")
-    token = _mapillary_token()
-    if not token:
-        raise EngineUnavailableError("未配置 MAPILLARY_ACCESS_TOKEN 或 MAPILLARY_TOKEN")
-    return MapillaryStreetviewProvider(
-        access_token=token,
-        endpoint=_env_value("MAPILLARY_ENDPOINT", _DEFAULT_ENDPOINT),
-        timeout_sec=_env_timeout("MAPILLARY_TIMEOUT_SEC"),
-        user_agent=_env_value("MAPILLARY_USER_AGENT", _DEFAULT_UA),
-    )
+    if isinstance(requested, str) and requested.strip():
+        name = _canonical_provider_name(requested)
+    else:
+        name = _canonical_provider_name(_env_value("STREETVIEW_PROVIDER", _PROVIDER_AUTO))
+    if name == _PROVIDER_AUTO:
+        if session is not None and session.provider in {_PROVIDER_BAIDU, _PROVIDER_GOOGLE, _PROVIDER_MAPILLARY}:
+            name = session.provider
+        elif location is not None and _in_baidu_coverage(location.center):
+            name = _PROVIDER_BAIDU
+        else:
+            name = _PROVIDER_GOOGLE
+    if name == _PROVIDER_MAPILLARY:
+        token = _mapillary_token()
+        if not token:
+            raise EngineUnavailableError("未配置 MAPILLARY_ACCESS_TOKEN 或 MAPILLARY_TOKEN")
+        return MapillaryStreetviewProvider(
+            access_token=token,
+            endpoint=_env_value("MAPILLARY_ENDPOINT", _DEFAULT_ENDPOINT),
+            timeout_sec=_env_timeout("MAPILLARY_TIMEOUT_SEC"),
+            user_agent=_env_value("MAPILLARY_USER_AGENT", _DEFAULT_UA),
+        )
+    timeout_sec = _env_timeout("STREETVIEW_TIMEOUT_SEC")
+    user_agent = _env_value("STREETVIEW_USER_AGENT", _BROWSER_UA)
+    if name == _PROVIDER_BAIDU:
+        from tool.streetview_query._baidu import BaiduPanoramaProvider
+
+        return BaiduPanoramaProvider(
+            endpoint=_env_value("STREETVIEW_BAIDU_ENDPOINT", "https://mapsv0.bdimg.com/"),
+            timeout_sec=timeout_sec,
+            user_agent=user_agent,
+        )
+    if name == _PROVIDER_GOOGLE:
+        from tool.streetview_query._google import GoogleStreetviewProvider
+
+        return GoogleStreetviewProvider(
+            meta_endpoint=_env_value(
+                "STREETVIEW_GOOGLE_META_ENDPOINT",
+                "https://maps.googleapis.com/$rpc/google.internal.maps.mapsjs.v1.MapsJsInternalService/SingleImageSearch",
+            ),
+            thumb_endpoint=_env_value(
+                "STREETVIEW_GOOGLE_THUMB_ENDPOINT",
+                "https://streetviewpixels-pa.googleapis.com/v1/thumbnail",
+            ),
+            timeout_sec=timeout_sec,
+            user_agent=user_agent,
+        )
+    raise EngineUnavailableError(f"未知 STREETVIEW_PROVIDER: {name}")
 
 def _mapillary_token() -> str:
     return (
@@ -1445,7 +1869,10 @@ def _mapillary_token() -> str:
     )
 
 def _search_radius() -> int:
-    parsed = _as_int(os.environ.get("MAPILLARY_SEARCH_RADIUS_M", "").strip())
+    parsed = _as_int(
+        os.environ.get("STREETVIEW_SEARCH_RADIUS_M", "").strip()
+        or os.environ.get("MAPILLARY_SEARCH_RADIUS_M", "").strip()
+    )
     if parsed is None:
         return _DEFAULT_SEARCH_RADIUS_M
     return max(_SEARCH_RADIUS_MIN, min(_SEARCH_RADIUS_MAX, parsed))
@@ -1561,10 +1988,11 @@ def _http_bytes(
     headers: dict[str, str],
     timeout_sec: float,
     error_prefix: str,
+    data: bytes | None = None,
 ) -> bytes:
     if not url:
         raise EngineUnavailableError(f"{error_prefix} 缺少 URL")
-    request = urllib.request.Request(url, method="GET")
+    request = urllib.request.Request(url, data=data, method="POST" if data is not None else "GET")
     for key, value in headers.items():
         request.add_header(key, value)
     try:
@@ -1628,6 +2056,27 @@ def _strip_forbidden(value: Any) -> Any:
     if isinstance(value, list):
         return [_strip_forbidden(item) for item in value]
     return value
+
+def _discard_captured_image(
+    ctx: RuntimeContext | None,
+    image_id: str,
+    path: Path,
+) -> None:
+    """街景截图用后删除本地文件，不留在会话目录。"""
+
+    store = ctx.image_store if ctx is not None else None
+    deleter = getattr(store, "delete", None)
+    if callable(deleter):
+        deleter(image_id)
+        return
+    try:
+        path.unlink(missing_ok=True)
+        parent = path.parent
+        if parent.name.startswith("image_edit_") and not any(parent.iterdir()):
+            parent.rmdir()
+    except OSError:
+        return
+
 
 def _fail(message: str, error_code: str) -> Observation:
     return Observation(ok=False, result=None, error=message, error_code=error_code)

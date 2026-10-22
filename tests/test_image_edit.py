@@ -274,6 +274,38 @@ def test_current_image_and_store_chain(tmp_path: Path) -> None:
     assert Path(zoomed.artifacts["image_path"]).is_file()
 
 
+def test_current_image_uses_the_only_registered_image(tmp_path: Path) -> None:
+    source = _checkerboard(tmp_path / "src.png")
+    store = FilesystemImageStore(tmp_path / "store")
+    image_id = store.register(source, image_id="input_0001")
+    ctx = RuntimeContext(current_images=[image_id], image_store=store)
+    observation = execute(
+        "image_edit",
+        "crop",
+        purpose="裁唯一当前图",
+        inputs={"image": "$current_image", "region": [0, 0, 10, 8]},
+        ctx=ctx,
+    )
+    assert observation.ok is True
+    assert observation.result is not None
+    assert observation.result["width"] == 10
+
+
+def test_crop_rejects_a_picture_description(tmp_path: Path) -> None:
+    source = _checkerboard(tmp_path / "src.png")
+    observation = execute(
+        "image_edit",
+        "crop",
+        purpose="按文字描述裁剪",
+        inputs={"image": str(source), "region": "画面左侧的招牌"},
+        ctx=RuntimeContext(extras={"artifact_dir": str(tmp_path / "out")}),
+    )
+    assert observation.ok is False
+    assert observation.error_code == "unresolved_region"
+    assert observation.error is not None
+    assert "像素框" in observation.error
+
+
 def test_named_region_without_mapping_is_unresolved(tmp_path: Path) -> None:
     source = _gradient(tmp_path / "src.png")
     observation = execute(

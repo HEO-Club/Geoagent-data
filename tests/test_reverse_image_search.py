@@ -293,10 +293,12 @@ def test_missing_unknown_engine_and_api_gate(tmp_path: Path) -> None:
     assert unknown.error_code == "unsupported_engine"
 
     mixed = _search(tmp_path, inputs={"engines": ["vision", "serpapi"]})
-    assert mixed.ok is True
-    assert mixed.result is not None
-    assert mixed.result["applied"]["engines"] == ["google_cloud_vision", "serpapi"]
-    assert "ignored" not in mixed.result["applied"]
+    assert mixed.ok is False
+    assert mixed.error_code == "unsupported_engine"
+
+    baidu = _search(tmp_path, inputs={"engines": ["baidu"]})
+    assert baidu.ok is False
+    assert baidu.error_code == "unsupported_engine"
 
     alias = _search(tmp_path, inputs={"engines": ["serpai", "google_lens"]})
     assert alias.ok is True
@@ -505,13 +507,13 @@ class _FakeBaiduSession:
         return self.payload
 
 
-def test_baidu_graph_session_maps_similar_to_urls(tmp_path: Path, monkeypatch: Any) -> None:
+def test_baidu_and_vision_are_not_selectable(tmp_path: Path, monkeypatch: Any) -> None:
     session = _FakeBaiduSession()
     monkeypatch.setenv("ALLOW_REAL_TOOL_API", "true")
     observation = execute(
         "reverse_image_search",
         "search",
-        purpose="百度识图",
+        purpose="不再提供百度识图",
         inputs={"image": str(_gradient(tmp_path / "baidu.png")), "engines": ["baidu"]},
         ctx=RuntimeContext(
             extras={
@@ -520,27 +522,14 @@ def test_baidu_graph_session_maps_similar_to_urls(tmp_path: Path, monkeypatch: A
             }
         ),
     )
-    assert observation.ok is True
-    assert observation.result is not None
-    assert session.calls, "应把查询图交给会话"
-    assert observation.result["applied"]["engine"] == "baidu_graph"
-    assert observation.result["applied"]["engines"] == ["baidu_graph"]
-    urls = [item["url"] for item in observation.result["matches"]]
-    assert "https://news.example.cn/bridge" in urls
-    assert "https://img.example.cn/t2.jpg" in urls
-    assert observation.result["best_guess_labels"][0]["label"] == "图中可能是铁路桥"
-    assert any("地点" in item for item in observation.result["assumptions"])
+    assert observation.ok is False
+    assert observation.error_code == "unsupported_engine"
+    assert session.calls == []
 
-
-def test_baidu_graph_captcha_is_provider_error(tmp_path: Path, monkeypatch: Any) -> None:
-    session = _FakeBaiduSession(
-        error=search_mod.EngineUnavailableError("百度识图要求人机验证", "provider_error"),
-    )
-    monkeypatch.setenv("ALLOW_REAL_TOOL_API", "true")
-    observation = execute(
+    captcha = execute(
         "reverse_image_search",
         "search",
-        purpose="验证页",
+        purpose="不再提供百度识图",
         inputs={"image": str(_gradient(tmp_path / "cap.png")), "engines": ["baidu_graph"]},
         ctx=RuntimeContext(
             extras={
@@ -549,10 +538,9 @@ def test_baidu_graph_captcha_is_provider_error(tmp_path: Path, monkeypatch: Any)
             }
         ),
     )
-    assert observation.ok is False
-    assert observation.error_code == "provider_error"
-    assert observation.error is not None
-    assert "人机验证" in observation.error
+    assert captcha.ok is False
+    assert captcha.error_code == "unsupported_engine"
+    assert session.calls == []
 
 
 def test_default_engines_do_not_build_baidu_graph(

@@ -175,6 +175,31 @@ def test_missing_time_range_is_missing_input() -> None:
     assert observation.error_code == "missing_input"
 
 
+def test_dates_outside_the_archive_never_call_the_provider() -> None:
+    series = FakeTimeseriesProvider()
+    early = _call(
+        "weather",
+        inputs={"area": {"lat": 89.9, "lon": 179.9, "radius_m": 500000}, "time_range": "1000-01-01/2099-12-31"},
+        timeseries=series,
+    )
+    assert early.ok is False
+    assert early.error_code == "invalid_time_range"
+    assert early.error is not None
+    assert "1940-01-01" in early.error
+    assert series.calls == []
+
+    future = _call(
+        "cloud_cover",
+        inputs={"area": [-179.9, -89.9, 179.9, 89.9], "time_range": "2099"},
+        timeseries=series,
+    )
+    assert future.ok is False
+    assert future.error_code == "invalid_time_range"
+    assert future.error is not None
+    assert "最晚到" in future.error
+    assert series.calls == []
+
+
 def test_empty_inputs_are_missing_input() -> None:
     observation = execute(
         "weather_archive_query",
@@ -447,3 +472,112 @@ def test_gibs_http_query_shape(monkeypatch: Any) -> None:
     south, west, north, east = params["BBOX"][0].split(",")
     assert float(south) < float(north)
     assert float(west) < float(east)
+
+
+def test_transport_drop_is_retried_twice(monkeypatch: Any) -> None:
+    attempts = {"count": 0}
+
+    def fake_urlopen(request: Any, timeout: float | None = None) -> _FakeHttpResponse:
+        del request, timeout
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise archive_mod.urllib.error.URLError(OSError("UNEXPECTED_EOF_WHILE_READING"))
+        body = {
+            "daily": {
+                "time": ["2020-01-01"],
+                "temperature_2m_mean": [1.2],
+                "precipitation_sum": [0.0],
+                "weather_code": [1],
+            },
+            "daily_units": {
+                "time": "iso8601",
+                "temperature_2m_mean": "°C",
+                "precipitation_sum": "mm",
+                "weather_code": "wmo code",
+            },
+        }
+        return _FakeHttpResponse(json.dumps(body).encode("utf-8"))
+
+    monkeypatch.setenv("ALLOW_REAL_TOOL_API", "true")
+    monkeypatch.setattr(archive_mod.urllib.request, "urlopen", fake_urlopen)
+    observation = execute(
+        "weather_archive_query",
+        "weather",
+        purpose="连接中断后重试",
+        inputs={
+            "area": {"bbox": [113.5, 34.7, 113.8, 34.9]},
+            "time_range": "2020-01-01",
+            "provider": "open-meteo",
+        },
+        ctx=RuntimeContext(),
+    )
+    assert attempts["count"] == 3
+    assert observation.ok is True
+    assert observation.result is not None
+    assert observation.result["series"]["values"]["temperature_2m_mean"] == [1.2]
+
+
+def test_http_error_is_not_retried(monkeypatch: Any) -> None:
+    attempts = {"count": 0}
+
+    def fake_urlopen(request: Any, timeout: float | None = None) -> _FakeHttpResponse:
+        del timeout
+        attempts["count"] += 1
+        raise archive_mod.urllib.error.HTTPError(
+            str(request.full_url),
+            400,
+            "Bad Request",
+            hdrs=None,
+            fp=BytesIO(b'{"error":true,"reason":"Bad Request"}'),
+        )
+
+    monkeypatch.setenv("ALLOW_REAL_TOOL_API", "true")
+    monkeypatch.setattr(archive_mod.urllib.request, "urlopen", fake_urlopen)
+    observation = execute(
+        "weather_archive_query",
+        "weather",
+        purpose="上游拒绝不重试",
+        inputs={
+            "area": {"bbox": [113.5, 34.7, 113.8, 34.9]},
+            "time_range": "2020-01-01",
+            "provider": "open-meteo",
+        },
+        ctx=RuntimeContext(),
+    )
+    assert attempts["count"] == 1
+    assert observation.ok is False
+    assert observation.error_code == "engine_unavailable"
+
+
+class _FailingLayerProvider:
+    name = "failing-gibs"
+
+    def fetch_map(self, request: LayerFetchRequest) -> bytes:
+        del request
+        raise archive_mod.EngineUnavailableError("NASA GIBS GetMap 网络失败: ssl eof")
+
+
+def test_layer_failure_keeps_the_series() -> None:
+    series = FakeTimeseriesProvider()
+    observation = _call(
+        "cloud_cover",
+        timeseries=series,
+        layers=_FailingLayerProvider(),
+    )
+    assert observation.ok is True
+    assert observation.result is not None
+    assert observation.result["series"]["values"]["cloud_cover"]
+    assert "layers" not in observation.result
+    assert observation.result["layer_errors"][0]["layer"] == "MODIS_Terra_CorrectedReflectance_TrueColor"
+    assert "网络失败" in observation.result["layer_errors"][0]["error"]
+
+
+def test_layer_only_failure_stays_unavailable() -> None:
+    observation = _call(
+        "cloud_cover",
+        inputs={"provider": "gibs"},
+        layers=_FailingLayerProvider(),
+    )
+    assert observation.ok is False
+    assert observation.error_code == "engine_unavailable"
+

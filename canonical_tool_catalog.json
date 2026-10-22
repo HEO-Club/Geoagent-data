@@ -123,8 +123,7 @@
           {"name": "retrieve", "description": "获取指定区域和时间的卫星或航片"},
           {"name": "change_time", "description": "切换历史年份、季节或水期影像"},
           {"name": "compare_candidates", "description": "在多个候选区域的卫星影像中按同一视觉/空间模板进行比对"},
-          {"name": "compare_time", "description": "调用影像服务进行多时相对比"},
-          {"name": "oblique_view", "description": "获取倾斜或三维地形视角"}
+          {"name": "compare_time", "description": "调用影像服务进行多时相对比"}
         ]
       },
       "variants": ["compare_satellite_imagery", "check_historical_imagery", "compare_wetseason_imagery"],
