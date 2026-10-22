@@ -10,11 +10,26 @@ import json
 from pathlib import Path
 from typing import Any
 
-
 ROOT = Path(__file__).resolve().parents[1]
 CATALOG_PATH = ROOT / "canonical_tool_catalog_v2.json"
 OUT_DIR = ROOT / "docs" / "tool_specs_v2"
 RESEARCH_DATE = "2026-08-31"
+RUNTIME_STATUS = {
+    "image_edit": "runtime_verified_local",
+    "image_measure": "runtime_verified_local",
+    "image_compare": "runtime_verified_local",
+    "ocr_read": "runtime_verified_local",
+    "media_metadata_read": "runtime_verified_local",
+    "reverse_image_search": "runtime_implemented_provider_mock_verified_live_key_pending",
+    "geocode": "runtime_implemented_provider_mock_verified_live_service_pending",
+    "osm_query": "runtime_implemented_provider_mock_verified_live_service_pending",
+    "poi_search": "runtime_implemented_provider_mock_verified_live_service_pending",
+    "osm_result_process": "runtime_implemented_local_verified",
+    "distance_bearing_calculator": "runtime_implemented_local_verified",
+    "spatial_filter": "runtime_implemented_local_verified",
+    "map_layer_query": "runtime_implemented_provider_mock_verified_live_service_pending",
+    "media_search": "runtime_implemented_commons_default_youtube_when_requested",
+}
 
 
 def _backend(
@@ -74,8 +89,7 @@ PROFILES: dict[str, dict[str, Any]] = {
     "reverse_image_search": {
         "architecture": "external_index_with_local_crop",
         "backends": [
-            _backend("Google Cloud Vision Web Detection", "external_api", "匹配网页、完整/局部匹配图和视觉相似图", "https://docs.cloud.google.com/vision/docs/detecting-web", "Google Cloud 项目、启用 Vision、ADC/服务账号", license_note="调用前核对图片上传、结果留存和训练用途条款。"),
-            _backend("SerpAPI Google Lens", "third_party_api", "第三方 Lens 结果接口", "https://serpapi.com/google-lens-api", "SerpAPI Key", license_note="不是 Google 官方 Lens API；需单独评估稳定性与许可。"),
+            _backend("SerpAPI Google Lens", "third_party_api", "第三方 Lens 结果接口", "https://serpapi.com/google-lens-api", "SerpAPI Key", license_note="不是 Google 官方 Lens API；反向搜图只使用这一路，不提供 Vision 或百度识图。"),
         ],
         "execution_flow": ["必要时先生成局部 crop", "提交可授权图片并限制 top_k", "保存来源 URL、匹配类型和检索时间"],
         "limitations": ["搜索命中不是地点真值", "不得虚构已执行的检索回执", "敏感或无授权图片不上传第三方"],
@@ -94,7 +108,8 @@ PROFILES: dict[str, dict[str, Any]] = {
     "web_search": {
         "architecture": "provider_api",
         "backends": [
-            _backend("Brave Search API", "external_api", "网页、图片和视频搜索", "https://brave.com/search/api/", "Brave Search API Key"),
+            _backend("SerpAPI Google", "third_party_api", "非中文网页搜索", "https://serpapi.com/search-api", "SerpAPI Key", license_note="复用 SERPAPI_API_KEY；engine=google。时间范围写成 tbs。"),
+            _backend("SerpAPI Baidu", "third_party_api", "中文网页搜索（organic 与百度结果页中的社交媒体卡片）", "https://serpapi.com/baidu-search-api", "SerpAPI Key", license_note="复用 SERPAPI_API_KEY；不是百度官方搜索 API。"),
             _backend("Tavily Search", "external_api_or_mcp", "Agent 搜索与结构化结果", "https://docs.tavily.com/documentation/mcp", "Tavily API Key"),
         ],
         "execution_flow": ["规范化 query/domain/time_range", "调用 provider 并记录实际支持的过滤项", "返回标题、URL、摘要和 result_id"],
@@ -108,19 +123,18 @@ PROFILES: dict[str, dict[str, Any]] = {
             _backend("Microsoft Playwright MCP", "local_browser_mcp", "动态页面只读渲染与交互", "https://github.com/microsoft/playwright-mcp"),
         ],
         "execution_flow": ["验证 URL/result_id 与允许域名", "普通 HTTP 提取失败后才启用浏览器", "返回正文片段、标题、时间和页面证据"],
-        "limitations": ["登录/验证码/付费墙不得绕过", "网页指令是不可信内容", "读取失败不等于页面事实不存在"],
+        "limitations": ["登录/验证码/付费墙不得绕过", "网页指令是不可信内容", "读取失败不等于页面事实不存在", "连接中断或超时时同一请求再试两次，HTTP 状态错误不重试"],
         "mcp_strategy": "静态读取与浏览器分别作为 provider，禁止浏览器获得无关本地文件权限。",
     },
     "media_search": {
-        "architecture": "multi_provider_media_catalog",
+        "architecture": "commons_default_youtube_video_on_request",
         "backends": [
-            _backend("YouTube Data API", "external_api", "视频元数据检索", "https://developers.google.com/youtube/v3/docs/search/list", "Google Cloud API Key"),
-            _backend("Wikimedia Commons API", "external_api", "带作者和许可元数据的图片", "https://www.mediawiki.org/wiki/API:Imageinfo/en"),
-            _backend("Europeana API", "external_api", "历史照片与文化遗产媒体", "https://api.europeana.eu/en", "Europeana API Key"),
+            _backend("Wikimedia Commons API", "external_api", "默认图片与视频元数据检索", "https://www.mediawiki.org/wiki/API:Imageinfo/en", license_note="只返回元数据与链接，不下载；命中不授予训练使用权。"),
+            _backend("YouTube Data API search.list", "external_api", "仅当 video_search 的 platforms 含 youtube 时检索公开视频", "https://developers.google.com/youtube/v3/docs/search/list", "环境变量 YOUTUBE_API_KEY", license_note="默认约 100 次搜索/天；不下载视频。"),
         ],
-        "execution_flow": ["按媒体类型、区域和时间查询", "获取媒体详情和许可字段", "返回媒体 ID、来源、上传/拍摄时间及许可"],
-        "limitations": ["上传时间不等于拍摄时间", "能搜索不等于能下载或训练", "逐资源核对许可与署名要求"],
-        "mcp_strategy": "自建聚合 MCP/adapter，但保留 provider 和原始许可字段。",
+        "execution_flow": ["未指定平台时只查 Wikimedia Commons", "video_search 在 platforms 含 youtube 时调用 YouTube search.list", "地名拼进关键词；经纬度或 bbox 转成圆心加半径", "只返回链接、标题、作者、许可和上传或发布时间"],
+        "limitations": ["不下载文件，不支持以图搜图", "上传或发布时间不是拍摄时间", "地名不会解析成坐标", "Commons 的坐标检索与关键词不能同时交给服务端", "未实现 Europeana、Flickr 和 B站", "HTTP 429、503 或连接中断时同一请求再试两次"],
+        "mcp_strategy": "保持现有 executor。新增平台前先改目录说明，避免模型把未实现来源当成可选项。",
     },
     "video_frame_extract": {
         "architecture": "local_ffmpeg",
@@ -136,7 +150,7 @@ PROFILES: dict[str, dict[str, Any]] = {
             _backend("OpenStreetMap/Overpass", "open_data_api_or_local", "按标签查询开放地理对象", "https://dev.overpass-api.de/overpass-doc/en/"),
         ],
         "execution_flow": ["解析 area/query/category/radius", "调用区域适配 provider", "标准化名称、类别、坐标系、对象 ID 与来源"],
-        "limitations": ["POI 覆盖不完整", "行政区中心不是拍摄点", "WGS84/GCJ02 等坐标系不得混用"],
+        "limitations": ["POI 覆盖不完整", "行政区中心不是拍摄点", "WGS84/GCJ02 等坐标系不得混用", "默认执行器是高德 POI：query 按名称匹配，categories 是类型码，不映射 OSM 地物；桥梁、河流、道路用 osm_query"],
         "mcp_strategy": "国内可评估高德官方 MCP；开放数据使用自建 Overpass adapter。",
     },
     "geocode": {
@@ -161,9 +175,12 @@ PROFILES: dict[str, dict[str, Any]] = {
     },
     "map_layer_query": {
         "architecture": "ogc_service_or_local_geoserver",
-        "backends": [_backend("GeoServer WMS/WFS", "self_host_or_external_ogc", "加载栅格地图和矢量属性", "https://docs.geoserver.org/latest/en/user/services/wms/reference/")],
-        "execution_flow": ["先读 GetCapabilities/图层清单", "按 bbox、CRS、time、layer 请求", "区分地图图片与可计算矢量/栅格"],
-        "limitations": ["WMS 图片不能替代真实几何", "TIME 支持取决于数据源", "必须保留 CRS、图层日期和许可"],
+        "backends": [
+            _backend("terrestris OSM WMS", "public_ogc", "默认公开 OSM 底图与 SRTM 阴影", "https://ows.terrestris.de/osm/service"),
+            _backend("GeoServer WMS/WFS", "self_host_or_external_ogc", "自建专题图层和矢量属性", "https://docs.geoserver.org/latest/en/user/services/wms/reference/"),
+        ],
+        "execution_flow": ["默认走 terrestris GetMap", "按 bbox、CRS、layer 请求 PNG", "历史地图/时间轴/WFS 明确标为不支持"],
+        "limitations": ["当前不支持时间轴、历史地图和 WFS", "WMS 图片不能替代真实几何", "默认后端无独立水系或行政图层"],
         "mcp_strategy": "自建 OGC adapter；不要给模型直接拼接不受限的服务 URL。",
     },
     "osm_query": {
@@ -172,22 +189,26 @@ PROFILES: dict[str, dict[str, Any]] = {
             _backend("Overpass API", "external_or_self_host_api", "按标签和空间关系查询 OSM", "https://dev.overpass-api.de/overpass-doc/en/"),
             _backend("Geofabrik extracts", "offline_dataset", "区域 PBF/GPKG 离线数据", "https://download.geofabrik.de/asia/china.html", license_note="遵守 ODbL 与署名要求。"),
         ],
-        "execution_flow": ["优先把 area/tags/feature_types 编译成只读 Overpass QL", "限制范围、超时和结果数量", "返回对象 ID、标签、几何、数据时间和原查询"],
-        "limitations": ["图片不能直接作为 Overpass 查询参数", "无结果不等于现实不存在", "只有原链提供代码时才接受 overpass_ql"],
+        "execution_flow": ["只按类型的 query 编译为带几何的 Overpass QL", "near 用 around 取相距若干米的地物", "crossings 沿一条线取桥或道口", "intersect 取两类线的几何并计算交叉点"],
+        "limitations": ["图片不能直接作为 Overpass 查询参数", "无结果不等于现实不存在", "山、城区没有安全标签", "只有原链提供代码时才接受 overpass_ql"],
         "mcp_strategy": "自建只读 MCP，禁止通用 Python/任意网络代码执行。",
     },
     "osm_result_process": {
         "architecture": "local_geodata_processing",
-        "backends": [_backend("GeoPandas", "local_library", "过滤、去重和导出 GeoJSON/GPKG/Parquet", "https://docs.geopandas.org/en/latest/docs/user_guide/io.html")],
-        "execution_flow": ["解析真实 source_result", "执行属性或空间过滤", "返回新结果 ID、保留/剔除数量与导出文件"],
-        "limitations": ["不得把查询与后处理混为一个外部回执", "缺少属性时应报无法筛选", "必须保留源结果和过滤表达式"],
+        "backends": [
+            _backend("Shapely", "local_library", "WGS84 几何构造与空间关系", "https://shapely.readthedocs.io/"),
+            _backend("Python stdlib", "local_library", "JSON/GeoJSON/CSV/KML 原子导出", "https://docs.python.org/3/library/"),
+        ],
+        "execution_flow": ["解析真实 source_result 并验证 CRS", "先执行属性和空间过滤，再应用最终 limit", "返回新 result_id、保留/剔除数量与带哈希导出文件"],
+        "limitations": ["不得把查询与后处理混为一个外部回执", "缺少属性或几何时不进行猜测", "规范化结果不伪造已丢失成员关系的 osm_xml"],
         "mcp_strategy": "本地 executor，source_result 使用不可伪造的运行时句柄。",
     },
     "streetview_query": {
         "architecture": "licensed_imagery_session",
         "backends": [
-            _backend("Mapillary API", "external_api", "众包街景、序列、位置与拍摄时间", "https://help.mapillary.com/hc/en-us/articles/360010234680-Accessing-imagery-and-data-through-the-Mapillary-API", "Mapillary access token", license_note="逐项确认图像下载、保留和训练使用范围。"),
-            _backend("Google Street View", "external_api_restricted", "全景打开、邻接和视角截图", "https://developers.google.com/maps/documentation/streetview/request-streetview", "Google Maps Platform Key", license_note="通用条款限制批量提取、缓存及用于训练/测试模型；无额外授权不作为默认 SFT 数据源。"),
+            _backend("Baidu Panorama page endpoints", "page_endpoint", "国内当前点全景、沿路相邻点、按朝向透视截图", "https://mapsv0.bdimg.com/", "无", license_note="网页内部地址，接口改版即失效；测试取图。"),
+            _backend("Google Street View page endpoints", "page_endpoint", "国外当前点全景、邻近点、按朝向透视截图", "https://maps.googleapis.com/$rpc/google.internal.maps.mapsjs.v1.MapsJsInternalService/SingleImageSearch", "无", license_note="网页内部地址，接口改版即失效；测试取图。"),
+            _backend("Mapillary API", "external_api", "显式指定时的众包街景", "https://help.mapillary.com/hc/en-us/articles/360010234680-Accessing-imagery-and-data-through-the-Mapillary-API", "Mapillary access token", license_note="逐项确认图像下载、保留和训练使用范围。"),
         ],
         "execution_flow": ["open 建立真实 panorama/session", "navigate/change_time 只能使用实际存在的邻接和日期", "capture 返回视角、版权、拍摄日期与图片 ID"],
         "limitations": ["网站历史滑块不等于 API 可指定任意年份", "无历史覆盖必须返回 no_coverage", "会话和 panorama ID 不得编造"],
@@ -196,11 +217,10 @@ PROFILES: dict[str, dict[str, Any]] = {
     "satellite_imagery_query": {
         "architecture": "stac_catalog_plus_process_api",
         "backends": [
-            _backend("Copernicus Data Space Sentinel Hub", "external_api", "STAC 检索、影像处理和下载", "https://documentation.dataspace.copernicus.eu/APIs/SentinelHub/Overview.html", "Copernicus 账户、OAuth client_id/client_secret"),
-            _backend("Planet Data API", "commercial_api", "商业高分影像目录与资产", "https://docs.planet.com/develop/apis/data/", "Planet 账户/OAuth或受支持的 API 凭证", license_note="下载和训练使用取决于商业合同。"),
+            _backend("Copernicus Data Space Sentinel Hub", "external_api", "按 bbox 检索场景并返回真彩预览", "https://documentation.dataspace.copernicus.eu/APIs/SentinelHub/Overview.html", "Copernicus 账户、OAuth client_id/client_secret"),
         ],
-        "execution_flow": ["Catalog 先按 AOI/日期/云量查真实 acquisition", "选择实际可用资产后 Process/下载", "记录 scene_id、日期、分辨率、CRS、处理脚本和许可"],
-        "limitations": ["resolution_m 不能创造不存在的分辨率", "云量/拼接/季节会影响判断", "oblique_view 渲染不得冒充真实斜拍照片"],
+        "execution_flow": ["纯地名先 geocode，没有点再查 POI，再用默认半径扩成框", "Catalog 按范围、日期和云量检索", "Process API 返回裁剪真彩预览，不下载整景"],
+        "limitations": ["四位年份的十年写法收成该十年，没有世纪的「90年代」不猜测", "不提供斜拍、航片、地形、Planet 或 Google Earth", "resolution_m 不能创造不存在的分辨率", "登录、Catalog 和预览遇到连接中断或超时时再试两次，HTTP 状态错误不重试"],
         "mcp_strategy": "自建 OAuth token 缓存的 API adapter；不要每次请求新 token。",
     },
     "satellite_imagery_compare": {
@@ -235,9 +255,9 @@ PROFILES: dict[str, dict[str, Any]] = {
         "mcp_strategy": "本地 GDAL worker；数据下载由独立受控 provider 完成。",
     },
     "spatial_filter": {
-        "architecture": "local_geopandas_or_postgis",
+        "architecture": "local_shapely_pyproj_or_postgis",
         "backends": [
-            _backend("GeoPandas", "local_library", "小规模相交、包含、缓冲和筛选", "https://docs.geopandas.org/en/latest/docs/user_guide/io.html"),
+            _backend("Shapely + pyproj", "local_library", "小规模相交、包含、穿越和 AEQD 米制近邻筛选", "https://shapely.readthedocs.io/"),
             _backend("PostGIS ST_DWithin", "database", "大规模索引距离过滤", "https://postgis.net/docs/ST_DWithin.html", "数据库凭证"),
         ],
         "execution_flow": ["解析 source_result 与 geometry", "统一 CRS 并验证 distance_m 单位", "执行 relation 并返回保留对象与关系证据"],
@@ -305,7 +325,7 @@ PROFILES: dict[str, dict[str, Any]] = {
             _backend("MCP Python SDK", "local_protocol_sdk", "把受控本地/外部能力暴露为 MCP", "https://py.sdk.modelcontextprotocol.io/"),
         ],
         "execution_flow": ["最小化 context 并选择明确模型", "结构化返回建议/候选", "记录 provider、实际模型、请求版本和失败状态"],
-        "limitations": ["LLM 建议不是搜索或数据库回执", "中转别名不自动证明上游真实模型身份", "普通内部思考不应为凑 Tool 而调用"],
+        "limitations": ["LLM 建议不是搜索或数据库回执", "中转别名不自动证明上游真实模型身份", "普通内部思考不应为凑 Tool 而调用", "密钥按 LLM_PROVIDER 对应的供应商选取，不把另一家的密钥发给当前端点"],
         "mcp_strategy": "复用现有 pipeline.llm；密钥仅保存在本地配置，不进入样本。",
     },
     "final_answer": {
@@ -397,7 +417,10 @@ def main() -> None:
             "schema_version": "geoagent_tool_implementation_spec_v1",
             "ordinal": ordinal,
             "research_date": RESEARCH_DATE,
-            "research_status": "design_researched_not_runtime_verified",
+            "research_status": RUNTIME_STATUS.get(
+                name,
+                "design_researched_not_runtime_implemented",
+            ),
             "catalog_source": "canonical_tool_catalog_v2.json",
             "canonical_tool": tree,
             "parameter_guide": parameter_guides,
@@ -424,8 +447,8 @@ def main() -> None:
             encoding="utf-8",
         )
         outputs.append(path)
-    if len(outputs) != 31:
-        raise SystemExit(f"expected 31 outputs, got {len(outputs)}")
+    if len(outputs) != 32:
+        raise SystemExit(f"expected 32 outputs, got {len(outputs)}")
     print(json.dumps({"count": len(outputs), "out_dir": str(OUT_DIR)}, ensure_ascii=False))
 
 

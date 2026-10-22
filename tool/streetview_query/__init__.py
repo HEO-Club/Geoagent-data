@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from tool.streetview_query.open import execute as open
-from tool.streetview_query.navigate import execute as navigate
-from tool.streetview_query.change_time import execute as change_time
+from tool.streetview_query._streetview import restore_runtime_context
 from tool.streetview_query.capture import execute as capture
+from tool.streetview_query.change_time import execute as change_time
+from tool.streetview_query.navigate import execute as navigate
+from tool.streetview_query.open import execute as open
 
 OPERATIONS = {
     'open': open,
@@ -16,8 +17,9 @@ OPERATIONS = {
 
 __all__ = [
     "OPERATIONS",
-    'open',
-    'navigate',
-    'change_time',
     'capture',
+    'change_time',
+    'navigate',
+    'open',
+    "restore_runtime_context",
 ]

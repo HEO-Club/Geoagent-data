@@ -2,7 +2,7 @@
   "schema_version": "geoagent_tool_implementation_spec_v1",
   "ordinal": 12,
   "research_date": "2026-08-31",
-  "research_status": "design_researched_not_runtime_verified",
+  "research_status": "runtime_implemented_provider_mock_verified_live_service_pending",
   "catalog_source": "canonical_tool_catalog_v2.json",
   "canonical_tool": {
     "canonical": {
@@ -20,33 +20,25 @@
             "fields": [
               {
                 "name": "query",
-                "type": "string_or_array",
+                "type": "location",
                 "required": true,
                 "requirement_level": "semantic",
-                "description": "提交给该服务的检索词、自然语言查询或明确对象描述。",
+                "description": "正向查询使用地名/地址，反向查询使用 [lat,lon] 或坐标对象。",
                 "acquisition_hint": "从本步 purpose/Thought 中提取明确检索对象和约束，不得只写“查询一下”。",
                 "context_sources": [],
                 "context_default": null,
                 "aliases": [
-                  "关键词",
                   "检索词",
-                  "查询词",
-                  "检索对象",
-                  "对象",
-                  "目标",
-                  "特征组合",
-                  "筛选条件",
-                  "material",
-                  "keywords",
-                  "问题",
-                  "q",
-                  "search_query"
+                  "地点",
+                  "地址",
+                  "坐标",
+                  "q"
                 ],
                 "allowed_values": [],
                 "item_type": null,
                 "minimum": null,
                 "maximum": null,
-                "example": "铁路桥 石栏 历史照片"
+                "example": "郑州黄河文化公园"
               },
               {
                 "name": "area",
@@ -85,7 +77,7 @@
                 "type": "string",
                 "required": false,
                 "requirement_level": "optional",
-                "description": "正向或反向地理编码。",
+                "description": "正向或反向地理编码；auto 根据 query 形状判断。",
                 "acquisition_hint": "从图像朝向、道路方向或用户指定的导航方向中提取可执行方向。",
                 "context_sources": [],
                 "context_default": null,
@@ -102,6 +94,44 @@
                 "minimum": null,
                 "maximum": null,
                 "example": "auto"
+              },
+              {
+                "name": "language",
+                "type": "string",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "候选名称的语言代码。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 language；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "语言",
+                  "lang"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": null,
+                "maximum": null,
+                "example": null
+              },
+              {
+                "name": "top_k",
+                "type": "integer",
+                "required": false,
+                "requirement_level": "optional",
+                "description": "每个正向查询最多返回候选数。",
+                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 top_k；来源没有时不得编造。",
+                "context_sources": [],
+                "context_default": null,
+                "aliases": [
+                  "结果数",
+                  "limit"
+                ],
+                "allowed_values": [],
+                "item_type": null,
+                "minimum": 1.0,
+                "maximum": 10.0,
+                "example": 5
               }
             ],
             "required_any": [],
@@ -153,31 +183,23 @@
     "geocode": [
       {
         "name": "query",
-        "type": "string_or_array",
+        "type": "location",
         "required": true,
         "requirement_level": "semantic",
-        "purpose": "提交给该服务的检索词、自然语言查询或明确对象描述。",
+        "purpose": "正向查询使用地名/地址，反向查询使用 [lat,lon] 或坐标对象。",
         "how_to_obtain": "从本步 purpose/Thought 中提取明确检索对象和约束，不得只写“查询一下”。",
         "context_sources": [],
         "context_default": null,
         "allowed_values": [],
         "minimum": null,
         "maximum": null,
-        "example": "铁路桥 石栏 历史照片",
+        "example": "郑州黄河文化公园",
         "aliases": [
-          "关键词",
           "检索词",
-          "查询词",
-          "检索对象",
-          "对象",
-          "目标",
-          "特征组合",
-          "筛选条件",
-          "material",
-          "keywords",
-          "问题",
-          "q",
-          "search_query"
+          "地点",
+          "地址",
+          "坐标",
+          "q"
         ],
         "validation_note": "可选字段缺失不应自动判为不可执行。"
       },
@@ -218,7 +240,7 @@
         "type": "string",
         "required": false,
         "requirement_level": "optional",
-        "purpose": "正向或反向地理编码。",
+        "purpose": "正向或反向地理编码；auto 根据 query 形状判断。",
         "how_to_obtain": "从图像朝向、道路方向或用户指定的导航方向中提取可执行方向。",
         "context_sources": [],
         "context_default": null,
@@ -233,6 +255,44 @@
         "aliases": [
           "方向",
           "mode"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "language",
+        "type": "string",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "候选名称的语言代码。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 language；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": null,
+        "maximum": null,
+        "example": null,
+        "aliases": [
+          "语言",
+          "lang"
+        ],
+        "validation_note": "可选字段缺失不应自动判为不可执行。"
+      },
+      {
+        "name": "top_k",
+        "type": "integer",
+        "required": false,
+        "requirement_level": "optional",
+        "purpose": "每个正向查询最多返回候选数。",
+        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 top_k；来源没有时不得编造。",
+        "context_sources": [],
+        "context_default": null,
+        "allowed_values": [],
+        "minimum": 1.0,
+        "maximum": 10.0,
+        "example": 5,
+        "aliases": [
+          "结果数",
+          "limit"
         ],
         "validation_note": "可选字段缺失不应自动判为不可执行。"
       }

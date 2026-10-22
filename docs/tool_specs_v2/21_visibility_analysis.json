@@ -2,7 +2,7 @@
   "schema_version": "geoagent_tool_implementation_spec_v1",
   "ordinal": 21,
   "research_date": "2026-08-31",
-  "research_status": "design_researched_not_runtime_verified",
+  "research_status": "design_researched_not_runtime_implemented",
   "catalog_source": "canonical_tool_catalog_v2.json",
   "canonical_tool": {
     "canonical": {
@@ -86,8 +86,8 @@
                 "type": "string_or_object",
                 "required": false,
                 "requirement_level": "optional",
-                "description": "使用的高程/地形数据引用。",
-                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 terrain；来源没有时不得编造。",
+                "description": "本地高程栅格、内存网格或 terrain_analysis 返回的 terrain_ref；缺少时先显式获取 DEM。",
+                "acquisition_hint": "优先引用 terrain_analysis 返回的 terrain_ref；没有本地 DEM 时先让 terrain_analysis 使用 OpenTopography 获取，禁止编造路径或在本 Tool 内隐藏下载。",
                 "context_sources": [],
                 "context_default": null,
                 "aliases": [
@@ -225,8 +225,8 @@
         "type": "string_or_object",
         "required": false,
         "requirement_level": "optional",
-        "purpose": "使用的高程/地形数据引用。",
-        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 terrain；来源没有时不得编造。",
+        "purpose": "本地高程栅格、内存网格或 terrain_analysis 返回的 terrain_ref；缺少时先显式获取 DEM。",
+        "how_to_obtain": "优先引用 terrain_analysis 返回的 terrain_ref；没有本地 DEM 时先让 terrain_analysis 使用 OpenTopography 获取，禁止编造路径或在本 Tool 内隐藏下载。",
         "context_sources": [],
         "context_default": null,
         "allowed_values": [],
@@ -243,24 +243,25 @@
     ]
   },
   "implementation_research": {
-    "architecture": "local_dem_viewshed",
+    "architecture": "terrain_artifact_then_local_sightline",
     "backends": [
       {
-        "name": "GDAL viewshed",
-        "kind": "local_cli_or_library",
-        "role": "DEM 可视域与最小可见高度",
-        "official_url": "https://gdal.org/en/stable/programs/gdal_raster_viewshed.html",
-        "authentication": "无",
-        "license_note": "使用前核对软件与数据许可。"
+        "name": "terrain_analysis artifact",
+        "kind": "local_raster_or_opentopography_upstream",
+        "role": "terrain_analysis 通过本地 DEM 或 OpenTopography 取得 GeoTIFF，visibility_analysis 仅执行点到点视线采样",
+        "official_url": "https://opentopography.org/developers",
+        "authentication": "本地 DEM 无；OpenTopography 使用 OPENTOPOGRAPHY_API_KEY",
+        "license_note": "OpenTopography 商业集成需核对 Enterprise API 条款；输出必须保留 DEM 数据集和分辨率。"
       }
     ],
     "execution_flow": [
       "解析 observer/target 和高度",
-      "选择覆盖区域且投影正确的 DEM/DSM",
-      "输出视线剖面、遮挡位置或 viewshed raster"
+      "优先复用 terrain_analysis 返回的 terrain_ref；没有 DEM 时先显式调用 terrain_analysis",
+      "沿 WGS84 测地线采样 DEM/DSM，输出点到点视线剖面与首个遮挡位置"
     ],
     "limitations": [
       "裸地 DEM 不包含建筑树木",
+      "当前 operation 不生成区域 viewshed raster",
       "投影与高度基准必须明确",
       "数据分辨率决定可验证尺度"
     ],

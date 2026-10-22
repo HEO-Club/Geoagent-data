@@ -1,10 +1,11 @@
-"""map_layer_query.load_layer：加载水系、地形、行政区或其他地图图层"""
+"""map_layer_query.load_layer：按范围加载地图图层；当前不支持时间轴、历史地图和 WFS。"""
 
 from __future__ import annotations
 
 from typing import Any
 
-from tool.contract import Observation, RuntimeContext, not_implemented
+from tool.contract import Observation, RuntimeContext
+from tool.map_layer_query._layers import execute_load_layer
 
 
 def execute(
@@ -13,12 +14,6 @@ def execute(
     inputs: dict[str, Any],
     ctx: RuntimeContext | None = None,
 ) -> Observation:
-    """执行 map_layer_query.load_layer。尚未接入真实执行器。"""
+    """执行 map_layer_query.load_layer：默认 terrestris WMS 出图；当前不支持时间轴、历史地图和 WFS。"""
 
-    return not_implemented(
-        'map_layer_query',
-        'load_layer',
-        purpose=purpose,
-        inputs=inputs,
-        ctx=ctx,
-    )
+    return execute_load_layer(purpose=purpose, inputs=inputs, ctx=ctx)

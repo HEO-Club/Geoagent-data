@@ -391,7 +391,7 @@ def _catalog_payload(forest: ToolForest) -> list[dict]:
             "variants": tree.variants,
         }
         for tree in forest.trees
-        if not tree.canonical.is_terminal
+        if tree.canonical.available and not tree.canonical.is_terminal
     ]
 
 
@@ -413,7 +413,8 @@ def llm_semantic_match_batch(
     prompt = (
         "你在维护地理定位 Agent 的执行器级 Canonical Tool 目录。\n"
         "工具边界严格服从现有目录：同一执行器内用 operation 区分；目录已明确拆开的执行阶段不得重新合并。"
-        "例如 OSM/Overpass 查询使用 osm_query，而对已有 OSM 结果做本地过滤/导出使用 osm_result_process；"
+        "例如按地理特征查询，如查询有桥、有河且相距若干米的地方，使用 osm_query 的 near；"
+        "对已有 OSM 结果做本地过滤/导出使用 osm_result_process；"
         "卫星影像获取使用 satellite_imagery_query，跨时相或跨候选比较使用 satellite_imagery_compare；"
         "搜索结果页检索使用 web_search，打开并读取网页使用 web_page_read。\n"
         "每个 raw_tool 必须先排除「只是 reasoning」：如果没有访问外部数据或程序，只是直接看图、合并已有证据、"
@@ -469,10 +470,10 @@ def llm_reclassify_tool_calls(
         "你在校正地理定位 Agent 轨迹中已有 tool_call 的执行器归属。\n"
         "只允许 action=map 到现有目录中的执行器，或在当前工具名已正确时仍 action=map 并返回同一 canonical_name。\n"
         "禁止 action=create；禁止 create_kind=new_operation；禁止把步骤降为 reasoning；禁止发明新工具名。\n"
-        "边界示例：网页关键词检索→web_search；打开并阅读网页→web_page_read；"
-        "调历史底图/遥感时相或在底图上查看水系→satellite_imagery_query 或 map_layer_query；"
-        "打开街景→streetview_query；在图上量宽/距→distance_bearing_calculator；"
-        "勿把后几类默认写成 web_search。\n"
+        "边界示例：按地理特征查询，如查询有桥、有河且相距若干米的地方→osm_query 的 near；"
+        "网页搜索使用 web_search；打开并阅读网页→web_page_read；"
+        "调历史底图或遥感时相→satellite_imagery_query；打开地图底图→map_layer_query；"
+        "打开街景→streetview_query；在图上量宽/距→distance_bearing_calculator。\n"
         "每个待审步骤必须恰好返回一个 decision：step_index 必须原样回填，raw_tool 填原工具名，"
         "canonical_name 与 operation 必填，confidence 为0到1；reason 简述依据。\n"
         f"现有目录：{json.dumps(_catalog_payload(forest), ensure_ascii=False)}\n"
@@ -618,6 +619,8 @@ def _apply_unknown_decision(
     if decision.action == "map":
         target = (decision.canonical_name or "").strip()
         existing = find_tree_for_name(forest, target) if target else None
+        if existing is not None and not existing.canonical.available:
+            existing = None
         if existing is not None:
             forest = add_operation(
                 forest, existing.canonical.name, operation, op_desc
@@ -660,6 +663,8 @@ def _apply_unknown_decision(
     if decision.action == "create" and create_kind == "new_operation":
         parent_name = (decision.canonical_name or "").strip()
         parent = find_tree_for_name(forest, parent_name) if parent_name else None
+        if parent is not None and not parent.canonical.available:
+            parent = None
         proposed_op = _pick_proposal_operation(decision, operation)
         op_name = (
             _normalize_operation_name(proposed_op.name)
@@ -884,6 +889,11 @@ def ensure_tool_trees(
             tree = find_tree_for_name(forest, target) if target else None
             if tree is None:
                 continue
+            if (
+                not tree.canonical.available
+                and raw.lower() != tree.canonical.name.lower()
+            ):
+                continue
             operation = (
                 decision.operation.strip()
                 .lower()
@@ -925,6 +935,11 @@ def ensure_tool_trees(
                 decision.action != "map"
                 or decision.confidence < RECLASSIFY_CONFIDENCE
                 or tree is None
+            ):
+                continue
+            if (
+                not tree.canonical.available
+                and raw.lower() != tree.canonical.name.lower()
             ):
                 continue
             operation = (

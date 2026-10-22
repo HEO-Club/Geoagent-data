@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from tool.contract import Observation, RuntimeContext, not_implemented
+from tool.contract import Observation, RuntimeContext
+from tool.media_search._search import execute_photo_search
 
 
 def execute(
@@ -13,12 +14,6 @@ def execute(
     inputs: dict[str, Any],
     ctx: RuntimeContext | None = None,
 ) -> Observation:
-    """执行 media_search.photo_search。尚未接入真实执行器。"""
+    """执行 media_search.photo_search：检索历史照片或公共图库。"""
 
-    return not_implemented(
-        'media_search',
-        'photo_search',
-        purpose=purpose,
-        inputs=inputs,
-        ctx=ctx,
-    )
+    return execute_photo_search(purpose=purpose, inputs=inputs, ctx=ctx)

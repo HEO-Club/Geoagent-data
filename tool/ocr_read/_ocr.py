@@ -12,7 +12,12 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from tool.contract import Observation, RuntimeContext
-from tool.image_edit._transform import RegionError, _parse_region, _try_json
+from tool.image_edit._transform import (
+    RegionError,
+    _check_pixel_count,
+    _parse_region,
+    _try_json,
+)
 from tool.runtime.image_store import ImageResolveError, put_image, resolve_image_ref
 
 _TEXT_KINDS = frozenset({"natural_text", "number", "road_sign", "address", "auto"})
@@ -20,6 +25,20 @@ _DEFAULT_TEXT_KIND = "auto"
 _DEFAULT_LANGUAGES = ["zh"]
 _DEFAULT_CODE_TYPES = ["qr"]
 _QR_ALIASES = frozenset({"qr", "qrcode", "qr_code"})
+_BARCODE_ALIASES = frozenset(
+    {
+        "barcode",
+        "bar_code",
+        "1d",
+        "1d_barcode",
+        "ean",
+        "ean8",
+        "ean13",
+        "upca",
+        "upce",
+        "upc",
+    }
+)
 _LANG_ALIASES = {
     "zh": "ch",
     "zh-cn": "ch",
@@ -157,28 +176,43 @@ def execute_decode(
     inputs: dict[str, Any],
     ctx: RuntimeContext | None = None,
 ) -> Observation:
-    """解码 ROI 中的二维码；一维条码本阶段不支持。"""
+    """使用 OpenCV 在 ROI 中本地解码二维码与常见一维商品条码。"""
 
     del purpose
     try:
         loaded = _load_roi(inputs, ctx)
-        code_types, qr_requested, unsupported = _parse_code_types(inputs.get("code_types"))
+        code_types, qr_requested, barcode_requested, unsupported = _parse_code_types(
+            inputs.get("code_types")
+        )
+        decoded: list[tuple[OcrHit, str]] = []
+        engines: list[str] = []
+        roi = loaded.roi_rgb()
+        if qr_requested:
+            decoded.extend((hit, "qr") for hit in _decode_qr(roi))
+            engines.append("opencv_qr")
+        if barcode_requested:
+            decoded.extend(_decode_barcodes(roi))
+            engines.append("opencv_barcode")
     except ImageResolveError as exc:
         return _fail(str(exc), exc.error_code)
     except RegionError as exc:
         return _fail(str(exc), exc.error_code)
     except OcrInputError as exc:
         return _fail(str(exc), exc.error_code)
+    except EngineUnavailableError as exc:
+        return _fail(str(exc), exc.error_code)
 
-    if not qr_requested:
-        return _fail("当前仅支持 code_types=qr", "unsupported_code_type")
+    if not qr_requested and not barcode_requested:
+        return _fail("当前支持 code_types=qr 或 barcode", "unsupported_code_type")
 
-    hits = _decode_qr(loaded.roi_rgb())
-    items = [_hit_to_item(hit, loaded.region, code_type="qr") for hit in hits]
+    items = [
+        _hit_to_item(hit, loaded.region, code_type=code_type)
+        for hit, code_type in decoded
+    ]
     applied: dict[str, Any] = {
         "region": list(loaded.region),
         "code_types": code_types,
-        "engine": "opencv_qr",
+        "engine": "+".join(engines),
     }
     if unsupported:
         applied["unsupported_code_types"] = unsupported
@@ -193,6 +227,7 @@ def _load_roi(inputs: dict[str, Any], ctx: RuntimeContext | None) -> LoadedRoi:
     source_id, source_path = resolve_image_ref(image_ref, ctx)
     try:
         with Image.open(source_path) as opened:
+            _check_pixel_count(opened.size, ctx, "max_input_image_pixels")
             source = opened.convert("RGB")
     except OSError as exc:
         raise ImageResolveError(f"无法读取图片: {exc}", "image_not_found") from exc
@@ -239,16 +274,18 @@ def _parse_languages(raw: Any) -> tuple[list[str], str, list[str]]:
     return display, lang_key, ignored
 
 
-def _parse_code_types(raw: Any) -> tuple[list[str], bool, list[str]]:
+def _parse_code_types(raw: Any) -> tuple[list[str], bool, bool, list[str]]:
     values = _parse_string_list(raw, field="code_types", error_code="invalid_code_types")
     if not values:
-        return list(_DEFAULT_CODE_TYPES), True, []
+        return list(_DEFAULT_CODE_TYPES), True, False, []
     normalized = [item.strip().lower() for item in values if item.strip()]
     if not normalized:
-        return list(_DEFAULT_CODE_TYPES), True, []
+        return list(_DEFAULT_CODE_TYPES), True, False, []
     qr_requested = any(item in _QR_ALIASES for item in normalized)
-    unsupported = [item for item in normalized if item not in _QR_ALIASES]
-    return normalized, qr_requested, unsupported
+    barcode_requested = any(item in _BARCODE_ALIASES for item in normalized)
+    supported = _QR_ALIASES | _BARCODE_ALIASES
+    unsupported = [item for item in normalized if item not in supported]
+    return normalized, qr_requested, barcode_requested, unsupported
 
 
 def _parse_string_list(raw: Any, *, field: str, error_code: str) -> list[str]:
@@ -438,6 +475,66 @@ def _decode_qr_multi(detector: cv2.QRCodeDetector, bgr: np.ndarray) -> list[OcrH
             continue
         hits.append(OcrHit(text=str(text), confidence=1.0, quad=quad))
     return hits
+
+
+def _decode_barcodes(roi: Image.Image) -> list[tuple[OcrHit, str]]:
+    """解码 OpenCV 支持的 EAN/UPC 一维条码，不调用云 OCR。"""
+
+    detector_factory = getattr(cv2, "barcode_BarcodeDetector", None)
+    if detector_factory is None:
+        raise EngineUnavailableError(
+            "当前 OpenCV 构建不含 BarcodeDetector，无法解码一维条码"
+        )
+    bgr = cv2.cvtColor(np.asarray(roi.convert("RGB")), cv2.COLOR_RGB2BGR)
+    try:
+        unpacked = detector_factory().detectAndDecodeWithType(bgr)
+    except cv2.error as exc:
+        raise EngineUnavailableError(f"OpenCV 一维条码解码失败: {exc}") from exc
+    if not unpacked or len(unpacked) < 4:
+        return []
+    retval, decoded, decoded_types, points = unpacked[:4]
+    if not retval or decoded is None or decoded_types is None or points is None:
+        return []
+    point_rows = np.asarray(points)
+    if point_rows.ndim == 2 and point_rows.shape == (4, 2):
+        point_rows = point_rows.reshape(1, 4, 2)
+    hits: list[tuple[OcrHit, str]] = []
+    for payload, raw_type, quad_raw in zip(
+        decoded,
+        decoded_types,
+        point_rows,
+        strict=False,
+    ):
+        text = _decoded_text(payload)
+        if not text:
+            continue
+        quad = _parse_quad(quad_raw)
+        if quad is None:
+            continue
+        hits.append(
+            (
+                OcrHit(text=text, confidence=1.0, quad=quad),
+                _canonical_barcode_type(raw_type),
+            )
+        )
+    return hits
+
+
+def _decoded_text(raw: Any) -> str:
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8", errors="replace").strip()
+    return str(raw or "").strip()
+
+
+def _canonical_barcode_type(raw: Any) -> str:
+    value = str(raw or "barcode").strip().lower().replace("-", "_")
+    aliases = {
+        "ean_8": "ean8",
+        "ean_13": "ean13",
+        "upc_a": "upca",
+        "upc_e": "upce",
+    }
+    return aliases.get(value, value or "barcode")
 
 
 def _hit_to_item(

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from tool.distance_bearing_calculator.distance import execute as distance
 from tool.distance_bearing_calculator.bearing import execute as bearing
+from tool.distance_bearing_calculator.distance import execute as distance
 
 OPERATIONS = {
     'distance': distance,
@@ -12,6 +12,6 @@ OPERATIONS = {
 
 __all__ = [
     "OPERATIONS",
-    'distance',
     'bearing',
+    'distance',
 ]

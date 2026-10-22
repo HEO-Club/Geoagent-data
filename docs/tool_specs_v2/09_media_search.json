@@ -2,28 +2,28 @@
   "schema_version": "geoagent_tool_implementation_spec_v1",
   "ordinal": 9,
   "research_date": "2026-08-31",
-  "research_status": "design_researched_not_runtime_verified",
+  "research_status": "runtime_implemented_commons_default_youtube_when_requested",
   "catalog_source": "canonical_tool_catalog_v2.json",
   "canonical_tool": {
     "canonical": {
       "name": "media_search",
-      "description": "搜索外部视频或照片。",
+      "description": "搜索外部视频或照片，只返回链接和元数据，不下载文件，不支持以图搜图。默认只检索 Wikimedia Commons。video_search 只有在 platforms 中写入 youtube 时才检索 YouTube，其 time_range 按发布时间过滤，不是拍摄时间。地名只拼进关键词，不会解析成坐标；只有经纬度或 bbox 才做地理检索，半径限制为 10 到 10000 米。photo_search 只检索 Commons，time_range 只保留元数据中有拍摄时间且落在范围内的结果。",
       "executor": "media_search_service",
       "usage": "仅在需要访问该真实执行器并获得新证据时调用；先选择 operation，再按其 input_schema 填 inputs。缺少执行级参数时按 acquisition_hint 获取，不得编造坐标、文件、会话或前置结果。",
       "operations": [
         {
           "name": "video_search",
-          "description": "检索指定地点、关键词或视角的视频",
+          "description": "按关键词检索公开视频。未填写 platforms 时只检索 Wikimedia Commons；platforms 含 youtube 时检索 YouTube。",
           "aliases": [],
           "input_schema": {
-            "description": "在公开视频或内容平台检索地点和视角。",
+            "description": "按关键词检索公开视频，只返回链接和元数据。",
             "fields": [
               {
                 "name": "query",
                 "type": "string_or_array",
                 "required": true,
                 "requirement_level": "semantic",
-                "description": "提交给该服务的检索词、自然语言查询或明确对象描述。",
+                "description": "检索关键词或对象描述。不接受图片，不能用来以图搜图。",
                 "acquisition_hint": "从本步 purpose/Thought 中提取明确检索对象和约束，不得只写“查询一下”。",
                 "context_sources": [],
                 "context_default": null,
@@ -46,14 +46,14 @@
                 "item_type": null,
                 "minimum": null,
                 "maximum": null,
-                "example": "铁路桥 石栏 历史照片"
+                "example": "铁路桥 石栏"
               },
               {
                 "name": "area",
                 "type": "location",
                 "required": false,
                 "requirement_level": "optional",
-                "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+                "description": "地名会原样拼进检索词，不会转成坐标或行政区范围。经纬度对象或 bbox 会转成圆心加半径后再检索，半径限制为 10 到 10000 米。",
                 "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
                 "context_sources": [
                   "active_area"
@@ -78,14 +78,18 @@
                 "item_type": null,
                 "minimum": null,
                 "maximum": null,
-                "example": "郑州附近黄河沿线"
+                "example": {
+                  "lat": 34.75,
+                  "lon": 113.65,
+                  "radius_m": 5000
+                }
               },
               {
                 "name": "time_range",
                 "type": "string_or_object",
                 "required": false,
                 "requirement_level": "optional",
-                "description": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。",
+                "description": "年份、日期或起止范围。Commons 只保留元数据里有拍摄时间且落在范围内的结果；YouTube 按发布时间过滤。无法解析的写法不会生效，只会记为未支持。",
                 "acquisition_hint": "从字幕、task 或已有结果提取真实时间范围；来源没有时不得猜测。",
                 "context_sources": [],
                 "context_default": null,
@@ -112,7 +116,7 @@
                 "type": "array",
                 "required": false,
                 "requirement_level": "optional",
-                "description": "限定视频平台。",
+                "description": "限定视频平台。可填 wikimedia_commons 或 youtube；不填时只检索 Wikimedia Commons。其他平台不会被检索。",
                 "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 platforms；来源没有时不得编造。",
                 "context_sources": [],
                 "context_default": null,
@@ -124,14 +128,16 @@
                 "item_type": "string",
                 "minimum": null,
                 "maximum": null,
-                "example": null
+                "example": [
+                  "youtube"
+                ]
               },
               {
                 "name": "top_k",
                 "type": "integer",
                 "required": false,
                 "requirement_level": "optional",
-                "description": "最多返回结果数。",
+                "description": "最多返回条数。请求值限制在 1 到 100，单个来源实际最多返回 50 条。",
                 "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 top_k；来源没有时不得编造。",
                 "context_sources": [],
                 "context_default": null,
@@ -154,19 +160,19 @@
         },
         {
           "name": "photo_search",
-          "description": "检索历史照片、航拍照片或公共图库",
+          "description": "按关键词或坐标检索 Wikimedia Commons 图片，只返回链接和元数据。",
           "aliases": [
             "image_search"
           ],
           "input_schema": {
-            "description": "检索历史照片、航拍照片或公共图库。",
+            "description": "检索 Wikimedia Commons 图片。query 与 area 至少提供一个。只返回链接和元数据。",
             "fields": [
               {
                 "name": "query",
                 "type": "string_or_array",
                 "required": false,
                 "requirement_level": "optional",
-                "description": "提交给该服务的检索词、自然语言查询或明确对象描述。",
+                "description": "检索关键词或对象描述。不接受图片，不能用来以图搜图。",
                 "acquisition_hint": "从本步 purpose/Thought 中提取明确检索对象和约束，不得只写“查询一下”。",
                 "context_sources": [],
                 "context_default": null,
@@ -189,14 +195,14 @@
                 "item_type": null,
                 "minimum": null,
                 "maximum": null,
-                "example": "铁路桥 石栏 历史照片"
+                "example": "铁路桥 石栏"
               },
               {
                 "name": "area",
                 "type": "location",
                 "required": false,
                 "requirement_level": "optional",
-                "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+                "description": "地名会原样拼进检索词，不会转成坐标或行政区范围。经纬度对象或 bbox 会转成圆心加半径后再检索，半径限制为 10 到 10000 米。",
                 "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
                 "context_sources": [
                   "active_area"
@@ -221,14 +227,18 @@
                 "item_type": null,
                 "minimum": null,
                 "maximum": null,
-                "example": "郑州附近黄河沿线"
+                "example": {
+                  "lat": 34.75,
+                  "lon": 113.65,
+                  "radius_m": 5000
+                }
               },
               {
                 "name": "time_range",
                 "type": "string_or_object",
                 "required": false,
                 "requirement_level": "optional",
-                "description": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。",
+                "description": "年份、日期或起止范围。Commons 只保留元数据里有拍摄时间且落在范围内的结果；YouTube 按发布时间过滤。无法解析的写法不会生效，只会记为未支持。",
                 "acquisition_hint": "从字幕、task 或已有结果提取真实时间范围；来源没有时不得猜测。",
                 "context_sources": [],
                 "context_default": null,
@@ -255,7 +265,7 @@
                 "type": "array",
                 "required": false,
                 "requirement_level": "optional",
-                "description": "限定图库或档案来源。",
+                "description": "限定图库。当前只实现 wikimedia_commons；不填时也只检索 Wikimedia Commons。其他来源不会被检索。",
                 "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 sources；来源没有时不得编造。",
                 "context_sources": [],
                 "context_default": null,
@@ -275,7 +285,7 @@
                 "type": "integer",
                 "required": false,
                 "requirement_level": "optional",
-                "description": "最多返回结果数。",
+                "description": "最多返回条数。请求值限制在 1 到 100，单个来源实际最多返回 50 条。",
                 "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 top_k；来源没有时不得编造。",
                 "context_sources": [],
                 "context_default": null,
@@ -358,14 +368,14 @@
         "type": "string_or_array",
         "required": true,
         "requirement_level": "semantic",
-        "purpose": "提交给该服务的检索词、自然语言查询或明确对象描述。",
+        "purpose": "检索关键词或对象描述。不接受图片，不能用来以图搜图。",
         "how_to_obtain": "从本步 purpose/Thought 中提取明确检索对象和约束，不得只写“查询一下”。",
         "context_sources": [],
         "context_default": null,
         "allowed_values": [],
         "minimum": null,
         "maximum": null,
-        "example": "铁路桥 石栏 历史照片",
+        "example": "铁路桥 石栏",
         "aliases": [
           "关键词",
           "检索词",
@@ -388,7 +398,7 @@
         "type": "location",
         "required": false,
         "requirement_level": "optional",
-        "purpose": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+        "purpose": "地名会原样拼进检索词，不会转成坐标或行政区范围。经纬度对象或 bbox 会转成圆心加半径后再检索，半径限制为 10 到 10000 米。",
         "how_to_obtain": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
         "context_sources": [
           "active_area"
@@ -397,7 +407,11 @@
         "allowed_values": [],
         "minimum": null,
         "maximum": null,
-        "example": "郑州附近黄河沿线",
+        "example": {
+          "lat": 34.75,
+          "lon": 113.65,
+          "radius_m": 5000
+        },
         "aliases": [
           "区域",
           "地区",
@@ -420,7 +434,7 @@
         "type": "string_or_object",
         "required": false,
         "requirement_level": "optional",
-        "purpose": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。",
+        "purpose": "年份、日期或起止范围。Commons 只保留元数据里有拍摄时间且落在范围内的结果；YouTube 按发布时间过滤。无法解析的写法不会生效，只会记为未支持。",
         "how_to_obtain": "从字幕、task 或已有结果提取真实时间范围；来源没有时不得猜测。",
         "context_sources": [],
         "context_default": null,
@@ -447,14 +461,16 @@
         "type": "array",
         "required": false,
         "requirement_level": "optional",
-        "purpose": "限定视频平台。",
+        "purpose": "限定视频平台。可填 wikimedia_commons 或 youtube；不填时只检索 Wikimedia Commons。其他平台不会被检索。",
         "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 platforms；来源没有时不得编造。",
         "context_sources": [],
         "context_default": null,
         "allowed_values": [],
         "minimum": null,
         "maximum": null,
-        "example": null,
+        "example": [
+          "youtube"
+        ],
         "aliases": [
           "平台",
           "站点"
@@ -466,7 +482,7 @@
         "type": "integer",
         "required": false,
         "requirement_level": "optional",
-        "purpose": "最多返回结果数。",
+        "purpose": "最多返回条数。请求值限制在 1 到 100，单个来源实际最多返回 50 条。",
         "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 top_k；来源没有时不得编造。",
         "context_sources": [],
         "context_default": null,
@@ -487,14 +503,14 @@
         "type": "string_or_array",
         "required": false,
         "requirement_level": "optional",
-        "purpose": "提交给该服务的检索词、自然语言查询或明确对象描述。",
+        "purpose": "检索关键词或对象描述。不接受图片，不能用来以图搜图。",
         "how_to_obtain": "从本步 purpose/Thought 中提取明确检索对象和约束，不得只写“查询一下”。",
         "context_sources": [],
         "context_default": null,
         "allowed_values": [],
         "minimum": null,
         "maximum": null,
-        "example": "铁路桥 石栏 历史照片",
+        "example": "铁路桥 石栏",
         "aliases": [
           "关键词",
           "检索词",
@@ -517,7 +533,7 @@
         "type": "location",
         "required": false,
         "requirement_level": "optional",
-        "purpose": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+        "purpose": "地名会原样拼进检索词，不会转成坐标或行政区范围。经纬度对象或 bbox 会转成圆心加半径后再检索，半径限制为 10 到 10000 米。",
         "how_to_obtain": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
         "context_sources": [
           "active_area"
@@ -526,7 +542,11 @@
         "allowed_values": [],
         "minimum": null,
         "maximum": null,
-        "example": "郑州附近黄河沿线",
+        "example": {
+          "lat": 34.75,
+          "lon": 113.65,
+          "radius_m": 5000
+        },
         "aliases": [
           "区域",
           "地区",
@@ -549,7 +569,7 @@
         "type": "string_or_object",
         "required": false,
         "requirement_level": "optional",
-        "purpose": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。",
+        "purpose": "年份、日期或起止范围。Commons 只保留元数据里有拍摄时间且落在范围内的结果；YouTube 按发布时间过滤。无法解析的写法不会生效，只会记为未支持。",
         "how_to_obtain": "从字幕、task 或已有结果提取真实时间范围；来源没有时不得猜测。",
         "context_sources": [],
         "context_default": null,
@@ -576,7 +596,7 @@
         "type": "array",
         "required": false,
         "requirement_level": "optional",
-        "purpose": "限定图库或档案来源。",
+        "purpose": "限定图库。当前只实现 wikimedia_commons；不填时也只检索 Wikimedia Commons。其他来源不会被检索。",
         "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 sources；来源没有时不得编造。",
         "context_sources": [],
         "context_default": null,
@@ -596,7 +616,7 @@
         "type": "integer",
         "required": false,
         "requirement_level": "optional",
-        "purpose": "最多返回结果数。",
+        "purpose": "最多返回条数。请求值限制在 1 到 100，单个来源实际最多返回 50 条。",
         "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 top_k；来源没有时不得编造。",
         "context_sources": [],
         "context_default": null,
@@ -613,44 +633,40 @@
     ]
   },
   "implementation_research": {
-    "architecture": "multi_provider_media_catalog",
+    "architecture": "commons_default_youtube_video_on_request",
     "backends": [
-      {
-        "name": "YouTube Data API",
-        "kind": "external_api",
-        "role": "视频元数据检索",
-        "official_url": "https://developers.google.com/youtube/v3/docs/search/list",
-        "authentication": "Google Cloud API Key",
-        "license_note": "使用前核对软件与数据许可。"
-      },
       {
         "name": "Wikimedia Commons API",
         "kind": "external_api",
-        "role": "带作者和许可元数据的图片",
+        "role": "默认图片与视频元数据检索",
         "official_url": "https://www.mediawiki.org/wiki/API:Imageinfo/en",
         "authentication": "无",
-        "license_note": "使用前核对软件与数据许可。"
+        "license_note": "只返回元数据与链接，不下载；命中不授予训练使用权。"
       },
       {
-        "name": "Europeana API",
+        "name": "YouTube Data API search.list",
         "kind": "external_api",
-        "role": "历史照片与文化遗产媒体",
-        "official_url": "https://api.europeana.eu/en",
-        "authentication": "Europeana API Key",
-        "license_note": "使用前核对软件与数据许可。"
+        "role": "仅当 video_search 的 platforms 含 youtube 时检索公开视频",
+        "official_url": "https://developers.google.com/youtube/v3/docs/search/list",
+        "authentication": "环境变量 YOUTUBE_API_KEY",
+        "license_note": "默认约 100 次搜索/天；不下载视频。"
       }
     ],
     "execution_flow": [
-      "按媒体类型、区域和时间查询",
-      "获取媒体详情和许可字段",
-      "返回媒体 ID、来源、上传/拍摄时间及许可"
+      "未指定平台时只查 Wikimedia Commons",
+      "video_search 在 platforms 含 youtube 时调用 YouTube search.list",
+      "地名拼进关键词；经纬度或 bbox 转成圆心加半径",
+      "只返回链接、标题、作者、许可和上传或发布时间"
     ],
     "limitations": [
-      "上传时间不等于拍摄时间",
-      "能搜索不等于能下载或训练",
-      "逐资源核对许可与署名要求"
+      "不下载文件，不支持以图搜图",
+      "上传或发布时间不是拍摄时间",
+      "地名不会解析成坐标",
+      "Commons 的坐标检索与关键词不能同时交给服务端",
+      "未实现 Europeana、Flickr 和 B站",
+      "HTTP 429、503 或连接中断时同一请求再试两次"
     ],
-    "mcp_strategy": "自建聚合 MCP/adapter，但保留 provider 和原始许可字段。"
+    "mcp_strategy": "保持现有 executor。新增平台前先改目录说明，避免模型把未实现来源当成可选项。"
   },
   "recommended_executor_contract": {
     "required_result_fields": [

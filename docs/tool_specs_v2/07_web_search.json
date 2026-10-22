@@ -2,12 +2,12 @@
   "schema_version": "geoagent_tool_implementation_spec_v1",
   "ordinal": 7,
   "research_date": "2026-08-31",
-  "research_status": "design_researched_not_runtime_verified",
+  "research_status": "design_researched_not_runtime_implemented",
   "catalog_source": "canonical_tool_catalog_v2.json",
   "canonical_tool": {
     "canonical": {
       "name": "web_search",
-      "description": "执行开放网页或指定站点搜索。",
+      "description": "执行开放网页或指定站点搜索。地名的行政归属和标准名称也用本工具检索，坐标再交给 geocode。",
       "executor": "web_search_engine",
       "usage": "仅在需要访问该真实执行器并获得新证据时调用；先选择 operation，再按其 input_schema 填 inputs。缺少执行级参数时按 acquisition_hint 获取，不得编造坐标、文件、会话或前置结果。",
       "operations": [
@@ -526,12 +526,20 @@
     "architecture": "provider_api",
     "backends": [
       {
-        "name": "Brave Search API",
-        "kind": "external_api",
-        "role": "网页、图片和视频搜索",
-        "official_url": "https://brave.com/search/api/",
-        "authentication": "Brave Search API Key",
-        "license_note": "使用前核对软件与数据许可。"
+        "name": "SerpAPI Google",
+        "kind": "third_party_api",
+        "role": "非中文网页搜索",
+        "official_url": "https://serpapi.com/search-api",
+        "authentication": "SerpAPI Key",
+        "license_note": "复用 SERPAPI_API_KEY；engine=google。时间范围写成 tbs。"
+      },
+      {
+        "name": "SerpAPI Baidu",
+        "kind": "third_party_api",
+        "role": "中文网页搜索（organic 与百度结果页中的社交媒体卡片）",
+        "official_url": "https://serpapi.com/baidu-search-api",
+        "authentication": "SerpAPI Key",
+        "license_note": "复用 SERPAPI_API_KEY；不是百度官方搜索 API。"
       },
       {
         "name": "Tavily Search",
@@ -552,7 +560,7 @@
       "提供商不支持的筛选条件必须明示",
       "搜索排序和索引覆盖会变化"
     ],
-    "mcp_strategy": "可直接评估官方 Brave/Tavily MCP；统一输出仍由本项目 adapter 规范化。"
+    "mcp_strategy": "运行时使用 SerpAPI Google / Baidu adapter；统一输出仍由本项目 adapter 规范化。"
   },
   "recommended_executor_contract": {
     "required_result_fields": [

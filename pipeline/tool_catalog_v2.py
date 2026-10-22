@@ -120,6 +120,7 @@ def build_tool_forest_v2(
                     params=params,
                     observation_fields=observation_fields,
                     is_terminal=terminal,
+                    available=bool(definition.get("available", True)),
                 ),
                 variants=variants,
                 variant_operations=mapped_variant_ops,
@@ -144,6 +145,8 @@ def render_tool_contract_guidance(forest: ToolForest) -> str:
     ]
     for tree in forest.trees:
         tool = tree.canonical
+        if not tool.available:
+            continue
         if tool.is_terminal:
             lines.append(f"- {tool.name}: {tool.description}; operations=submit(location)")
             continue

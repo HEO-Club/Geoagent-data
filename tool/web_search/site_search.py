@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from tool.contract import Observation, RuntimeContext, not_implemented
+from tool.contract import Observation, RuntimeContext
+from tool.web_search._search import execute_site_search
 
 
 def execute(
@@ -13,12 +14,6 @@ def execute(
     inputs: dict[str, Any],
     ctx: RuntimeContext | None = None,
 ) -> Observation:
-    """执行 web_search.site_search。尚未接入真实执行器。"""
+    """执行 web_search.site_search：在指定站点内检索。"""
 
-    return not_implemented(
-        'web_search',
-        'site_search',
-        purpose=purpose,
-        inputs=inputs,
-        ctx=ctx,
-    )
+    return execute_site_search(purpose=purpose, inputs=inputs, ctx=ctx)

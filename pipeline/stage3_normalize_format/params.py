@@ -16,6 +16,14 @@ from pipeline.schemas.tools import (
 )
 from pipeline.stage3_normalize_format.trees import find_tree_for_name
 
+_REQUIRED_WITH: dict[tuple[str, str], dict[str, list[str]]] = {
+    ("map_query", "poi_search"): {"center": ["radius_m"]},
+    ("map_query", "browse"): {"center": ["radius_m"]},
+    ("poi_search", "poi_search"): {"center": ["radius_m"]},
+    ("poi_search", "browse"): {"center": ["radius_m"]},
+    ("osm_query", "query"): {"center": ["radius_m"]},
+}
+
 
 def _norm_name(value: Any) -> str:
     text = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
@@ -98,6 +106,12 @@ def _type_matches(value: Any, expected: str, item_type: str | None) -> bool:
         )
     if expected == "string_or_object":
         return _type_matches(value, "string", None) or isinstance(value, dict)
+    if expected == "region":
+        return (
+            _type_matches(value, "string", None)
+            or isinstance(value, dict)
+            or (isinstance(value, list) and bool(value))
+        )
     if expected == "number_or_string":
         return _type_matches(value, "number", None) or _type_matches(
             value, "string", None
@@ -115,6 +129,108 @@ def _type_matches(value: Any, expected: str, item_type: str | None) -> bool:
     return True
 
 
+_GEOMETRY_ONLY_MARKERS = ("不接受地名", "请先 geocode", "必须是真实坐标")
+
+
+def _field_rejects_place_name(field: InputFieldSpec) -> bool:
+    """执行器只收 bbox / 中心点时，目录说明会写明不接受纯地名。"""
+
+    text = f"{field.description}\n{field.acquisition_hint}"
+    return any(marker in text for marker in _GEOMETRY_ONLY_MARKERS)
+
+
+def _is_coordinate_text(text: str) -> bool:
+    parts = [part for part in re.split(r"[\s,，]+", text.strip()) if part]
+    if len(parts) not in {2, 4}:
+        return False
+    try:
+        [float(part) for part in parts]
+    except ValueError:
+        return False
+    return True
+
+
+def _is_geometry_value(value: Any) -> bool:
+    """bbox、中心点加半径、坐标文本或运行时引用。纯地名返回 False。"""
+
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return False
+        if text.startswith("$"):
+            return True
+        return _is_coordinate_text(text)
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return False
+        if (
+            len(value) in {2, 4}
+            and all(isinstance(item, (int, float)) and not isinstance(item, bool) for item in value)
+        ):
+            return True
+        return all(_is_geometry_value(item) for item in value)
+    if isinstance(value, dict):
+        west = value.get("west", value.get("min_lon"))
+        south = value.get("south", value.get("min_lat"))
+        east = value.get("east", value.get("max_lon"))
+        north = value.get("north", value.get("max_lat"))
+        if all(
+            isinstance(item, (int, float)) and not isinstance(item, bool)
+            for item in (west, south, east, north)
+        ):
+            return True
+        lat = value.get("lat", value.get("latitude"))
+        lon = value.get("lon", value.get("lng", value.get("longitude")))
+        if (
+            isinstance(lat, (int, float))
+            and not isinstance(lat, bool)
+            and isinstance(lon, (int, float))
+            and not isinstance(lon, bool)
+        ):
+            return True
+        for key in ("bbox", "polygon", "coordinates", "center"):
+            if key in value and _is_geometry_value(value[key]):
+                return True
+        return False
+    return False
+
+
+def _reject_place_name(
+    field: InputFieldSpec,
+    value: Any,
+    issues: list[ParameterAuditIssue],
+    repair_actions: list[ParameterRepairAction],
+) -> bool:
+    """把不能执行的纯地名移出 normalized inputs，并要求先 geocode。"""
+
+    if not _field_rejects_place_name(field) or _is_geometry_value(value):
+        return False
+    guidance = (
+        "纯地名请先调用 geocode，再把返回的 bbox 或 {lat, lon, radius_m} 写入该字段；"
+        "不得编造坐标。"
+    )
+    issues.append(
+        ParameterAuditIssue(
+            code="input_type_mismatch",
+            severity="error",
+            field=field.name,
+            message=f"{field.name}={value!r} 不是 bbox 或中心点加半径，不接受地名",
+            requirement_level="execution",
+            repairable=True,
+            guidance=guidance,
+        )
+    )
+    repair_actions.append(
+        ParameterRepairAction(
+            field=field.name,
+            requirement_level="execution",
+            strategy="call_prerequisite_tool",
+            guidance=guidance,
+        )
+    )
+    return True
+
+
 def _field_alias_map(schema: ToolInputSchema) -> dict[str, InputFieldSpec]:
     result: dict[str, InputFieldSpec] = {}
     for field in schema.fields:
@@ -126,11 +242,14 @@ def _field_alias_map(schema: ToolInputSchema) -> dict[str, InputFieldSpec]:
 def _default_acquisition_hint(name: str) -> str:
     hints = {
         "image": (
-            "优先引用 $current_image；若只需要局部特征，先调用 image_process.crop/zoom "
+            "优先引用 $current_image；若只需要局部特征，先调用 image_edit.crop/zoom "
             "生成截图并把返回的图片 ID 传入，禁止编造文件名。"
         ),
         "images": "从当前输入图或前置 crop/capture 返回值收集真实图片 ID，至少两张。",
-        "region": "在当前图片上明确裁剪框或可复现的目标区域描述。",
+        "region": (
+            "在当前图片上明确裁剪框或可复现的目标区域描述；0..1 边界框应显式标注 "
+            "coordinate_space，避免把 1 像素框误解为整图。"
+        ),
         "area": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
         "query": "从本步 purpose/Thought 中提取明确检索对象和约束，不得只写“查询一下”。",
         "source_result": (
@@ -454,6 +573,10 @@ def normalize_and_validate_tool_inputs(
             and not resolve_from_context(field)
         ):
             add_missing(field)
+        if field.name in normalized and _reject_place_name(
+            field, normalized[field.name], issues, repair_actions
+        ):
+            normalized.pop(field.name, None)
         if field.name in normalized:
             _validate_field(field, normalized[field.name], issues)
             if _looks_like_unresolved_reference(field, normalized[field.name]):
@@ -529,6 +652,19 @@ def normalize_and_validate_tool_inputs(
                 guidance=guidance,
             )
         )
+    required_with = _REQUIRED_WITH.get(
+        (tree.canonical.name, canonical_operation),
+        {},
+    )
+    for trigger, dependencies in required_with.items():
+        if trigger not in normalized:
+            continue
+        for name in dependencies:
+            if name in normalized:
+                continue
+            field = fields_by_name.get(name)
+            if field is not None and not resolve_from_context(field):
+                add_missing(field)
     for group in schema.mutually_exclusive:
         present = [name for name in group if name in normalized]
         if len(present) > 1:
@@ -712,11 +848,47 @@ def _image(required: bool = True) -> InputFieldSpec:
 def _region(required: bool = False) -> InputFieldSpec:
     return _field(
         "region",
-        "图片中的目标区域，可用 [x1,y1,x2,y2]、命名区域或可复现的区域描述表示。",
-        type="string_or_array",
+        "图片中的目标区域，可用 [x1,y1,x2,y2]、命名区域或对象表示；对象可带 coordinate_space=auto/pixels/normalized 消除 0..1 坐标歧义。",
+        type="region",
         required=required,
         aliases=["区域", "裁剪区域", "目标区域", "roi", "bbox", "crop_region"],
         example="bridge_tower_top",
+    )
+
+
+def _geometry_area(
+    required: bool = False, *, extra_aliases: list[str] | None = None
+) -> InputFieldSpec:
+    """只接受 bbox 或中心点加半径的 area，与拒绝纯地名的执行器一致。"""
+
+    return _field(
+        "area",
+        "WGS84 bbox [west,south,east,north]，或 {lat, lon, radius_m}。不接受地名；纯地名请先 geocode。",
+        type="location",
+        required=required,
+        requirement_level="semantic" if required else "optional",
+        acquisition_hint=(
+            "引用 geocode 或前一步地图结果中的 bbox、中心点加半径，"
+            "或已是几何的 $active_area；来源没有坐标时不得编造。"
+        ),
+        context_sources=["active_area"],
+        aliases=[
+            "区域",
+            "地区",
+            "地点",
+            "候选区域",
+            "检索范围",
+            "搜索区域",
+            "省域范围",
+            "region",
+            "target_area",
+            "search_area",
+            "sample_area",
+            "location",
+            "cities",
+            *(extra_aliases or []),
+        ],
+        example={"lat": 34.75, "lon": 113.65, "radius_m": 2000},
     )
 
 
@@ -790,15 +962,15 @@ def _operation_schemas() -> dict[tuple[str, str], ToolInputSchema]:
     )
     schemas[("image_process", "crop")] = _schema(
         "从输入图片裁取指定区域。",
-        [_image(), _region(required=True), _field("padding", "裁剪区域外扩像素或比例。", type="number", aliases=["边距", "padding_px"], minimum=0)],
+        [_image(), _region(required=True), _field("padding", "裁剪区域外扩值；配合 padding_mode 明确单位。未指定时为兼容旧数据，<1 按比例、>=1 按像素。", type="number", aliases=["边距", "padding_px"], minimum=0), _field("padding_mode", "padding 的单位。", allowed_values=["pixels", "ratio"], aliases=["边距单位"]), _field("output_format", "裁剪图输出格式。", allowed_values=["png", "jpeg", "webp"], aliases=["格式", "format"], example="png")],
     )
     schemas[("image_process", "zoom")] = _schema(
         "放大指定图片区域，产生供后续识别使用的派生图。",
-        [_image(), _region(required=True), _field("scale", "放大倍数。", type="number", aliases=["倍数", "zoom", "zoom_factor"], minimum=1, example=2)],
+        [_image(), _region(required=True), _field("scale", "放大倍数，默认最多 16 倍以避免资源耗尽。", type="number", aliases=["倍数", "zoom", "zoom_factor"], minimum=1, maximum=16, example=2), _field("output_format", "放大图输出格式。", allowed_values=["png", "jpeg", "webp"], aliases=["格式", "format"], example="png")],
     )
     schemas[("image_process", "measure")] = _schema(
         "测量图片中的像素距离、角度、比例或其他可计算视觉量。",
-        [_image(), _region(), _field("measurement", "要计算的量。", required=True, aliases=["测量项", "检查项", "metric"], allowed_values=["distance", "angle", "ratio", "area", "color"], example="angle"), _field("reference", "尺度、参照线或已知尺寸。", type="string_or_object", aliases=["参照", "基准", "reference_line"])],
+        [_image(), _region(), _field("measurement", "要计算的量。", required=True, aliases=["测量项", "检查项", "metric"], allowed_values=["distance", "angle", "ratio", "area", "color"], example="angle"), _field("axis", "框量测所用方向；省略时 distance 取较长边。", allowed_values=["horizontal", "vertical", "diagonal"], aliases=["方向", "测量方向"]), _field("reference", "尺度、参照线或已知尺寸。", type="string_or_object", aliases=["参照", "基准", "reference_line"])],
     )
     schemas[("image_process", "compare")] = _schema(
         "对两张或多张真实图片执行程序化差异或特征比较。",
@@ -811,16 +983,16 @@ def _operation_schemas() -> dict[tuple[str, str], ToolInputSchema]:
         [_image(), _region(), _field("languages", "候选语言代码列表；未知时可省略。", type="array", item_type="string", aliases=["语言", "language"], example=["zh", "en"]), _field("text_kind", "预期文字类型。", aliases=["文字类型", "kind"], allowed_values=["natural_text", "number", "road_sign", "address", "auto"])],
     )
     schemas[("ocr_read", "decode")] = _schema(
-        "解码二维码、条码或其他机器编码。",
-        [_image(), _region(), _field("code_types", "允许识别的编码类型。", type="array", item_type="string", aliases=["编码类型", "types"], example=["qr", "barcode"])],
+        "解码二维码；当前本地执行器不实现一维条码，若请求 barcode 会明确返回不支持。",
+        [_image(), _region(), _field("code_types", "请求的编码类型；当前可执行值为 qr。", type="array", item_type="string", aliases=["编码类型", "types"], example=["qr"])],
     )
     schemas[("reverse_image_search", "search")] = _schema(
-        "提交完整图片到反向搜图服务。",
-        [_image(), _field("engines", "可选搜索引擎列表。", type="array", item_type="string", aliases=["引擎", "providers"]), _field("top_k", "最多返回结果数。", type="integer", aliases=["结果数", "limit"], minimum=1, maximum=100, example=10)],
+        "提交完整图片到 SerpAPI Google Lens。不选择其他搜图引擎。",
+        [_image(), _field("top_k", "最多返回结果数。", type="integer", aliases=["结果数", "limit"], minimum=1, maximum=100, example=10)],
     )
     schemas[("reverse_image_search", "search_crop")] = _schema(
-        "提交指定裁剪区域进行局部反向搜图。",
-        [_image(), _region(required=True), _field("engines", "可选搜索引擎列表。", type="array", item_type="string", aliases=["引擎", "providers"]), _field("top_k", "最多返回结果数。", type="integer", aliases=["结果数", "limit"], minimum=1, maximum=100)],
+        "提交指定裁剪区域到 SerpAPI Google Lens。不选择其他搜图引擎。",
+        [_image(), _region(required=True), _field("top_k", "最多返回结果数。", type="integer", aliases=["结果数", "limit"], minimum=1, maximum=100)],
     )
 
     # web_search
@@ -840,13 +1012,13 @@ def _operation_schemas() -> dict[tuple[str, str], ToolInputSchema]:
 
     # map_query
     schemas[("map_query", "poi_search")] = _schema(
-        "在地图服务中按名称或类别搜索 POI。",
-        [_area(), _query(), _field("categories", "POI 类别或类型。", type="string_or_array", aliases=["类别", "类型", "poi_type"]), _field("radius_m", "以中心点检索时的半径（米）。", type="number", aliases=["半径", "radius"], minimum=0), _field("top_k", "最多返回候选数。", type="integer", aliases=["结果数", "limit"], minimum=1, maximum=500)],
+        "按名称关键词或高德 POI 类型码搜索兴趣点；结果是候选，不是最终地点。不按 OSM 标签检索地物，桥梁、河流、道路用 osm_query。",
+        [_area(), _field("query", "兴趣点名称关键词，按名称匹配。不是地物类型；桥梁、河流、道路、山、塔等地理特征用 osm_query。", type="string_or_array", aliases=["关键词", "检索词", "查询词", "检索对象", "对象", "目标", "material", "keywords", "问题", "q", "search_query"], example="梅林大桥"), _field("bbox", "WGS84 查询框 [west,south,east,north]。", type="array", item_type="number", aliases=["边界框", "bounds"]), _field("center", "WGS84 中心坐标 [lat,lon]，与 radius_m 配合。", type="location", aliases=["中心", "中心点"]), _field("categories", "高德 POI 类型码，原样作为 types 提交。不映射 OSM 标签，不能把「桥梁」「河流」写成地物检索。", type="string_or_array", aliases=["类别", "类型", "poi_type"]), _field("filters", "本 operation 不读取该字段，不能当作 OSM tag。对已有候选做名称、分页或详情筛选时使用 browse。", type="object", aliases=["筛选条件"]), _field("radius_m", "以中心点检索时的半径（米）。", type="number", aliases=["半径", "radius"], minimum=0), _field("language", "名称结果语言代码。", aliases=["语言", "lang"]), _field("top_k", "最多返回候选数。", type="integer", aliases=["结果数", "limit"], minimum=1, maximum=200)],
         required_any=[["area", "query", "categories"]],
     )
     schemas[("map_query", "geocode")] = _schema(
         "在地名、地址和坐标表达之间转换。",
-        [_query(required=True), _area(), _field("direction", "正向或反向地理编码。", aliases=["方向", "mode"], allowed_values=["forward", "reverse", "auto"], example="auto")],
+        [_field("query", "正向查询使用地名/地址，反向查询使用 [lat,lon] 或坐标对象。", type="location", required=True, requirement_level="semantic", aliases=["检索词", "地点", "地址", "坐标", "q"], example="郑州黄河文化公园"), _area(), _field("direction", "正向或反向地理编码；auto 根据 query 形状判断。", aliases=["方向", "mode"], allowed_values=["forward", "reverse", "auto"], example="auto"), _field("language", "候选名称的语言代码。", aliases=["语言", "lang"]), _field("top_k", "每个正向查询最多返回候选数。", type="integer", aliases=["结果数", "limit"], minimum=1, maximum=10, example=5)],
     )
     schemas[("map_query", "route")] = _schema(
         "查询两点或多点之间的道路与路线关系。",
@@ -857,14 +1029,15 @@ def _operation_schemas() -> dict[tuple[str, str], ToolInputSchema]:
         [_area(required=True), _field("layers", "需要加载的一个或多个图层。", type="string_or_array", required=True, aliases=["图层", "数据层", "layer", "地图类型"], example=["hydrology"]), _time_range(), _field("provider", "地图或数据服务提供方。", aliases=["数据源", "服务"] )],
     )
     schemas[("map_query", "browse")] = _schema(
-        "在指定区域浏览地图并返回符合描述的候选要素。",
-        [_area(required=True), _query(), _field("filters", "附加属性或空间过滤条件。", type="object", aliases=["筛选条件", "条件"]), _field("top_k", "最多返回候选数。", type="integer", aliases=["结果数", "limit"], minimum=1, maximum=500)],
+        "浏览已有兴趣点候选，或在明确区域内按名称重新检索。不按 OSM 标签检索地物；桥梁、河流、道路用 osm_query。",
+        [_area(), _field("bbox", "WGS84 查询框 [west,south,east,north]。", type="array", item_type="number", aliases=["边界框", "bounds"]), _field("center", "WGS84 中心坐标 [lat,lon]，与 radius_m 配合。", type="location", aliases=["中心", "中心点"]), _field("query", "兴趣点名称关键词，按名称匹配。不是地物类型；桥梁、河流、道路、山、塔等地理特征用 osm_query。", type="string_or_array", aliases=["关键词", "检索词", "查询词", "检索对象", "对象", "目标", "material", "keywords", "问题", "q", "search_query"], example="梅林大桥"), _field("categories", "本 operation 不读取该字段。类别筛选写在 filters.category，不映射 OSM 标签。", type="string_or_array", aliases=["类别", "类型", "poi_type"]), _field("filters", "对已有候选做本地筛选，可用 name、category、page、offset、poi_id 或 expand。不是 OSM tag。", type="object", aliases=["筛选条件", "条件"]), _field("radius_m", "中心点查询半径（米）。", type="number", aliases=["半径", "radius"], minimum=0), _field("top_k", "最多返回候选数。", type="integer", aliases=["结果数", "limit"], minimum=1, maximum=200)],
+        required_any=[["area", "bbox", "center"]],
     )
 
     # osm_query: 默认传结构化约束；overpass_ql 仅在确有原始代码时可选。
     schemas[("osm_query", "query")] = _schema(
         "查询 OSM 要素。默认传 area/tags 等结构化约束，由执行器生成 Overpass QL；只有轨迹确实编写了代码时才传 overpass_ql。",
-        [_area(), _field("bbox", "WGS84 查询框 [west,south,east,north]。", type="array", item_type="number", aliases=["边界框", "bounds", "extent"]), _field("center", "中心坐标或地名，与 radius_m 配合。", type="string_or_object", aliases=["中心点", "中心"]), _field("radius_m", "中心点查询半径（米）。", type="number", aliases=["半径", "radius"], minimum=0), _field("tags", "OSM 标签过滤，如 {\"bridge\":\"yes\"}。", type="object", aliases=["标签", "osm_tags", "filters"], example={"bridge": "yes"}), _field("feature_types", "希望检索的自然语言要素类型；执行器负责映射为 OSM 标签。", type="string_or_array", aliases=["特征", "目标类型", "要素类型", "categories"], example=["桥梁"]), _field("element_types", "OSM 元素类型。", type="array", item_type="string", aliases=["元素类型", "types"], example=["node", "way", "relation"]), _field("spatial_relation", "空间关系约束，如 within/near/intersects。", aliases=["空间关系", "关系"]), _field("return_geometry", "是否返回完整几何。", type="boolean", aliases=["返回几何", "geometry"], example=True), _field("limit", "最多返回要素数。", type="integer", aliases=["结果数", "top_k"], minimum=1, maximum=10000), _field("overpass_ql", "可选的完整 Overpass QL；不是默认必填参数。", aliases=["代码", "查询代码", "query_code", "raw_query"])],
+        [_area(), _field("bbox", "WGS84 查询框 [west,south,east,north]。", type="array", item_type="number", aliases=["边界框", "bounds", "extent"]), _field("center", "WGS84 中心坐标 [lat,lon]，与 radius_m 配合；地名应先由 geocode 解析。", type="location", aliases=["中心点", "中心"]), _field("radius_m", "中心点查询半径（米）。", type="number", aliases=["半径", "radius"], minimum=0), _field("tags", "OSM 标签过滤，如 {\"bridge\":\"yes\"}。", type="object", aliases=["标签", "osm_tags", "filters"], example={"bridge": "yes"}), _field("feature_types", "希望检索的自然语言要素类型；执行器仅对已知类型做安全 OSM 标签映射，未知类型要求显式 tags。", type="string_or_array", aliases=["特征", "目标类型", "要素类型", "categories"], example=["桥梁"]), _field("element_types", "OSM 元素类型。", type="array", item_type="string", aliases=["元素类型", "types"], example=["node", "way", "relation"]), _field("spatial_relation", "范围关系；当前支持 area/bbox 的 within 与 center 的 near。", aliases=["空间关系", "关系"], allowed_values=["within", "near"]), _field("return_geometry", "是否返回完整几何。", type="boolean", aliases=["返回几何", "geometry"], example=True), _field("limit", "最多返回要素数，运行时上限 1000。", type="integer", aliases=["结果数", "top_k"], minimum=1, maximum=1000), _field("overpass_ql", "可选完整 Overpass QL；运行时默认禁用，只有受信调用方显式授权后才能执行。", aliases=["代码", "查询代码", "query_code", "raw_query"])],
         required_any=[["area", "bbox", "center", "overpass_ql"]],
         examples=[{"area": "郑州市", "tags": {"bridge": "yes"}, "return_geometry": True}],
     )
@@ -874,28 +1047,37 @@ def _operation_schemas() -> dict[tuple[str, str], ToolInputSchema]:
     )
     schemas[("osm_query", "export")] = _schema(
         "把已有 OSM 结果导出为指定格式。",
-        [_source_result(), _field("format", "导出格式。", required=True, aliases=["格式", "输出格式"], allowed_values=["geojson", "json", "csv", "kml", "osm_xml"]), _field("include_geometry", "是否保留几何。", type="boolean", aliases=["包含几何", "geometry"], example=True)],
+        [_source_result(), _field("format", "可忠实表达规范化结果的导出格式；不支持丢失 relation members/node refs 后伪造 osm_xml。", required=True, aliases=["格式", "输出格式"], allowed_values=["geojson", "json", "csv", "kml"]), _field("include_geometry", "是否保留几何。", type="boolean", aliases=["包含几何", "geometry"], example=True)],
     )
     schemas[("osm_query", "count")] = _schema(
         "统计已有结果或指定结构化查询范围内的 OSM 要素数量。",
         [_source_result(required=False), _area(), _field("bbox", "WGS84 查询框。", type="array", item_type="number", aliases=["边界框", "bounds"]), _field("tags", "待统计的 OSM 标签。", type="object", aliases=["标签", "特征", "filters"]), _field("group_by", "可选分组字段。", type="string_or_array", aliases=["分组", "统计维度"])],
         required_any=[["source_result", "area", "bbox"]],
     )
-
-    # streetview
     schemas[("streetview_query", "open")] = _schema(
-        "打开指定地点或坐标的街景。",
-        [_area(extra_aliases=["target"]), _field("coordinates", "WGS84 坐标。", type="array", item_type="number", aliases=["坐标", "latlon", "point"]), _field("provider", "街景服务提供方。", aliases=["服务", "数据源"])],
+        "打开指定地点或坐标的街景。纯地名由本工具内部 geocode。",
+        [
+            _field(
+                "area",
+                "打开地点：可为标准地名、行政区、bbox 或中心点加半径。纯地名由本工具内部 geocode，不必先单独调用 geocode。",
+                type="location",
+                aliases=["区域", "地区", "地点", "候选区域", "检索范围", "搜索区域", "省域范围", "region", "target_area", "search_area", "sample_area", "location", "cities", "target"],
+                example="江西赣州市赣县区梅林大桥附近",
+                context_sources=["active_area"],
+            ),
+            _field("coordinates", "WGS84 坐标。不接受地名。", type="array", item_type="number", aliases=["坐标", "latlon", "point"]),
+            _field("provider", "街景服务提供方。", aliases=["服务", "数据源"]),
+        ],
         required_any=[["area", "coordinates"]],
     )
     schemas[("streetview_query", "navigate")] = _schema(
         "在已打开街景中沿道路或方向移动。",
-        [_field("session", "已打开街景会话或结果 ID。", aliases=["会话", "街景结果", "result_id"]), _area(), _field("direction", "移动方向或道路方向。", required=True, aliases=["方向", "朝向", "bearing"]), _field("distance_m", "移动距离（米）。", type="number", aliases=["距离", "distance"], minimum=0)],
+        [_field("session", "已打开街景会话或结果 ID。", aliases=["会话", "街景结果", "result_id"]), _geometry_area(), _field("direction", "移动方向或道路方向。", required=True, aliases=["方向", "朝向", "bearing"]), _field("distance_m", "移动距离（米）。", type="number", aliases=["距离", "distance"], minimum=0)],
         required_any=[["session", "area"]],
     )
     schemas[("streetview_query", "change_time")] = _schema(
         "切换指定地点或会话的街景年份。",
-        [_field("session", "街景会话或结果 ID。", aliases=["会话", "result_id"]), _area(), _time_range(required=True)],
+        [_field("session", "街景会话或结果 ID。", aliases=["会话", "result_id"]), _geometry_area(), _time_range(required=True)],
         required_any=[["session", "area"]],
     )
     schemas[("streetview_query", "capture")] = _schema(
@@ -905,27 +1087,37 @@ def _operation_schemas() -> dict[tuple[str, str], ToolInputSchema]:
 
     # satellite imagery
     schemas[("satellite_imagery_query", "retrieve")] = _schema(
-        "获取指定区域和时间的卫星或航片。",
-        [_area(extra_aliases=["target"]), _field("coordinates", "待获取影像的一个或多个坐标。", type="string_or_array", aliases=["坐标", "points"]), _field("source_result", "上一步筛选结果或坐标结果引用。", type="string_or_object", aliases=["已有结果", "筛选结果", "result_id"]), _time_range(), _field("provider", "影像服务或数据集。", aliases=["数据源", "服务"]), _field("layer", "影像图层，如 satellite/aerial/terrain。", aliases=["图层", "影像类型"]), _field("cloud_cover_max", "最大允许云量百分比。", type="number", aliases=["最大云量", "cloud_threshold"], minimum=0, maximum=100), _field("resolution_m", "期望空间分辨率（米/像素）。", type="number", aliases=["分辨率", "resolution"], minimum=0)],
+        "按地名、bbox 或中心点加半径返回 Copernicus 卫星真彩预览。纯地名在执行器内 geocode。",
+        [
+            _field("area", "纯地名会在执行器内先 geocode，没有点再按同一名称查 POI，再用默认半径扩成框。也可以直接给 WGS84 bbox [west,south,east,north] 或 {lat, lon, radius_m}。", type="location", context_sources=["active_area"], aliases=["区域", "地区", "地点", "候选区域", "检索范围", "搜索区域", "省域范围", "region", "target_area", "search_area", "sample_area", "location", "cities", "target"], example={"lat": 34.75, "lon": 113.65, "radius_m": 2000}),
+            _field("coordinates", "中心点 [lon, lat] 或 {lat, lon}。未给半径时使用默认搜索半径。不接受地名。", type="string_or_array", aliases=["坐标", "points"]),
+            _field("source_result", "上一步已含 bbox 的结果引用。", type="string_or_object", aliases=["已有结果", "筛选结果", "result_id"]),
+            _time_range(),
+            _field("cloud_cover_max", "最大允许云量百分比。", type="number", aliases=["最大云量", "cloud_threshold"], minimum=0, maximum=100),
+            _field("resolution_m", "期望空间分辨率（米/像素）。只用于筛选原生分辨率，不会提高成图细节。", type="number", aliases=["分辨率", "resolution"], minimum=0),
+        ],
         required_any=[["area", "coordinates", "source_result"]],
     )
     schemas[("satellite_imagery_query", "change_time")] = _schema(
-        "在同一区域切换历史年份、季节或水期影像。",
-        [_area(required=True), _time_range(required=True), _field("source_result", "可选的上一影像会话或结果 ID。", aliases=["已有影像", "result_id"]), _field("provider", "影像服务提供方。", aliases=["数据源", "服务"])],
+        "在同一 bbox 或中心点上切换时间后再返回预览图。",
+        [
+            _field("area", "纯地名会在执行器内先 geocode，没有点再按同一名称查 POI，再用默认半径扩成框。也可以直接给 WGS84 bbox [west,south,east,north] 或 {lat, lon, radius_m}。", type="location", required=True, context_sources=["active_area"], aliases=["区域", "地区", "地点", "候选区域", "检索范围", "搜索区域", "省域范围", "region", "target_area", "search_area", "sample_area", "location", "cities", "target"], example={"lat": 34.75, "lon": 113.65, "radius_m": 2000}),
+            _time_range(required=True),
+            _field("source_result", "可选的上一影像会话或结果 ID。", aliases=["已有影像", "result_id"]),
+        ],
     )
     schemas[("satellite_imagery_query", "compare_candidates")] = _schema(
-        "在多个明确候选区域的卫星影像中按同一视觉或空间模板进行横向比对；不能只给候选数量而不提供候选本身。",
-        [_field("candidates", "待比较的候选地点、坐标或区域列表。", type="array", required=True, aliases=["候选点", "候选区域", "候选列表", "locations"]), _field("template", "所有候选共同使用的视觉/空间比对模板。", type="string_or_object", required=True, aliases=["比对模板", "结构模板", "特征模板", "criteria"]), _time_range(), _field("provider", "影像服务提供方。", aliases=["数据源", "服务"])],
+        "每个候选必须是 bbox 或中心点加半径，再与模板比较预览图。不能只给候选数量。",
+        [_field("candidates", "至少两个候选，每个都是 bbox 或中心点加半径。不接受地名。", type="array", required=True, aliases=["候选点", "候选区域", "候选列表", "locations"]), _field("template", "所有候选共同使用的视觉/空间比对模板。", type="string_or_object", required=True, aliases=["比对模板", "结构模板", "特征模板", "criteria"]), _time_range()],
     )
     schemas[("satellite_imagery_query", "compare_time")] = _schema(
-        "获取并比较同一区域的两个或多个时间影像。",
-        [_area(required=True), _field("times", "需要比较的至少两个时间点或时间范围。", type="array", item_type="string", required=True, aliases=["时间列表", "年份列表", "时相", "periods"]), _field("comparison", "比较目标，如水位、建设变化或植被。", aliases=["比对目标", "变化类型", "method"])],
+        "获取并比较同一 bbox 或中心点的两个或多个时间预览。",
+        [
+            _field("area", "WGS84 bbox [west,south,east,north]，或 {lat, lon, radius_m}。不接受地名。", type="location", required=True, context_sources=["active_area"], aliases=["区域", "地区", "地点", "候选区域", "检索范围", "搜索区域", "省域范围", "region", "target_area", "search_area", "sample_area", "location", "cities", "target"], example={"lat": 34.75, "lon": 113.65, "radius_m": 2000}),
+            _field("times", "需要比较的至少两个时间点或时间范围。", type="array", item_type="string", required=True, aliases=["时间列表", "年份列表", "时相", "periods"]),
+            _field("comparison", "比较目标，如水位、建设变化或植被。", aliases=["比对目标", "变化类型", "method"]),
+        ],
     )
-    schemas[("satellite_imagery_query", "oblique_view")] = _schema(
-        "获取指定区域的倾斜、三维或地形视角。",
-        [_area(required=True), _field("heading", "观察朝向角（度）。", type="number", aliases=["朝向", "方位角"], minimum=0, maximum=360), _field("tilt", "倾斜角（度）。", type="number", aliases=["倾角", "pitch"], minimum=0, maximum=90), _time_range()],
-    )
-
     # weather
     for op, detail in [
         ("cloud_cover", "历史云量或云图"),
@@ -934,11 +1126,11 @@ def _operation_schemas() -> dict[tuple[str, str], ToolInputSchema]:
     ]:
         schemas[("weather_archive_query", op)] = _schema(
             f"查询指定地点和时间的{detail}。",
-            [_area(required=True), _time_range(required=True), _field("variables", "要返回的气象变量。", type="string_or_array", aliases=["指标", "气象项", "fields"]), _field("provider", "气象档案来源。", aliases=["数据源", "服务"])],
+            [_geometry_area(required=True), _time_range(required=True), _field("variables", "要返回的气象变量。", type="string_or_array", aliases=["指标", "气象项", "fields"]), _field("provider", "气象档案来源。", aliases=["数据源", "服务"])],
         )
     schemas[("weather_archive_query", "refine_range")] = _schema(
         "在已有气象结果上缩小或连续细化时间/空间范围。",
-        [_source_result(), _time_range(required=True), _area(), _field("condition", "继续保留结果的条件。", type="string_or_object", aliases=["筛选条件", "条件"])],
+        [_source_result(), _time_range(required=True), _geometry_area(), _field("condition", "继续保留结果的条件。", type="string_or_object", aliases=["筛选条件", "条件"])],
     )
 
     # astronomy
@@ -981,12 +1173,24 @@ def _operation_schemas() -> dict[tuple[str, str], ToolInputSchema]:
 
     # media search
     schemas[("media_search", "video_search")] = _schema(
-        "在公开视频或内容平台检索地点和视角。",
-        [_query(required=True), _area(), _time_range(), _field("platforms", "限定视频平台。", type="array", item_type="string", aliases=["平台", "站点"]), _field("top_k", "最多返回结果数。", type="integer", aliases=["结果数", "limit"], minimum=1, maximum=100)],
+        "按关键词检索公开视频，只返回链接和元数据。",
+        [
+            _field("query", "检索关键词或对象描述。不接受图片，不能用来以图搜图。", type="string_or_array", required=True, aliases=["关键词", "检索词", "查询词", "检索对象", "对象", "目标", "特征组合", "筛选条件", "material", "keywords", "问题", "q", "search_query"], example="铁路桥 石栏"),
+            _field("area", "地名会原样拼进检索词，不会转成坐标或行政区范围。经纬度对象或 bbox 会转成圆心加半径后再检索，半径限制为 10 到 10000 米。", type="location", context_sources=["active_area"], aliases=["区域", "地区", "地点", "候选区域", "检索范围", "搜索区域", "省域范围", "region", "target_area", "search_area", "sample_area", "location", "cities"], example={"lat": 34.75, "lon": 113.65, "radius_m": 5000}),
+            _field("time_range", "年份、日期或起止范围。Commons 只保留元数据里有拍摄时间且落在范围内的结果；YouTube 按发布时间过滤。无法解析的写法不会生效，只会记为未支持。", type="string_or_object", aliases=["时期", "时间", "年份", "年代", "年代范围", "日期", "影像时期", "影像年份", "date_range", "year"], example="1980-1995"),
+            _field("platforms", "限定视频平台。可填 wikimedia_commons 或 youtube；不填时只检索 Wikimedia Commons。其他平台不会被检索。", type="array", item_type="string", aliases=["平台", "站点"], example=["youtube"]),
+            _field("top_k", "最多返回条数。请求值限制在 1 到 100，单个来源实际最多返回 50 条。", type="integer", aliases=["结果数", "limit"], minimum=1, maximum=100),
+        ],
     )
     schemas[("media_search", "photo_search")] = _schema(
-        "检索历史照片、航拍照片或公共图库。",
-        [_query(), _area(), _time_range(), _field("sources", "限定图库或档案来源。", type="array", item_type="string", aliases=["来源", "站点", "archives"]), _field("top_k", "最多返回结果数。", type="integer", aliases=["结果数", "limit"], minimum=1, maximum=100)],
+        "检索 Wikimedia Commons 图片。query 与 area 至少提供一个。只返回链接和元数据。",
+        [
+            _field("query", "检索关键词或对象描述。不接受图片，不能用来以图搜图。", type="string_or_array", aliases=["关键词", "检索词", "查询词", "检索对象", "对象", "目标", "特征组合", "筛选条件", "material", "keywords", "问题", "q", "search_query"], example="铁路桥 石栏"),
+            _field("area", "地名会原样拼进检索词，不会转成坐标或行政区范围。经纬度对象或 bbox 会转成圆心加半径后再检索，半径限制为 10 到 10000 米。", type="location", context_sources=["active_area"], aliases=["区域", "地区", "地点", "候选区域", "检索范围", "搜索区域", "省域范围", "region", "target_area", "search_area", "sample_area", "location", "cities"], example={"lat": 34.75, "lon": 113.65, "radius_m": 5000}),
+            _field("time_range", "年份、日期或起止范围。Commons 只保留元数据里有拍摄时间且落在范围内的结果；YouTube 按发布时间过滤。无法解析的写法不会生效，只会记为未支持。", type="string_or_object", aliases=["时期", "时间", "年份", "年代", "年代范围", "日期", "影像时期", "影像年份", "date_range", "year"], example="1980-1995"),
+            _field("sources", "限定图库。当前只实现 wikimedia_commons；不填时也只检索 Wikimedia Commons。其他来源不会被检索。", type="array", item_type="string", aliases=["来源", "站点", "archives"]),
+            _field("top_k", "最多返回条数。请求值限制在 1 到 100，单个来源实际最多返回 50 条。", type="integer", aliases=["结果数", "limit"], minimum=1, maximum=100),
+        ],
         required_any=[["query", "area"]],
     )
     schemas[("media_search", "frame_retrieve")] = _schema(
@@ -1019,17 +1223,17 @@ def _operation_schemas() -> dict[tuple[str, str], ToolInputSchema]:
     # flight archive / local metadata
     schemas[("flight_data_query", "search")] = _schema(
         "按日期、区域、机场或航线查询真实航班档案。",
-        [_area(), _field("date", "航班日期或日期范围。", type="string_or_object", aliases=["日期", "时间", "date_range"]), _field("airports", "起降机场或候选机场。", type="string_or_array", aliases=["机场", "机场列表"]), _field("route", "航线或起终点。", type="string_or_object", aliases=["航线", "起终点"]), _field("flight_number", "航班号。", aliases=["航班", "航班号"])],
+        [_geometry_area(), _field("date", "航班日期或日期范围。", type="string_or_object", aliases=["日期", "时间", "date_range"]), _field("airports", "起降机场或候选机场。", type="string_or_array", aliases=["机场", "机场列表"]), _field("route", "航线或起终点。", type="string_or_object", aliases=["航线", "起终点"]), _field("flight_number", "航班号。", aliases=["航班", "航班号"])],
         required_any=[["area", "airports", "route", "flight_number"]],
     )
     schemas[("flight_data_query", "track")] = _schema(
         "查询指定航班或区域内的真实航迹。",
-        [_area(), _field("date", "航迹日期或时间范围。", type="string_or_object", aliases=["日期", "时间", "date_range"]), _field("flight_number", "指定航班号。", aliases=["航班", "航班号"]), _field("airports", "用于限定航迹的机场。", type="string_or_array", aliases=["机场", "机场列表"])],
+        [_geometry_area(), _field("date", "航迹日期或时间范围。", type="string_or_object", aliases=["日期", "时间", "date_range"]), _field("flight_number", "指定航班号。", aliases=["航班", "航班号"]), _field("airports", "用于限定航迹的机场。", type="string_or_array", aliases=["机场", "机场列表"])],
         required_any=[["area", "flight_number", "airports"]],
     )
     schemas[("flight_data_query", "nearby_traffic")] = _schema(
         "统计指定时空范围内的航空器活动。",
-        [_area(required=True), _field("time_range", "统计时间范围。", type="string_or_object", required=True, aliases=["时间", "日期", "date_range"]), _field("radius_km", "空间统计半径（公里）。", type="number", aliases=["半径", "radius"], minimum=0)],
+        [_geometry_area(required=True), _field("time_range", "统计时间范围。", type="string_or_object", required=True, aliases=["时间", "日期", "date_range"]), _field("radius_km", "空间统计半径（公里）。", type="number", aliases=["半径", "radius"], minimum=0)],
     )
     schemas[("metadata_read", "exif")] = _schema(
         "读取真实图片文件的 EXIF/GPS 元数据。",
@@ -1053,7 +1257,7 @@ OPERATION_ALIASES: dict[tuple[str, str], list[str]] = {
     ("image_process", "compare"): ["diff", "match"],
     ("web_search", "keyword_search"): ["search", "query"],
     ("map_query", "browse"): ["search", "query"],
-    ("osm_query", "query"): ["search", "overpass"],
+    ("osm_query", "query"): ["search", "overpass", "find"],
     ("satellite_imagery_query", "retrieve"): ["open", "query"],
     ("satellite_imagery_query", "compare_candidates"): ["compare", "match_candidates"],
     ("satellite_imagery_query", "compare_time"): ["time_compare", "temporal_compare"],

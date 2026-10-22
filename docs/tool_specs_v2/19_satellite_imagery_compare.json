@@ -2,31 +2,31 @@
   "schema_version": "geoagent_tool_implementation_spec_v1",
   "ordinal": 19,
   "research_date": "2026-08-31",
-  "research_status": "design_researched_not_runtime_verified",
+  "research_status": "design_researched_not_runtime_implemented",
   "catalog_source": "canonical_tool_catalog_v2.json",
   "canonical_tool": {
     "canonical": {
       "name": "satellite_imagery_compare",
-      "description": "执行多时相或多候选影像比较。",
+      "description": "对 bbox 或中心点加半径的范围做多时相或候选预览比较。不接受地名。",
       "executor": "satellite_comparison_service",
       "usage": "仅在需要访问该真实执行器并获得新证据时调用；先选择 operation，再按其 input_schema 填 inputs。缺少执行级参数时按 acquisition_hint 获取，不得编造坐标、文件、会话或前置结果。",
       "operations": [
         {
           "name": "compare_candidates",
-          "description": "在多个候选区域的卫星影像中按同一视觉/空间模板进行比对",
+          "description": "按同一模板比较多个 bbox 或中心点的预览。",
           "aliases": [
             "compare",
             "match_candidates"
           ],
           "input_schema": {
-            "description": "在多个明确候选区域的卫星影像中按同一视觉或空间模板进行横向比对；不能只给候选数量而不提供候选本身。",
+            "description": "每个候选必须是 bbox 或中心点加半径。不接受地名，也不能只给数量。",
             "fields": [
               {
                 "name": "candidates",
                 "type": "array",
                 "required": true,
                 "requirement_level": "semantic",
-                "description": "待比较的候选地点、坐标或区域列表。",
+                "description": "至少两个候选，每个都是 bbox 或中心点加半径。不接受地名，也不能只给数量。",
                 "acquisition_hint": "引用前一步候选生成/搜索返回的完整候选列表，不能只传候选数量。",
                 "context_sources": [
                   "previous_candidates"
@@ -91,25 +91,6 @@
                 "minimum": null,
                 "maximum": null,
                 "example": "1980-1995"
-              },
-              {
-                "name": "provider",
-                "type": "string",
-                "required": false,
-                "requirement_level": "optional",
-                "description": "影像服务提供方。",
-                "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 provider；来源没有时不得编造。",
-                "context_sources": [],
-                "context_default": null,
-                "aliases": [
-                  "数据源",
-                  "服务"
-                ],
-                "allowed_values": [],
-                "item_type": null,
-                "minimum": null,
-                "maximum": null,
-                "example": null
               }
             ],
             "required_any": [],
@@ -120,20 +101,20 @@
         },
         {
           "name": "compare_time",
-          "description": "调用影像服务进行多时相对比",
+          "description": "比较同一 bbox 或中心点的多个时间预览。",
           "aliases": [
             "time_compare",
             "temporal_compare"
           ],
           "input_schema": {
-            "description": "获取并比较同一区域的两个或多个时间影像。",
+            "description": "同一几何范围的多个时间预览做像素比较。不接受地名。",
             "fields": [
               {
                 "name": "area",
                 "type": "location",
                 "required": true,
                 "requirement_level": "semantic",
-                "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+                "description": "WGS84 bbox [west,south,east,north]，或 {lat, lon, radius_m}。不接受地名。",
                 "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
                 "context_sources": [
                   "active_area"
@@ -158,7 +139,11 @@
                 "item_type": null,
                 "minimum": null,
                 "maximum": null,
-                "example": "郑州附近黄河沿线"
+                "example": {
+                  "lat": 34.75,
+                  "lon": 113.65,
+                  "radius_m": 2000
+                }
               },
               {
                 "name": "times",
@@ -255,7 +240,7 @@
         "type": "array",
         "required": true,
         "requirement_level": "semantic",
-        "purpose": "待比较的候选地点、坐标或区域列表。",
+        "purpose": "至少两个候选，每个都是 bbox 或中心点加半径。不接受地名，也不能只给数量。",
         "how_to_obtain": "引用前一步候选生成/搜索返回的完整候选列表，不能只传候选数量。",
         "context_sources": [
           "previous_candidates"
@@ -320,25 +305,6 @@
           "year"
         ],
         "validation_note": "可选字段缺失不应自动判为不可执行。"
-      },
-      {
-        "name": "provider",
-        "type": "string",
-        "required": false,
-        "requirement_level": "optional",
-        "purpose": "影像服务提供方。",
-        "how_to_obtain": "从当前 Thought、task 或前置工具真实结果中取得 provider；来源没有时不得编造。",
-        "context_sources": [],
-        "context_default": null,
-        "allowed_values": [],
-        "minimum": null,
-        "maximum": null,
-        "example": null,
-        "aliases": [
-          "数据源",
-          "服务"
-        ],
-        "validation_note": "可选字段缺失不应自动判为不可执行。"
       }
     ],
     "compare_time": [
@@ -347,7 +313,7 @@
         "type": "location",
         "required": true,
         "requirement_level": "semantic",
-        "purpose": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+        "purpose": "WGS84 bbox [west,south,east,north]，或 {lat, lon, radius_m}。不接受地名。",
         "how_to_obtain": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
         "context_sources": [
           "active_area"
@@ -356,7 +322,11 @@
         "allowed_values": [],
         "minimum": null,
         "maximum": null,
-        "example": "郑州附近黄河沿线",
+        "example": {
+          "lat": 34.75,
+          "lon": 113.65,
+          "radius_m": 2000
+        },
         "aliases": [
           "区域",
           "地区",

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from tool.contract import Observation, RuntimeContext, not_implemented
+from tool.contract import Observation, RuntimeContext
 
 
 def execute(
@@ -13,12 +13,13 @@ def execute(
     inputs: dict[str, Any],
     ctx: RuntimeContext | None = None,
 ) -> Observation:
-    """执行 osm_query.query。尚未接入真实执行器。"""
+    """执行结构化 OSM 查询；注入客户端时走 result_store 链路。"""
 
-    return not_implemented(
-        'osm_query',
-        'query',
-        purpose=purpose,
-        inputs=inputs,
-        ctx=ctx,
-    )
+    extras = ctx.extras if ctx is not None else {}
+    if extras.get("overpass_client") is not None:
+        from tool.osm_query._overpass import execute_query
+
+        return execute_query(purpose=purpose, inputs=inputs, ctx=ctx)
+    from tool.osm_query._query import execute_query
+
+    return execute_query(purpose=purpose, inputs=inputs, ctx=ctx)

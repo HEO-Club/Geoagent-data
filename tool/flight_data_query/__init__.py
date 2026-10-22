@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+from tool.flight_data_query.nearby_traffic import execute as nearby_traffic
 from tool.flight_data_query.search import execute as search
 from tool.flight_data_query.track import execute as track
-from tool.flight_data_query.nearby_traffic import execute as nearby_traffic
 
 OPERATIONS = {
     'search': search,
@@ -14,7 +14,7 @@ OPERATIONS = {
 
 __all__ = [
     "OPERATIONS",
+    'nearby_traffic',
     'search',
     'track',
-    'nearby_traffic',
 ]

@@ -30,7 +30,7 @@
 | OSM | `osm_query` | query, count |
 | OSM | `osm_result_process` | filter, export |
 | 街景 | `streetview_query` | open, navigate, change_time, capture |
-| 遥感 | `satellite_imagery_query` | retrieve, change_time, oblique_view |
+| 遥感 | `satellite_imagery_query` | retrieve, change_time |
 | 遥感 | `satellite_imagery_compare` | compare_time, compare_candidates |
 | GIS | `distance_bearing_calculator` | distance, bearing |
 | GIS | `visibility_analysis` | sightline |

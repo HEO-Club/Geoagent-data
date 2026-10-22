@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from tool.contract import Observation, RuntimeContext, not_implemented
+from tool.contract import Observation, RuntimeContext
+from tool.satellite_imagery_query._query import execute_change_time
 
 
 def execute(
@@ -13,12 +14,6 @@ def execute(
     inputs: dict[str, Any],
     ctx: RuntimeContext | None = None,
 ) -> Observation:
-    """执行 satellite_imagery_query.change_time。尚未接入真实执行器。"""
+    """执行 satellite_imagery_query.change_time：按新时间窗重搜同一区域目录。"""
 
-    return not_implemented(
-        'satellite_imagery_query',
-        'change_time',
-        purpose=purpose,
-        inputs=inputs,
-        ctx=ctx,
-    )
+    return execute_change_time(purpose=purpose, inputs=inputs, ctx=ctx)

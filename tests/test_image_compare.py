@@ -141,6 +141,10 @@ def test_histogram_similar_beats_different(tmp_path: Path) -> None:
     similar_corr = similar.result["pairs"][0]["histogram"]["correlation"]
     different_corr = different.result["pairs"][0]["histogram"]["correlation"]
     assert similar_corr > different_corr
+    similar_score = similar.result["pairs"][0]["score"]
+    different_score = different.result["pairs"][0]["score"]
+    assert 0.0 <= different_score <= similar_score <= 1.0
+    assert different_score < 0.1
 
 
 def test_geometry_distinguishes_aspect_ratios(tmp_path: Path) -> None:
@@ -258,3 +262,23 @@ def test_missing_too_few_and_invalid_method(tmp_path: Path) -> None:
     )
     assert unresolved.ok is False
     assert unresolved.error_code == "unresolved_region"
+
+
+def test_compare_rejects_excessive_image_count(tmp_path: Path) -> None:
+    sources = [
+        _solid(tmp_path / f"item_{index}.png", (index, index, index))
+        for index in range(4)
+    ]
+    observation = _compare(
+        tmp_path,
+        images=sources,
+        inputs={"method": "histogram"},
+        ctx=RuntimeContext(
+            extras={
+                "artifact_dir": str(tmp_path / "out"),
+                "max_compare_images": 3,
+            }
+        ),
+    )
+    assert observation.ok is False
+    assert observation.error_code == "too_many_images"

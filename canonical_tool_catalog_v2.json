@@ -23,7 +23,7 @@
                   "required": true,
                   "requirement_level": "execution",
                   "description": "待处理图片的路径、图片 ID 或当前输入图片引用；不得填写不存在的图片。",
-                  "acquisition_hint": "优先引用 $current_image；若只需要局部特征，先调用 image_process.crop/zoom 生成截图并把返回的图片 ID 传入，禁止编造文件名。",
+                  "acquisition_hint": "优先引用 $current_image；若只需要局部特征，先调用 image_edit.crop/zoom 生成截图并把返回的图片 ID 传入，禁止编造文件名。",
                   "context_sources": [
                     "current_image"
                   ],
@@ -44,11 +44,11 @@
                 },
                 {
                   "name": "region",
-                  "type": "string_or_array",
+                  "type": "region",
                   "required": false,
                   "requirement_level": "optional",
-                  "description": "图片中的目标区域，可用 [x1,y1,x2,y2]、命名区域或可复现的区域描述表示。",
-                  "acquisition_hint": "在当前图片上明确裁剪框或可复现的目标区域描述。",
+                  "description": "像素框 [x1,y1,x2,y2]，或已经登记成像素框的区域名。取值在 0 到 1 时标明 coordinate_space=normalized。不要填写物体名称或画面描述。",
+                  "acquisition_hint": "从当前图片量出 [x1,y1,x2,y2]，或引用已登记的区域名。没有像素框时不要把画面描述写进 region，也不要编造坐标。",
                   "context_sources": [],
                   "context_default": null,
                   "aliases": [
@@ -63,7 +63,7 @@
                   "item_type": null,
                   "minimum": null,
                   "maximum": null,
-                  "example": "bridge_tower_top"
+                  "example": [12, 40, 180, 160]
                 },
                 {
                   "name": "adjustments",
@@ -130,7 +130,7 @@
                   "required": true,
                   "requirement_level": "execution",
                   "description": "待处理图片的路径、图片 ID 或当前输入图片引用；不得填写不存在的图片。",
-                  "acquisition_hint": "优先引用 $current_image；若只需要局部特征，先调用 image_process.crop/zoom 生成截图并把返回的图片 ID 传入，禁止编造文件名。",
+                  "acquisition_hint": "优先引用 $current_image；若只需要局部特征，先调用 image_edit.crop/zoom 生成截图并把返回的图片 ID 传入，禁止编造文件名。",
                   "context_sources": [
                     "current_image"
                   ],
@@ -151,11 +151,11 @@
                 },
                 {
                   "name": "region",
-                  "type": "string_or_array",
+                  "type": "region",
                   "required": true,
                   "requirement_level": "execution",
-                  "description": "图片中的目标区域，可用 [x1,y1,x2,y2]、命名区域或可复现的区域描述表示。",
-                  "acquisition_hint": "在当前图片上明确裁剪框或可复现的目标区域描述。",
+                  "description": "像素框 [x1,y1,x2,y2]，或已经登记成像素框的区域名。取值在 0 到 1 时标明 coordinate_space=normalized。不要填写物体名称或画面描述。",
+                  "acquisition_hint": "从当前图片量出 [x1,y1,x2,y2]，或引用已登记的区域名。没有像素框时不要把画面描述写进 region，也不要编造坐标。",
                   "context_sources": [],
                   "context_default": null,
                   "aliases": [
@@ -170,14 +170,14 @@
                   "item_type": null,
                   "minimum": null,
                   "maximum": null,
-                  "example": "bridge_tower_top"
+                  "example": [12, 40, 180, 160]
                 },
                 {
                   "name": "padding",
                   "type": "number",
                   "required": false,
                   "requirement_level": "optional",
-                  "description": "裁剪区域外扩像素或比例。",
+                  "description": "裁剪区域外扩值；配合 padding_mode 明确单位。未指定时为兼容旧数据，<1 按比例、>=1 按像素。",
                   "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 padding；来源没有时不得编造。",
                   "context_sources": [],
                   "context_default": null,
@@ -190,6 +190,50 @@
                   "minimum": 0.0,
                   "maximum": null,
                   "example": null
+                },
+                {
+                  "name": "padding_mode",
+                  "type": "string",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "padding 的单位。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 padding_mode；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "边距单位"
+                  ],
+                  "allowed_values": [
+                    "pixels",
+                    "ratio"
+                  ],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": null
+                },
+                {
+                  "name": "output_format",
+                  "type": "string",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "裁剪图输出格式。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 output_format；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "格式",
+                    "format"
+                  ],
+                  "allowed_values": [
+                    "png",
+                    "jpeg",
+                    "webp"
+                  ],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": "png"
                 }
               ],
               "required_any": [],
@@ -211,7 +255,7 @@
                   "required": true,
                   "requirement_level": "execution",
                   "description": "待处理图片的路径、图片 ID 或当前输入图片引用；不得填写不存在的图片。",
-                  "acquisition_hint": "优先引用 $current_image；若只需要局部特征，先调用 image_process.crop/zoom 生成截图并把返回的图片 ID 传入，禁止编造文件名。",
+                  "acquisition_hint": "优先引用 $current_image；若只需要局部特征，先调用 image_edit.crop/zoom 生成截图并把返回的图片 ID 传入，禁止编造文件名。",
                   "context_sources": [
                     "current_image"
                   ],
@@ -232,11 +276,11 @@
                 },
                 {
                   "name": "region",
-                  "type": "string_or_array",
+                  "type": "region",
                   "required": true,
                   "requirement_level": "execution",
-                  "description": "图片中的目标区域，可用 [x1,y1,x2,y2]、命名区域或可复现的区域描述表示。",
-                  "acquisition_hint": "在当前图片上明确裁剪框或可复现的目标区域描述。",
+                  "description": "像素框 [x1,y1,x2,y2]，或已经登记成像素框的区域名。取值在 0 到 1 时标明 coordinate_space=normalized。不要填写物体名称或画面描述。",
+                  "acquisition_hint": "从当前图片量出 [x1,y1,x2,y2]，或引用已登记的区域名。没有像素框时不要把画面描述写进 region，也不要编造坐标。",
                   "context_sources": [],
                   "context_default": null,
                   "aliases": [
@@ -251,14 +295,14 @@
                   "item_type": null,
                   "minimum": null,
                   "maximum": null,
-                  "example": "bridge_tower_top"
+                  "example": [12, 40, 180, 160]
                 },
                 {
                   "name": "scale",
                   "type": "number",
                   "required": false,
                   "requirement_level": "optional",
-                  "description": "放大倍数。",
+                  "description": "放大倍数，默认最多 16 倍以避免资源耗尽。",
                   "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 scale；来源没有时不得编造。",
                   "context_sources": [],
                   "context_default": null,
@@ -270,8 +314,31 @@
                   "allowed_values": [],
                   "item_type": null,
                   "minimum": 1.0,
-                  "maximum": null,
+                  "maximum": 16.0,
                   "example": 2
+                },
+                {
+                  "name": "output_format",
+                  "type": "string",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "放大图输出格式。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 output_format；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "格式",
+                    "format"
+                  ],
+                  "allowed_values": [
+                    "png",
+                    "jpeg",
+                    "webp"
+                  ],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": "png"
                 }
               ],
               "required_any": [],
@@ -349,7 +416,7 @@
                   "required": true,
                   "requirement_level": "execution",
                   "description": "待处理图片的路径、图片 ID 或当前输入图片引用；不得填写不存在的图片。",
-                  "acquisition_hint": "优先引用 $current_image；若只需要局部特征，先调用 image_process.crop/zoom 生成截图并把返回的图片 ID 传入，禁止编造文件名。",
+                  "acquisition_hint": "优先引用 $current_image；若只需要局部特征，先调用 image_edit.crop/zoom 生成截图并把返回的图片 ID 传入，禁止编造文件名。",
                   "context_sources": [
                     "current_image"
                   ],
@@ -370,11 +437,11 @@
                 },
                 {
                   "name": "region",
-                  "type": "string_or_array",
+                  "type": "region",
                   "required": false,
                   "requirement_level": "optional",
-                  "description": "图片中的目标区域，可用 [x1,y1,x2,y2]、命名区域或可复现的区域描述表示。",
-                  "acquisition_hint": "在当前图片上明确裁剪框或可复现的目标区域描述。",
+                  "description": "图片中的目标区域，可用 [x1,y1,x2,y2]、命名区域或对象表示；对象可带 coordinate_space=auto/pixels/normalized 消除 0..1 坐标歧义。",
+                  "acquisition_hint": "在当前图片上明确裁剪框或可复现的目标区域描述；0..1 边界框应显式标注 coordinate_space，避免把 1 像素框误解为整图。",
                   "context_sources": [],
                   "context_default": null,
                   "aliases": [
@@ -416,6 +483,29 @@
                   "minimum": null,
                   "maximum": null,
                   "example": "angle"
+                },
+                {
+                  "name": "axis",
+                  "type": "string",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "框量测所用方向；省略时 distance 取较长边。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 axis；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "方向",
+                    "测量方向"
+                  ],
+                  "allowed_values": [
+                    "horizontal",
+                    "vertical",
+                    "diagonal"
+                  ],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": null
                 },
                 {
                   "name": "reference",
@@ -550,11 +640,11 @@
                 },
                 {
                   "name": "region",
-                  "type": "string_or_array",
+                  "type": "region",
                   "required": false,
                   "requirement_level": "optional",
-                  "description": "图片中的目标区域，可用 [x1,y1,x2,y2]、命名区域或可复现的区域描述表示。",
-                  "acquisition_hint": "在当前图片上明确裁剪框或可复现的目标区域描述。",
+                  "description": "图片中的目标区域，可用 [x1,y1,x2,y2]、命名区域或对象表示；对象可带 coordinate_space=auto/pixels/normalized 消除 0..1 坐标歧义。",
+                  "acquisition_hint": "在当前图片上明确裁剪框或可复现的目标区域描述；0..1 边界框应显式标注 coordinate_space，避免把 1 像素框误解为整图。",
                   "context_sources": [],
                   "context_default": null,
                   "aliases": [
@@ -637,7 +727,7 @@
                   "required": true,
                   "requirement_level": "execution",
                   "description": "待处理图片的路径、图片 ID 或当前输入图片引用；不得填写不存在的图片。",
-                  "acquisition_hint": "优先引用 $current_image；若只需要局部特征，先调用 image_process.crop/zoom 生成截图并把返回的图片 ID 传入，禁止编造文件名。",
+                  "acquisition_hint": "优先引用 $current_image；若只需要局部特征，先调用 image_edit.crop/zoom 生成截图并把返回的图片 ID 传入，禁止编造文件名。",
                   "context_sources": [
                     "current_image"
                   ],
@@ -658,11 +748,11 @@
                 },
                 {
                   "name": "region",
-                  "type": "string_or_array",
+                  "type": "region",
                   "required": false,
                   "requirement_level": "optional",
-                  "description": "图片中的目标区域，可用 [x1,y1,x2,y2]、命名区域或可复现的区域描述表示。",
-                  "acquisition_hint": "在当前图片上明确裁剪框或可复现的目标区域描述。",
+                  "description": "图片中的目标区域，可用 [x1,y1,x2,y2]、命名区域或对象表示；对象可带 coordinate_space=auto/pixels/normalized 消除 0..1 坐标歧义。",
+                  "acquisition_hint": "在当前图片上明确裁剪框或可复现的目标区域描述；0..1 边界框应显式标注 coordinate_space，避免把 1 像素框误解为整图。",
                   "context_sources": [],
                   "context_default": null,
                   "aliases": [
@@ -738,7 +828,7 @@
             "description": "解码二维码、嵌入式代码或特殊字符",
             "aliases": [],
             "input_schema": {
-              "description": "解码二维码、条码或其他机器编码。",
+              "description": "解码二维码；当前本地执行器不实现一维条码，若请求 barcode 会明确返回不支持。",
               "fields": [
                 {
                   "name": "image",
@@ -746,7 +836,7 @@
                   "required": true,
                   "requirement_level": "execution",
                   "description": "待处理图片的路径、图片 ID 或当前输入图片引用；不得填写不存在的图片。",
-                  "acquisition_hint": "优先引用 $current_image；若只需要局部特征，先调用 image_process.crop/zoom 生成截图并把返回的图片 ID 传入，禁止编造文件名。",
+                  "acquisition_hint": "优先引用 $current_image；若只需要局部特征，先调用 image_edit.crop/zoom 生成截图并把返回的图片 ID 传入，禁止编造文件名。",
                   "context_sources": [
                     "current_image"
                   ],
@@ -767,11 +857,11 @@
                 },
                 {
                   "name": "region",
-                  "type": "string_or_array",
+                  "type": "region",
                   "required": false,
                   "requirement_level": "optional",
-                  "description": "图片中的目标区域，可用 [x1,y1,x2,y2]、命名区域或可复现的区域描述表示。",
-                  "acquisition_hint": "在当前图片上明确裁剪框或可复现的目标区域描述。",
+                  "description": "图片中的目标区域，可用 [x1,y1,x2,y2]、命名区域或对象表示；对象可带 coordinate_space=auto/pixels/normalized 消除 0..1 坐标歧义。",
+                  "acquisition_hint": "在当前图片上明确裁剪框或可复现的目标区域描述；0..1 边界框应显式标注 coordinate_space，避免把 1 像素框误解为整图。",
                   "context_sources": [],
                   "context_default": null,
                   "aliases": [
@@ -793,7 +883,7 @@
                   "type": "array",
                   "required": false,
                   "requirement_level": "optional",
-                  "description": "允许识别的编码类型。",
+                  "description": "请求的编码类型；当前可执行值为 qr。",
                   "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 code_types；来源没有时不得编造。",
                   "context_sources": [],
                   "context_default": null,
@@ -806,8 +896,7 @@
                   "minimum": null,
                   "maximum": null,
                   "example": [
-                    "qr",
-                    "barcode"
+                    "qr"
                   ]
                 }
               ],
@@ -868,7 +957,7 @@
     {
       "canonical": {
         "name": "reverse_image_search",
-        "description": "提交整图或裁剪图进行相似图片检索。",
+        "description": "提交整图或裁剪图进行相似图片检索。只使用 SerpAPI Google Lens，不选择其他搜图引擎。",
         "executor": "reverse_image_search_engine",
         "usage": "仅在需要访问该真实执行器并获得新证据时调用；先选择 operation，再按其 input_schema 填 inputs。缺少执行级参数时按 acquisition_hint 获取，不得编造坐标、文件、会话或前置结果。",
         "operations": [
@@ -877,7 +966,7 @@
             "description": "提交图片并返回相似图片或来源页面",
             "aliases": [],
             "input_schema": {
-              "description": "提交完整图片到反向搜图服务。",
+              "description": "提交完整图片到 SerpAPI Google Lens。不选择其他搜图引擎。",
               "fields": [
                 {
                   "name": "image",
@@ -885,7 +974,7 @@
                   "required": true,
                   "requirement_level": "execution",
                   "description": "待处理图片的路径、图片 ID 或当前输入图片引用；不得填写不存在的图片。",
-                  "acquisition_hint": "优先引用 $current_image；若只需要局部特征，先调用 image_process.crop/zoom 生成截图并把返回的图片 ID 传入，禁止编造文件名。",
+                  "acquisition_hint": "优先引用 $current_image；若只需要局部特征，先调用 image_edit.crop/zoom 生成截图并把返回的图片 ID 传入，禁止编造文件名。",
                   "context_sources": [
                     "current_image"
                   ],
@@ -903,25 +992,6 @@
                   "minimum": null,
                   "maximum": null,
                   "example": "input_image_1"
-                },
-                {
-                  "name": "engines",
-                  "type": "array",
-                  "required": false,
-                  "requirement_level": "optional",
-                  "description": "可选搜索引擎列表。",
-                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 engines；来源没有时不得编造。",
-                  "context_sources": [],
-                  "context_default": null,
-                  "aliases": [
-                    "引擎",
-                    "providers"
-                  ],
-                  "allowed_values": [],
-                  "item_type": "string",
-                  "minimum": null,
-                  "maximum": null,
-                  "example": null
                 },
                 {
                   "name": "top_k",
@@ -954,7 +1024,7 @@
             "description": "提交指定裁剪区域进行局部反向搜索",
             "aliases": [],
             "input_schema": {
-              "description": "提交指定裁剪区域进行局部反向搜图。",
+              "description": "提交指定裁剪区域到 SerpAPI Google Lens。不选择其他搜图引擎。",
               "fields": [
                 {
                   "name": "image",
@@ -962,7 +1032,7 @@
                   "required": true,
                   "requirement_level": "execution",
                   "description": "待处理图片的路径、图片 ID 或当前输入图片引用；不得填写不存在的图片。",
-                  "acquisition_hint": "优先引用 $current_image；若只需要局部特征，先调用 image_process.crop/zoom 生成截图并把返回的图片 ID 传入，禁止编造文件名。",
+                  "acquisition_hint": "优先引用 $current_image；若只需要局部特征，先调用 image_edit.crop/zoom 生成截图并把返回的图片 ID 传入，禁止编造文件名。",
                   "context_sources": [
                     "current_image"
                   ],
@@ -983,11 +1053,11 @@
                 },
                 {
                   "name": "region",
-                  "type": "string_or_array",
+                  "type": "region",
                   "required": true,
                   "requirement_level": "execution",
-                  "description": "图片中的目标区域，可用 [x1,y1,x2,y2]、命名区域或可复现的区域描述表示。",
-                  "acquisition_hint": "在当前图片上明确裁剪框或可复现的目标区域描述。",
+                  "description": "图片中的目标区域，可用 [x1,y1,x2,y2]、命名区域或对象表示；对象可带 coordinate_space=auto/pixels/normalized 消除 0..1 坐标歧义。",
+                  "acquisition_hint": "在当前图片上明确裁剪框或可复现的目标区域描述；0..1 边界框应显式标注 coordinate_space，避免把 1 像素框误解为整图。",
                   "context_sources": [],
                   "context_default": null,
                   "aliases": [
@@ -1003,25 +1073,6 @@
                   "minimum": null,
                   "maximum": null,
                   "example": "bridge_tower_top"
-                },
-                {
-                  "name": "engines",
-                  "type": "array",
-                  "required": false,
-                  "requirement_level": "optional",
-                  "description": "可选搜索引擎列表。",
-                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 engines；来源没有时不得编造。",
-                  "context_sources": [],
-                  "context_default": null,
-                  "aliases": [
-                    "引擎",
-                    "providers"
-                  ],
-                  "allowed_values": [],
-                  "item_type": "string",
-                  "minimum": null,
-                  "maximum": null,
-                  "example": null
                 },
                 {
                   "name": "top_k",
@@ -1265,7 +1316,7 @@
     {
       "canonical": {
         "name": "web_search",
-        "description": "执行开放网页或指定站点搜索。",
+        "description": "执行开放网页或指定站点搜索。地名的行政归属和标准名称也用本工具检索，坐标再交给 geocode。",
         "executor": "web_search_engine",
         "usage": "仅在需要访问该真实执行器并获得新证据时调用；先选择 operation，再按其 input_schema 填 inputs。缺少执行级参数时按 acquisition_hint 获取，不得编造坐标、文件、会话或前置结果。",
         "operations": [
@@ -1687,23 +1738,23 @@
     {
       "canonical": {
         "name": "media_search",
-        "description": "搜索外部视频或照片。",
+        "description": "搜索外部视频或照片，只返回链接和元数据，不下载文件，不支持以图搜图。默认只检索 Wikimedia Commons。video_search 只有在 platforms 中写入 youtube 时才检索 YouTube，其 time_range 按发布时间过滤，不是拍摄时间。地名只拼进关键词，不会解析成坐标；只有经纬度或 bbox 才做地理检索，半径限制为 10 到 10000 米。photo_search 只检索 Commons，time_range 只保留元数据中有拍摄时间且落在范围内的结果。",
         "executor": "media_search_service",
         "usage": "仅在需要访问该真实执行器并获得新证据时调用；先选择 operation，再按其 input_schema 填 inputs。缺少执行级参数时按 acquisition_hint 获取，不得编造坐标、文件、会话或前置结果。",
         "operations": [
           {
             "name": "video_search",
-            "description": "检索指定地点、关键词或视角的视频",
+            "description": "按关键词检索公开视频。未填写 platforms 时只检索 Wikimedia Commons；platforms 含 youtube 时检索 YouTube。",
             "aliases": [],
             "input_schema": {
-              "description": "在公开视频或内容平台检索地点和视角。",
+              "description": "按关键词检索公开视频，只返回链接和元数据。",
               "fields": [
                 {
                   "name": "query",
                   "type": "string_or_array",
                   "required": true,
                   "requirement_level": "semantic",
-                  "description": "提交给该服务的检索词、自然语言查询或明确对象描述。",
+                  "description": "检索关键词或对象描述。不接受图片，不能用来以图搜图。",
                   "acquisition_hint": "从本步 purpose/Thought 中提取明确检索对象和约束，不得只写“查询一下”。",
                   "context_sources": [],
                   "context_default": null,
@@ -1726,14 +1777,14 @@
                   "item_type": null,
                   "minimum": null,
                   "maximum": null,
-                  "example": "铁路桥 石栏 历史照片"
+                  "example": "铁路桥 石栏"
                 },
                 {
                   "name": "area",
                   "type": "location",
                   "required": false,
                   "requirement_level": "optional",
-                  "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+                  "description": "地名会原样拼进检索词，不会转成坐标或行政区范围。经纬度对象或 bbox 会转成圆心加半径后再检索，半径限制为 10 到 10000 米。",
                   "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
                   "context_sources": [
                     "active_area"
@@ -1758,14 +1809,18 @@
                   "item_type": null,
                   "minimum": null,
                   "maximum": null,
-                  "example": "郑州附近黄河沿线"
+                  "example": {
+                    "lat": 34.75,
+                    "lon": 113.65,
+                    "radius_m": 5000
+                  }
                 },
                 {
                   "name": "time_range",
                   "type": "string_or_object",
                   "required": false,
                   "requirement_level": "optional",
-                  "description": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。",
+                  "description": "年份、日期或起止范围。Commons 只保留元数据里有拍摄时间且落在范围内的结果；YouTube 按发布时间过滤。无法解析的写法不会生效，只会记为未支持。",
                   "acquisition_hint": "从字幕、task 或已有结果提取真实时间范围；来源没有时不得猜测。",
                   "context_sources": [],
                   "context_default": null,
@@ -1792,7 +1847,7 @@
                   "type": "array",
                   "required": false,
                   "requirement_level": "optional",
-                  "description": "限定视频平台。",
+                  "description": "限定视频平台。可填 wikimedia_commons 或 youtube；不填时只检索 Wikimedia Commons。其他平台不会被检索。",
                   "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 platforms；来源没有时不得编造。",
                   "context_sources": [],
                   "context_default": null,
@@ -1804,14 +1859,16 @@
                   "item_type": "string",
                   "minimum": null,
                   "maximum": null,
-                  "example": null
+                  "example": [
+                    "youtube"
+                  ]
                 },
                 {
                   "name": "top_k",
                   "type": "integer",
                   "required": false,
                   "requirement_level": "optional",
-                  "description": "最多返回结果数。",
+                  "description": "最多返回条数。请求值限制在 1 到 100，单个来源实际最多返回 50 条。",
                   "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 top_k；来源没有时不得编造。",
                   "context_sources": [],
                   "context_default": null,
@@ -1834,19 +1891,19 @@
           },
           {
             "name": "photo_search",
-            "description": "检索历史照片、航拍照片或公共图库",
+            "description": "按关键词或坐标检索 Wikimedia Commons 图片，只返回链接和元数据。",
             "aliases": [
               "image_search"
             ],
             "input_schema": {
-              "description": "检索历史照片、航拍照片或公共图库。",
+              "description": "检索 Wikimedia Commons 图片。query 与 area 至少提供一个。只返回链接和元数据。",
               "fields": [
                 {
                   "name": "query",
                   "type": "string_or_array",
                   "required": false,
                   "requirement_level": "optional",
-                  "description": "提交给该服务的检索词、自然语言查询或明确对象描述。",
+                  "description": "检索关键词或对象描述。不接受图片，不能用来以图搜图。",
                   "acquisition_hint": "从本步 purpose/Thought 中提取明确检索对象和约束，不得只写“查询一下”。",
                   "context_sources": [],
                   "context_default": null,
@@ -1869,14 +1926,14 @@
                   "item_type": null,
                   "minimum": null,
                   "maximum": null,
-                  "example": "铁路桥 石栏 历史照片"
+                  "example": "铁路桥 石栏"
                 },
                 {
                   "name": "area",
                   "type": "location",
                   "required": false,
                   "requirement_level": "optional",
-                  "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+                  "description": "地名会原样拼进检索词，不会转成坐标或行政区范围。经纬度对象或 bbox 会转成圆心加半径后再检索，半径限制为 10 到 10000 米。",
                   "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
                   "context_sources": [
                     "active_area"
@@ -1901,14 +1958,18 @@
                   "item_type": null,
                   "minimum": null,
                   "maximum": null,
-                  "example": "郑州附近黄河沿线"
+                  "example": {
+                    "lat": 34.75,
+                    "lon": 113.65,
+                    "radius_m": 5000
+                  }
                 },
                 {
                   "name": "time_range",
                   "type": "string_or_object",
                   "required": false,
                   "requirement_level": "optional",
-                  "description": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。",
+                  "description": "年份、日期或起止范围。Commons 只保留元数据里有拍摄时间且落在范围内的结果；YouTube 按发布时间过滤。无法解析的写法不会生效，只会记为未支持。",
                   "acquisition_hint": "从字幕、task 或已有结果提取真实时间范围；来源没有时不得猜测。",
                   "context_sources": [],
                   "context_default": null,
@@ -1935,7 +1996,7 @@
                   "type": "array",
                   "required": false,
                   "requirement_level": "optional",
-                  "description": "限定图库或档案来源。",
+                  "description": "限定图库。当前只实现 wikimedia_commons；不填时也只检索 Wikimedia Commons。其他来源不会被检索。",
                   "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 sources；来源没有时不得编造。",
                   "context_sources": [],
                   "context_default": null,
@@ -1955,7 +2016,7 @@
                   "type": "integer",
                   "required": false,
                   "requirement_level": "optional",
-                  "description": "最多返回结果数。",
+                  "description": "最多返回条数。请求值限制在 1 到 100，单个来源实际最多返回 50 条。",
                   "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 top_k；来源没有时不得编造。",
                   "context_sources": [],
                   "context_default": null,
@@ -2154,16 +2215,16 @@
     {
       "canonical": {
         "name": "poi_search",
-        "description": "搜索或浏览地图 POI。",
+        "description": "按名称关键词或高德类型码搜索兴趣点，或浏览已有候选。桥梁、河流、道路等地物用 osm_query。",
         "executor": "map_poi_service",
         "usage": "仅在需要访问该真实执行器并获得新证据时调用；先选择 operation，再按其 input_schema 填 inputs。缺少执行级参数时按 acquisition_hint 获取，不得编造坐标、文件、会话或前置结果。",
         "operations": [
           {
             "name": "poi_search",
-            "description": "按名称、类别和区域搜索兴趣点",
+            "description": "按兴趣点名称或高德类型码、在区域内搜索",
             "aliases": [],
             "input_schema": {
-              "description": "在地图服务中按名称或类别搜索 POI。",
+              "description": "按名称关键词或高德 POI 类型码搜索兴趣点；结果是候选，不是最终地点。不按 OSM 标签检索地物，桥梁、河流、道路用 osm_query。",
               "fields": [
                 {
                   "name": "area",
@@ -2202,8 +2263,8 @@
                   "type": "string_or_array",
                   "required": false,
                   "requirement_level": "optional",
-                  "description": "提交给该服务的检索词、自然语言查询或明确对象描述。",
-                  "acquisition_hint": "从本步 purpose/Thought 中提取明确检索对象和约束，不得只写“查询一下”。",
+                  "description": "兴趣点名称关键词，按名称匹配。不是地物类型；桥梁、河流、道路、山、塔等地理特征用 osm_query。",
+                  "acquisition_hint": "从本步 purpose/Thought 中提取明确兴趣点名称，不得把地物类型写成检索词。",
                   "context_sources": [],
                   "context_default": null,
                   "aliases": [
@@ -2213,8 +2274,6 @@
                     "检索对象",
                     "对象",
                     "目标",
-                    "特征组合",
-                    "筛选条件",
                     "material",
                     "keywords",
                     "问题",
@@ -2225,14 +2284,52 @@
                   "item_type": null,
                   "minimum": null,
                   "maximum": null,
-                  "example": "铁路桥 石栏 历史照片"
+                  "example": "梅林大桥"
+                },
+                {
+                  "name": "bbox",
+                  "type": "array",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "WGS84 查询框 [west,south,east,north]。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 bbox；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "边界框",
+                    "bounds"
+                  ],
+                  "allowed_values": [],
+                  "item_type": "number",
+                  "minimum": null,
+                  "maximum": null,
+                  "example": null
+                },
+                {
+                  "name": "center",
+                  "type": "location",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "WGS84 中心坐标 [lat,lon]，与 radius_m 配合。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 center；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "中心",
+                    "中心点"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": null
                 },
                 {
                   "name": "categories",
                   "type": "string_or_array",
                   "required": false,
                   "requirement_level": "optional",
-                  "description": "POI 类别或类型。",
+                  "description": "高德 POI 类型码，原样作为 types 提交。不映射 OSM 标签，不能把「桥梁」「河流」写成地物检索。",
                   "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 categories；来源没有时不得编造。",
                   "context_sources": [],
                   "context_default": null,
@@ -2248,11 +2345,246 @@
                   "example": null
                 },
                 {
+                  "name": "filters",
+                  "type": "object",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "本 operation 不读取该字段，不能当作 OSM tag。对已有候选做名称、分页或详情筛选时使用 browse。",
+                  "acquisition_hint": "poi_search 不使用 filters；需要筛选已有候选时改调用 browse。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "筛选条件"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": null
+                },
+                {
                   "name": "radius_m",
                   "type": "number",
                   "required": false,
                   "requirement_level": "optional",
                   "description": "以中心点检索时的半径（米）。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 radius_m；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "半径",
+                    "radius"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": 0.0,
+                  "maximum": null,
+                  "example": null
+                },
+                {
+                  "name": "language",
+                  "type": "string",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "名称结果语言代码。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 language；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "语言",
+                    "lang"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": null
+                },
+                {
+                  "name": "top_k",
+                  "type": "integer",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "最多返回候选数。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 top_k；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "结果数",
+                    "limit"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": 1.0,
+                  "maximum": 200.0,
+                  "example": null
+                }
+              ],
+              "required_any": [
+                [
+                  "area",
+                  "query",
+                  "categories"
+                ]
+              ],
+              "mutually_exclusive": [],
+              "allow_extra": true,
+              "examples": []
+            }
+          },
+          {
+            "name": "browse",
+            "description": "在已有候选上分页、按名称筛选或展开详情；没有已有结果时按区域重新检索兴趣点",
+            "aliases": [
+              "search",
+              "query"
+            ],
+            "input_schema": {
+              "description": "浏览已有兴趣点候选，或在明确区域内按名称重新检索。不按 OSM 标签检索地物；桥梁、河流、道路用 osm_query。",
+              "fields": [
+                {
+                  "name": "area",
+                  "type": "location",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+                  "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+                  "context_sources": [
+                    "active_area"
+                  ],
+                  "context_default": "$active_area",
+                  "aliases": [
+                    "区域",
+                    "地区",
+                    "地点",
+                    "候选区域",
+                    "检索范围",
+                    "搜索区域",
+                    "省域范围",
+                    "region",
+                    "target_area",
+                    "search_area",
+                    "sample_area",
+                    "location",
+                    "cities"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": "郑州附近黄河沿线"
+                },
+                {
+                  "name": "bbox",
+                  "type": "array",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "WGS84 查询框 [west,south,east,north]。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 bbox；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "边界框",
+                    "bounds"
+                  ],
+                  "allowed_values": [],
+                  "item_type": "number",
+                  "minimum": null,
+                  "maximum": null,
+                  "example": null
+                },
+                {
+                  "name": "center",
+                  "type": "location",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "WGS84 中心坐标 [lat,lon]，与 radius_m 配合。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 center；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "中心",
+                    "中心点"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": null
+                },
+                {
+                  "name": "query",
+                  "type": "string_or_array",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "兴趣点名称关键词，按名称匹配。不是地物类型；桥梁、河流、道路、山、塔等地理特征用 osm_query。",
+                  "acquisition_hint": "从本步 purpose/Thought 中提取明确兴趣点名称，不得把地物类型写成检索词。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "关键词",
+                    "检索词",
+                    "查询词",
+                    "检索对象",
+                    "对象",
+                    "目标",
+                    "material",
+                    "keywords",
+                    "问题",
+                    "q",
+                    "search_query"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": "梅林大桥"
+                },
+                {
+                  "name": "categories",
+                  "type": "string_or_array",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "本 operation 不读取该字段。类别筛选写在 filters.category，不映射 OSM 标签。",
+                  "acquisition_hint": "browse 不使用 categories；需要按类别筛选已有候选时写入 filters.category。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "类别",
+                    "类型",
+                    "poi_type"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": null
+                },
+                {
+                  "name": "filters",
+                  "type": "object",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "对已有候选做本地筛选，可用 name、category、page、offset、poi_id 或 expand。不是 OSM tag。",
+                  "acquisition_hint": "只填写已有候选上的名称、类别、分页或详情条件，不得编造 OSM 标签。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "筛选条件",
+                    "条件"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": null
+                },
+                {
+                  "name": "radius_m",
+                  "type": "number",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "中心点查询半径（米）。",
                   "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 radius_m；来源没有时不得编造。",
                   "context_sources": [],
                   "context_default": null,
@@ -2282,134 +2614,17 @@
                   "allowed_values": [],
                   "item_type": null,
                   "minimum": 1.0,
-                  "maximum": 500.0,
+                  "maximum": 200.0,
                   "example": null
                 }
               ],
               "required_any": [
                 [
                   "area",
-                  "query",
-                  "categories"
+                  "bbox",
+                  "center"
                 ]
               ],
-              "mutually_exclusive": [],
-              "allow_extra": true,
-              "examples": []
-            }
-          },
-          {
-            "name": "browse",
-            "description": "在指定区域内浏览地图并返回候选要素",
-            "aliases": [
-              "search",
-              "query"
-            ],
-            "input_schema": {
-              "description": "在指定区域浏览地图并返回符合描述的候选要素。",
-              "fields": [
-                {
-                  "name": "area",
-                  "type": "location",
-                  "required": true,
-                  "requirement_level": "semantic",
-                  "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
-                  "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
-                  "context_sources": [
-                    "active_area"
-                  ],
-                  "context_default": "$active_area",
-                  "aliases": [
-                    "区域",
-                    "地区",
-                    "地点",
-                    "候选区域",
-                    "检索范围",
-                    "搜索区域",
-                    "省域范围",
-                    "region",
-                    "target_area",
-                    "search_area",
-                    "sample_area",
-                    "location",
-                    "cities"
-                  ],
-                  "allowed_values": [],
-                  "item_type": null,
-                  "minimum": null,
-                  "maximum": null,
-                  "example": "郑州附近黄河沿线"
-                },
-                {
-                  "name": "query",
-                  "type": "string_or_array",
-                  "required": false,
-                  "requirement_level": "optional",
-                  "description": "提交给该服务的检索词、自然语言查询或明确对象描述。",
-                  "acquisition_hint": "从本步 purpose/Thought 中提取明确检索对象和约束，不得只写“查询一下”。",
-                  "context_sources": [],
-                  "context_default": null,
-                  "aliases": [
-                    "关键词",
-                    "检索词",
-                    "查询词",
-                    "检索对象",
-                    "对象",
-                    "目标",
-                    "特征组合",
-                    "筛选条件",
-                    "material",
-                    "keywords",
-                    "问题",
-                    "q",
-                    "search_query"
-                  ],
-                  "allowed_values": [],
-                  "item_type": null,
-                  "minimum": null,
-                  "maximum": null,
-                  "example": "铁路桥 石栏 历史照片"
-                },
-                {
-                  "name": "filters",
-                  "type": "object",
-                  "required": false,
-                  "requirement_level": "optional",
-                  "description": "附加属性或空间过滤条件。",
-                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 filters；来源没有时不得编造。",
-                  "context_sources": [],
-                  "context_default": null,
-                  "aliases": [
-                    "筛选条件",
-                    "条件"
-                  ],
-                  "allowed_values": [],
-                  "item_type": null,
-                  "minimum": null,
-                  "maximum": null,
-                  "example": null
-                },
-                {
-                  "name": "top_k",
-                  "type": "integer",
-                  "required": false,
-                  "requirement_level": "optional",
-                  "description": "最多返回候选数。",
-                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 top_k；来源没有时不得编造。",
-                  "context_sources": [],
-                  "context_default": null,
-                  "aliases": [
-                    "结果数",
-                    "limit"
-                  ],
-                  "allowed_values": [],
-                  "item_type": null,
-                  "minimum": 1.0,
-                  "maximum": 500.0,
-                  "example": null
-                }
-              ],
-              "required_any": [],
               "mutually_exclusive": [],
               "allow_extra": true,
               "examples": []
@@ -2479,33 +2694,25 @@
               "fields": [
                 {
                   "name": "query",
-                  "type": "string_or_array",
+                  "type": "location",
                   "required": true,
                   "requirement_level": "semantic",
-                  "description": "提交给该服务的检索词、自然语言查询或明确对象描述。",
+                  "description": "正向查询使用地名/地址，反向查询使用 [lat,lon] 或坐标对象。",
                   "acquisition_hint": "从本步 purpose/Thought 中提取明确检索对象和约束，不得只写“查询一下”。",
                   "context_sources": [],
                   "context_default": null,
                   "aliases": [
-                    "关键词",
                     "检索词",
-                    "查询词",
-                    "检索对象",
-                    "对象",
-                    "目标",
-                    "特征组合",
-                    "筛选条件",
-                    "material",
-                    "keywords",
-                    "问题",
-                    "q",
-                    "search_query"
+                    "地点",
+                    "地址",
+                    "坐标",
+                    "q"
                   ],
                   "allowed_values": [],
                   "item_type": null,
                   "minimum": null,
                   "maximum": null,
-                  "example": "铁路桥 石栏 历史照片"
+                  "example": "郑州黄河文化公园"
                 },
                 {
                   "name": "area",
@@ -2544,7 +2751,7 @@
                   "type": "string",
                   "required": false,
                   "requirement_level": "optional",
-                  "description": "正向或反向地理编码。",
+                  "description": "正向或反向地理编码；auto 根据 query 形状判断。",
                   "acquisition_hint": "从图像朝向、道路方向或用户指定的导航方向中提取可执行方向。",
                   "context_sources": [],
                   "context_default": null,
@@ -2561,6 +2768,44 @@
                   "minimum": null,
                   "maximum": null,
                   "example": "auto"
+                },
+                {
+                  "name": "language",
+                  "type": "string",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "候选名称的语言代码。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 language；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "语言",
+                    "lang"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": null
+                },
+                {
+                  "name": "top_k",
+                  "type": "integer",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "每个正向查询最多返回候选数。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 top_k；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "结果数",
+                    "limit"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": 1.0,
+                  "maximum": 10.0,
+                  "example": 5
                 }
               ],
               "required_any": [],
@@ -2611,8 +2856,9 @@
     {
       "canonical": {
         "name": "route_query",
-        "description": "查询道路连接和路线关系。",
+        "description": "当前不可用，不要选用。原用途：查询道路连接和路线关系。",
         "executor": "route_service",
+        "available": false,
         "usage": "仅在需要访问该真实执行器并获得新证据时调用；先选择 operation，再按其 input_schema 填 inputs。缺少执行级参数时按 acquisition_hint 获取，不得编造坐标、文件、会话或前置结果。",
         "operations": [
           {
@@ -2703,6 +2949,44 @@
                   "minimum": null,
                   "maximum": null,
                   "example": null
+                },
+                {
+                  "name": "city",
+                  "type": "string",
+                  "required": false,
+                  "requirement_level": "execution",
+                  "description": "起点所在城市；travel_mode 为 transit 时高德公交必填。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 city；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "城市",
+                    "起点城市"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": "郑州"
+                },
+                {
+                  "name": "cityd",
+                  "type": "string",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "跨城公交时的目的地城市编码。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 cityd；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "目的地城市",
+                    "终点城市"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": "洛阳"
                 }
               ],
               "required_any": [],
@@ -2753,24 +3037,24 @@
     {
       "canonical": {
         "name": "map_layer_query",
-        "description": "加载水系、地形、行政或历史地图图层。",
+        "description": "加载地图图层可视化。默认 terrestris OSM WMS 仅支持 roads（综合底图）和 terrain（山体阴影）；当前不支持时间轴、历史地图和 WFS。",
         "executor": "map_layer_service",
         "usage": "仅在需要访问该真实执行器并获得新证据时调用；先选择 operation，再按其 input_schema 填 inputs。缺少执行级参数时按 acquisition_hint 获取，不得编造坐标、文件、会话或前置结果。",
         "operations": [
           {
             "name": "load_layer",
-            "description": "加载水系、地形、行政区或其他地图图层",
+            "description": "按范围加载地图图层。默认后端只出 roads/terrain 图片；当前不支持时间轴、历史地图和 WFS。",
             "aliases": [],
             "input_schema": {
-              "description": "加载指定区域的水系、地形、道路、行政区或历史地图图层。",
+              "description": "加载指定区域的地图图层。默认 terrestris 只提供 roads、terrain 的 WMS 图片；当前不支持时间轴、历史地图和 WFS。水系或行政几何请用 osm_query 或自建 WMS。",
               "fields": [
                 {
                   "name": "area",
                   "type": "location",
                   "required": true,
                   "requirement_level": "semantic",
-                  "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
-                  "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+                  "description": "地理查询范围，可为 bbox、中心点加半径，或标准地名/行政区。纯地名由本工具内部 geocode 后再出图。",
+                  "acquisition_hint": "优先使用已有 bbox、中心点或 $active_area；来源只有地名时直接写入 area，由本工具内部 geocode。来源没有时不得补写坐标。",
                   "context_sources": [
                     "active_area"
                   ],
@@ -2801,8 +3085,8 @@
                   "type": "string_or_array",
                   "required": true,
                   "requirement_level": "semantic",
-                  "description": "需要加载的一个或多个图层。",
-                  "acquisition_hint": "根据目的明确要加载的图层，如 hydrology、terrain、historical_map。",
+                  "description": "需要加载的一个或多个图层。默认 terrestris 可执行 roads、terrain；hydrology、administrative、historical_map 当前默认后端不支持。",
+                  "acquisition_hint": "根据目的填写图层名。默认后端用 roads 看 OSM 底图、terrain 看地形阴影；要水系或行政矢量用 osm_query，不要为此编造历史图层。",
                   "context_sources": [],
                   "context_default": null,
                   "aliases": [
@@ -2816,7 +3100,7 @@
                   "minimum": null,
                   "maximum": null,
                   "example": [
-                    "hydrology"
+                    "roads"
                   ]
                 },
                 {
@@ -2824,8 +3108,8 @@
                   "type": "string_or_object",
                   "required": false,
                   "requirement_level": "optional",
-                  "description": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。",
-                  "acquisition_hint": "从字幕、task 或已有结果提取真实时间范围；来源没有时不得猜测。",
+                  "description": "查询时间点或起止范围。当前默认后端不支持时间轴，传入后记入 applied.unsupported，不会生成历史地图。",
+                  "acquisition_hint": "字幕若明确给了年份仍可原样写入；当前执行器不会按该时间出图。需要历史影像请用 satellite_imagery_query。来源没有时不得猜测。",
                   "context_sources": [],
                   "context_default": null,
                   "aliases": [
@@ -2851,8 +3135,8 @@
                   "type": "string",
                   "required": false,
                   "requirement_level": "optional",
-                  "description": "地图或数据服务提供方。",
-                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 provider；来源没有时不得编造。",
+                  "description": "地图服务提供方。默认 terrestris；可选 wms / geoserver / ogc（需自建端点）。",
+                  "acquisition_hint": "仅当 Thought 或配置明确指定数据源时填写；默认即可走 terrestris。来源没有时不得编造。",
                   "context_sources": [],
                   "context_default": null,
                   "aliases": [
@@ -2863,7 +3147,7 @@
                   "item_type": null,
                   "minimum": null,
                   "maximum": null,
-                  "example": null
+                  "example": "terrestris"
                 }
               ],
               "required_any": [],
@@ -2918,16 +3202,17 @@
     {
       "canonical": {
         "name": "osm_query",
-        "description": "在 OSM/Overpass 中查询或统计要素。",
+        "description": "查询或统计地图地物。只按类型检索用 query，feature_types 写 [桥梁] 或 [河流]。河与桥相距若干米用 near。范围过大时 near 会内部分块，在每一块里逐个地点筛选。山地看高程，城区看建成区面。桥或道口落在河、铁路上用 crossings。两条线交叉用 intersect。山、城区没有安全标签，不能当作类型。没有结果只表示 OSM 没有返回。",
         "executor": "openstreetmap_overpass",
         "usage": "仅在需要访问该真实执行器并获得新证据时调用；先选择 operation，再按其 input_schema 填 inputs。缺少执行级参数时按 acquisition_hint 获取，不得编造坐标、文件、会话或前置结果。",
         "operations": [
           {
             "name": "query",
-            "description": "按区域、标签和空间关系查询 OSM 要素",
+            "description": "只按区域和地物类型检索，并返回几何。有距离或交叉关系时改用 near、crossings 或 intersect。",
             "aliases": [
               "search",
-              "overpass"
+              "overpass",
+              "find"
             ],
             "input_schema": {
               "description": "查询 OSM 要素。默认传 area/tags 等结构化约束，由执行器生成 Overpass QL；只有轨迹确实编写了代码时才传 overpass_ql。",
@@ -2986,10 +3271,10 @@
                 },
                 {
                   "name": "center",
-                  "type": "string_or_object",
+                  "type": "location",
                   "required": false,
                   "requirement_level": "optional",
-                  "description": "中心坐标或地名，与 radius_m 配合。",
+                  "description": "WGS84 中心坐标 [lat,lon]，与 radius_m 配合；地名应先由 geocode 解析。",
                   "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 center；来源没有时不得编造。",
                   "context_sources": [],
                   "context_default": null,
@@ -3049,7 +3334,7 @@
                   "type": "string_or_array",
                   "required": false,
                   "requirement_level": "optional",
-                  "description": "希望检索的自然语言要素类型；执行器负责映射为 OSM 标签。",
+                  "description": "希望检索的自然语言要素类型；执行器仅对已知类型做安全 OSM 标签映射，未知类型要求显式 tags。",
                   "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 feature_types；来源没有时不得编造。",
                   "context_sources": [],
                   "context_default": null,
@@ -3095,7 +3380,7 @@
                   "type": "string",
                   "required": false,
                   "requirement_level": "optional",
-                  "description": "空间关系约束，如 within/near/intersects。",
+                  "description": "范围关系；当前支持 area/bbox 的 within 与 center 的 near。",
                   "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 spatial_relation；来源没有时不得编造。",
                   "context_sources": [],
                   "context_default": null,
@@ -3103,7 +3388,10 @@
                     "空间关系",
                     "关系"
                   ],
-                  "allowed_values": [],
+                  "allowed_values": [
+                    "within",
+                    "near"
+                  ],
                   "item_type": null,
                   "minimum": null,
                   "maximum": null,
@@ -3133,7 +3421,7 @@
                   "type": "integer",
                   "required": false,
                   "requirement_level": "optional",
-                  "description": "最多返回要素数。",
+                  "description": "最多返回要素数，运行时上限 1000。",
                   "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 limit；来源没有时不得编造。",
                   "context_sources": [],
                   "context_default": null,
@@ -3144,7 +3432,7 @@
                   "allowed_values": [],
                   "item_type": null,
                   "minimum": 1.0,
-                  "maximum": 10000.0,
+                  "maximum": 1000.0,
                   "example": null
                 },
                 {
@@ -3152,7 +3440,7 @@
                   "type": "string",
                   "required": false,
                   "requirement_level": "optional",
-                  "description": "可选的完整 Overpass QL；不是默认必填参数。",
+                  "description": "可选完整 Overpass QL；运行时默认禁用，只有受信调用方显式授权后才能执行。",
                   "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 overpass_ql；来源没有时不得编造。",
                   "context_sources": [],
                   "context_default": null,
@@ -3325,6 +3613,774 @@
               "allow_extra": true,
               "examples": []
             }
+          },
+          {
+            "name": "near",
+            "description": "查找与参照地物相距不超过给定米数的地点。大范围会切成小块；走向、方位、高程和城区面在每个地点上当场筛选，不合格即丢弃。",
+            "aliases": [
+              "around"
+            ],
+            "input_schema": {
+              "description": "在每一块里同时取主体、参照和约束里的线，再逐点筛选。返回通过筛选的地点。",
+              "fields": [
+                {
+                  "name": "area",
+                  "type": "location",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+                  "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+                  "context_sources": [
+                    "active_area"
+                  ],
+                  "context_default": "$active_area",
+                  "aliases": [
+                    "区域",
+                    "地区",
+                    "地点",
+                    "候选区域",
+                    "检索范围",
+                    "搜索区域",
+                    "省域范围",
+                    "region",
+                    "target_area",
+                    "search_area",
+                    "sample_area",
+                    "location",
+                    "cities"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": "郑州附近黄河沿线"
+                },
+                {
+                  "name": "bbox",
+                  "type": "array",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "WGS84 查询框 [west,south,east,north]。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 bbox；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "边界框",
+                    "bounds",
+                    "extent"
+                  ],
+                  "allowed_values": [],
+                  "item_type": "number",
+                  "minimum": null,
+                  "maximum": null,
+                  "example": null
+                },
+                {
+                  "name": "center",
+                  "type": "location",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "WGS84 中心坐标 [lat,lon]，与 radius_m 配合；地名应先由 geocode 解析。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 center；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "中心点",
+                    "中心"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": null
+                },
+                {
+                  "name": "radius_m",
+                  "type": "number",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "中心点查询半径（米）。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 radius_m；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "半径",
+                    "radius"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": 0.0,
+                  "maximum": null,
+                  "example": null
+                },
+                {
+                  "name": "subject",
+                  "type": "string",
+                  "required": true,
+                  "requirement_level": "semantic",
+                  "description": "要返回的地物类型，如 桥梁、河流、道路、铁路。未知类型请改传 subject_tags。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "主体",
+                    "要素",
+                    "feature",
+                    "a"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": "桥梁"
+                },
+                {
+                  "name": "reference",
+                  "type": "string",
+                  "required": true,
+                  "requirement_level": "semantic",
+                  "description": "必须在附近的参照地物类型，如 河流。未知类型请改传 reference_tags。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "参照",
+                    "参照物",
+                    "b"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": "河流"
+                },
+                {
+                  "name": "within_m",
+                  "type": "number",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "主体与参照物的最大距离（米）。省略时为 200。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "距离",
+                    "半径",
+                    "within"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": 0,
+                  "maximum": null,
+                  "example": 200
+                },
+                {
+                  "name": "also",
+                  "type": "string",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "可选的第三类地物；主体还须落在它的 within_also_m 内。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "附加",
+                    "c"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": null
+                },
+                {
+                  "name": "within_also_m",
+                  "type": "number",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "主体与第三类地物的最大距离（米）。省略时为 200。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "附加距离"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": 0,
+                  "maximum": null,
+                  "example": null
+                },
+                {
+                  "name": "subject_tags",
+                  "type": "object",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "主体的 OSM 标签。类型无法映射时必须提供。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "主体标签"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": {
+                    "bridge": "yes"
+                  }
+                },
+                {
+                  "name": "reference_tags",
+                  "type": "object",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "参照物的 OSM 标签。类型无法映射时必须提供。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "参照标签"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": {
+                    "waterway": "river"
+                  }
+                },
+                {
+                  "name": "also_tags",
+                  "type": "object",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "第三类地物的 OSM 标签。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "附加标签"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": null
+                },
+                {
+                  "name": "layout",
+                  "type": "array",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "逐点筛选。走向 {\"feature\":\"河流\",\"bearing\":\"东北-西南\"}；方位 {\"subject\":\"山地\",\"reference\":\"河流\",\"direction\":\"东南\"}。山地看高程，城区看建成区面。任一不合格即丢弃该地点。",
+                  "acquisition_hint": "从当前讲解的相对位置提取；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "相对位置",
+                    "布局"
+                  ],
+                  "allowed_values": [],
+                  "item_type": "object",
+                  "minimum": null,
+                  "maximum": null,
+                  "example": null
+                },
+                {
+                  "name": "limit",
+                  "type": "integer",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "每块原始条数上限。达到后切开该块再查，不截断已经通过筛选的地点。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 limit；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "结果数",
+                    "top_k"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": 1.0,
+                  "maximum": 1000.0,
+                  "example": null
+                }
+              ],
+              "required_any": [
+                [
+                  "area",
+                  "bbox",
+                  "center"
+                ]
+              ],
+              "mutually_exclusive": [],
+              "allow_extra": true,
+              "examples": [
+                {
+                  "area": "郑州市",
+                  "subject": "桥梁",
+                  "reference": "河流",
+                  "within_m": 200
+                }
+              ]
+            }
+          },
+          {
+            "name": "crossings",
+            "description": "查找落在一条河、铁路或道路上的桥、坝、渡口或道口。",
+            "aliases": [
+              "on_line"
+            ],
+            "input_schema": {
+              "description": "沿一条线查询桥、坝、渡口或道口，返回这些地物的几何。",
+              "fields": [
+                {
+                  "name": "area",
+                  "type": "location",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+                  "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+                  "context_sources": [
+                    "active_area"
+                  ],
+                  "context_default": "$active_area",
+                  "aliases": [
+                    "区域",
+                    "地区",
+                    "地点",
+                    "候选区域",
+                    "检索范围",
+                    "搜索区域",
+                    "省域范围",
+                    "region",
+                    "target_area",
+                    "search_area",
+                    "sample_area",
+                    "location",
+                    "cities"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": "郑州附近黄河沿线"
+                },
+                {
+                  "name": "bbox",
+                  "type": "array",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "WGS84 查询框 [west,south,east,north]。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 bbox；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "边界框",
+                    "bounds",
+                    "extent"
+                  ],
+                  "allowed_values": [],
+                  "item_type": "number",
+                  "minimum": null,
+                  "maximum": null,
+                  "example": null
+                },
+                {
+                  "name": "center",
+                  "type": "location",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "WGS84 中心坐标 [lat,lon]，与 radius_m 配合；地名应先由 geocode 解析。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 center；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "中心点",
+                    "中心"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": null
+                },
+                {
+                  "name": "radius_m",
+                  "type": "number",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "中心点查询半径（米）。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 radius_m；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "半径",
+                    "radius"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": 0.0,
+                  "maximum": null,
+                  "example": null
+                },
+                {
+                  "name": "line",
+                  "type": "string",
+                  "required": true,
+                  "requirement_level": "semantic",
+                  "description": "作为参照线的地物类型，如 河流、铁路、道路。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "线",
+                    "参照线"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": "河流"
+                },
+                {
+                  "name": "line_tags",
+                  "type": "object",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "参照线的 OSM 标签。类型无法映射时必须提供。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "线标签"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": null
+                },
+                {
+                  "name": "kinds",
+                  "type": "string_or_array",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "落在线上的种类：bridge、dam、ferry、level_crossing。省略时四种都查。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "种类"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": [
+                    "bridge",
+                    "level_crossing"
+                  ]
+                },
+                {
+                  "name": "buffer_m",
+                  "type": "number",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "距离参照线仍算落在线上的米数。省略时为 40。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "缓冲",
+                    "buffer"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": 0,
+                  "maximum": null,
+                  "example": 40
+                },
+                {
+                  "name": "limit",
+                  "type": "integer",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "最多返回要素数，运行时上限 1000。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 limit；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "结果数",
+                    "top_k"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": 1.0,
+                  "maximum": 1000.0,
+                  "example": null
+                }
+              ],
+              "required_any": [
+                [
+                  "area",
+                  "bbox",
+                  "center"
+                ]
+              ],
+              "mutually_exclusive": [],
+              "allow_extra": true,
+              "examples": [
+                {
+                  "bbox": [
+                    113.5,
+                    34.7,
+                    113.8,
+                    34.9
+                  ],
+                  "line": "河流",
+                  "kinds": [
+                    "bridge"
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "name": "intersect",
+            "description": "查找两类线的交叉点。",
+            "aliases": [
+              "crossing_point"
+            ],
+            "input_schema": {
+              "description": "取两类线的几何并计算交叉点。没有交叉就返回空列表。",
+              "fields": [
+                {
+                  "name": "area",
+                  "type": "location",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+                  "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+                  "context_sources": [
+                    "active_area"
+                  ],
+                  "context_default": "$active_area",
+                  "aliases": [
+                    "区域",
+                    "地区",
+                    "地点",
+                    "候选区域",
+                    "检索范围",
+                    "搜索区域",
+                    "省域范围",
+                    "region",
+                    "target_area",
+                    "search_area",
+                    "sample_area",
+                    "location",
+                    "cities"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": "郑州附近黄河沿线"
+                },
+                {
+                  "name": "bbox",
+                  "type": "array",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "WGS84 查询框 [west,south,east,north]。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 bbox；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "边界框",
+                    "bounds",
+                    "extent"
+                  ],
+                  "allowed_values": [],
+                  "item_type": "number",
+                  "minimum": null,
+                  "maximum": null,
+                  "example": null
+                },
+                {
+                  "name": "center",
+                  "type": "location",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "WGS84 中心坐标 [lat,lon]，与 radius_m 配合；地名应先由 geocode 解析。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 center；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "中心点",
+                    "中心"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": null
+                },
+                {
+                  "name": "radius_m",
+                  "type": "number",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "中心点查询半径（米）。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 radius_m；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "半径",
+                    "radius"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": 0.0,
+                  "maximum": null,
+                  "example": null
+                },
+                {
+                  "name": "subject",
+                  "type": "string",
+                  "required": true,
+                  "requirement_level": "semantic",
+                  "description": "第一条线的地物类型，如 铁路、河流、道路、电力线。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "主体",
+                    "a"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": "铁路"
+                },
+                {
+                  "name": "reference",
+                  "type": "string",
+                  "required": true,
+                  "requirement_level": "semantic",
+                  "description": "第二条线的地物类型。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "参照",
+                    "b"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": "道路"
+                },
+                {
+                  "name": "subject_tags",
+                  "type": "object",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "第一条线的 OSM 标签。类型无法映射时必须提供。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "主体标签"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": null
+                },
+                {
+                  "name": "reference_tags",
+                  "type": "object",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "第二条线的 OSM 标签。类型无法映射时必须提供。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "参照标签"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": null
+                },
+                {
+                  "name": "cluster_m",
+                  "type": "number",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "相距不超过该米数的交叉点合并为一处。省略时为 100。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "合并距离"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": 0,
+                  "maximum": null,
+                  "example": 100
+                },
+                {
+                  "name": "limit",
+                  "type": "integer",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "最多返回要素数，运行时上限 1000。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 limit；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "结果数",
+                    "top_k"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": 1.0,
+                  "maximum": 1000.0,
+                  "example": null
+                }
+              ],
+              "required_any": [
+                [
+                  "area",
+                  "bbox",
+                  "center"
+                ]
+              ],
+              "mutually_exclusive": [],
+              "allow_extra": true,
+              "examples": [
+                {
+                  "bbox": [
+                    113.5,
+                    34.7,
+                    113.8,
+                    34.9
+                  ],
+                  "subject": "铁路",
+                  "reference": "道路"
+                }
+              ]
+            }
           }
         ],
         "params": [
@@ -3335,7 +4391,10 @@
             "description": "本次调用执行的 operation",
             "allowed_values": [
               "query",
-              "count"
+              "count",
+              "near",
+              "crossings",
+              "intersect"
             ]
           },
           {
@@ -3498,7 +4557,7 @@
                   "type": "string",
                   "required": true,
                   "requirement_level": "execution",
-                  "description": "导出格式。",
+                  "description": "可忠实表达规范化结果的导出格式；不支持丢失 relation members/node refs 后伪造 osm_xml。",
                   "acquisition_hint": "根据下游用途选择明确输出格式；无法判断时由调用计划显式指定。",
                   "context_sources": [],
                   "context_default": null,
@@ -3510,8 +4569,7 @@
                     "geojson",
                     "json",
                     "csv",
-                    "kml",
-                    "osm_xml"
+                    "kml"
                   ],
                   "item_type": null,
                   "minimum": null,
@@ -3587,7 +4645,7 @@
     {
       "canonical": {
         "name": "streetview_query",
-        "description": "打开、导航、切换或截取街景会话。",
+        "description": "打开、导航、切换或截取街景会话。open 可写地名，由本工具内部 geocode，不必拆成两步。",
         "executor": "streetview_service",
         "usage": "仅在需要访问该真实执行器并获得新证据时调用；先选择 operation，再按其 input_schema 填 inputs。缺少执行级参数时按 acquisition_hint 获取，不得编造坐标、文件、会话或前置结果。",
         "operations": [
@@ -3599,15 +4657,15 @@
               "query"
             ],
             "input_schema": {
-              "description": "打开指定地点或坐标的街景。",
+              "description": "打开指定地点或坐标的街景。纯地名由本工具内部先 geocode，没有坐标再按名称查 POI。",
               "fields": [
                 {
                   "name": "area",
                   "type": "location",
                   "required": false,
                   "requirement_level": "optional",
-                  "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
-                  "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+                  "description": "打开地点：可为标准地名、行政区、bbox 或中心点加半径。纯地名由本工具内部 geocode，不必先单独调用 geocode。",
+                  "acquisition_hint": "从 Thought、working_scope 或前一步结果提取地点名、bbox 或坐标；来源没有时不得编造。",
                   "context_sources": [
                     "active_area"
                   ],
@@ -3632,7 +4690,7 @@
                   "item_type": null,
                   "minimum": null,
                   "maximum": null,
-                  "example": "郑州附近黄河沿线"
+                  "example": "江西赣州市赣县区梅林大桥附近"
                 },
                 {
                   "name": "coordinates",
@@ -3721,8 +4779,8 @@
                   "type": "location",
                   "required": false,
                   "requirement_level": "optional",
-                  "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
-                  "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+                  "description": "WGS84 bbox [west,south,east,north]，或 {lat, lon, radius_m}。不接受地名；纯地名请先 geocode。",
+                  "acquisition_hint": "引用 geocode 或前一步地图结果中的 bbox、中心点加半径，或已是几何的 $active_area；来源没有坐标时不得编造。",
                   "context_sources": [
                     "active_area"
                   ],
@@ -3746,7 +4804,11 @@
                   "item_type": null,
                   "minimum": null,
                   "maximum": null,
-                  "example": "郑州附近黄河沿线"
+                  "example": {
+                    "lat": 34.75,
+                    "lon": 113.65,
+                    "radius_m": 2000
+                  }
                 },
                 {
                   "name": "direction",
@@ -3832,8 +4894,8 @@
                   "type": "location",
                   "required": false,
                   "requirement_level": "optional",
-                  "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
-                  "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+                  "description": "WGS84 bbox [west,south,east,north]，或 {lat, lon, radius_m}。不接受地名；纯地名请先 geocode。",
+                  "acquisition_hint": "引用 geocode 或前一步地图结果中的 bbox、中心点加半径，或已是几何的 $active_area；来源没有坐标时不得编造。",
                   "context_sources": [
                     "active_area"
                   ],
@@ -3857,7 +4919,11 @@
                   "item_type": null,
                   "minimum": null,
                   "maximum": null,
-                  "example": "郑州附近黄河沿线"
+                  "example": {
+                    "lat": 34.75,
+                    "lon": 113.65,
+                    "radius_m": 2000
+                  }
                 },
                 {
                   "name": "time_range",
@@ -4042,26 +5108,26 @@
     {
       "canonical": {
         "name": "satellite_imagery_query",
-        "description": "获取、切换或查看卫星/航片影像。",
+        "description": "按地名、bbox 或中心点加半径获取 Copernicus 卫星真彩预览图。纯地名在执行器内 geocode。只提供 retrieve 与 change_time，不提供斜拍、航片、地形、Planet 或 Google Earth。",
         "executor": "satellite_imagery_service",
         "usage": "仅在需要访问该真实执行器并获得新证据时调用；先选择 operation，再按其 input_schema 填 inputs。缺少执行级参数时按 acquisition_hint 获取，不得编造坐标、文件、会话或前置结果。",
         "operations": [
           {
             "name": "retrieve",
-            "description": "获取指定区域和时间的卫星或航片",
+            "description": "按 bbox 或中心点加半径返回卫星预览图。",
             "aliases": [
               "open",
               "query"
             ],
             "input_schema": {
-              "description": "获取指定区域和时间的卫星或航片。",
+              "description": "按地名、WGS84 bbox 或中心点加半径返回 Copernicus 真彩预览。纯地名在执行器内 geocode。",
               "fields": [
                 {
                   "name": "area",
                   "type": "location",
                   "required": false,
                   "requirement_level": "optional",
-                  "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+                  "description": "纯地名会在执行器内先 geocode，没有点再按同一名称查 POI，再用默认半径扩成框。也可以直接给 WGS84 bbox [west,south,east,north] 或 {lat, lon, radius_m}。",
                   "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
                   "context_sources": [
                     "active_area"
@@ -4087,14 +5153,18 @@
                   "item_type": null,
                   "minimum": null,
                   "maximum": null,
-                  "example": "郑州附近黄河沿线"
+                  "example": {
+                    "lat": 34.75,
+                    "lon": 113.65,
+                    "radius_m": 2000
+                  }
                 },
                 {
                   "name": "coordinates",
                   "type": "string_or_array",
                   "required": false,
                   "requirement_level": "optional",
-                  "description": "待获取影像的一个或多个坐标。",
+                  "description": "中心点 [lon, lat] 或 {lat, lon}。未给半径时使用默认搜索半径。不接受地名。",
                   "acquisition_hint": "引用地图/OSM/地理编码前一步真实返回的坐标，不得由模型编造。",
                   "context_sources": [
                     "previous_coordinates"
@@ -4137,7 +5207,7 @@
                   "type": "string_or_object",
                   "required": false,
                   "requirement_level": "optional",
-                  "description": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。",
+                  "description": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。四位年份加 s 或「年代」收成该十年，如 1990s、1990年代。",
                   "acquisition_hint": "从字幕、task 或已有结果提取真实时间范围；来源没有时不得猜测。",
                   "context_sources": [],
                   "context_default": null,
@@ -4158,44 +5228,6 @@
                   "minimum": null,
                   "maximum": null,
                   "example": "1980-1995"
-                },
-                {
-                  "name": "provider",
-                  "type": "string",
-                  "required": false,
-                  "requirement_level": "optional",
-                  "description": "影像服务或数据集。",
-                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 provider；来源没有时不得编造。",
-                  "context_sources": [],
-                  "context_default": null,
-                  "aliases": [
-                    "数据源",
-                    "服务"
-                  ],
-                  "allowed_values": [],
-                  "item_type": null,
-                  "minimum": null,
-                  "maximum": null,
-                  "example": null
-                },
-                {
-                  "name": "layer",
-                  "type": "string",
-                  "required": false,
-                  "requirement_level": "optional",
-                  "description": "影像图层，如 satellite/aerial/terrain。",
-                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 layer；来源没有时不得编造。",
-                  "context_sources": [],
-                  "context_default": null,
-                  "aliases": [
-                    "图层",
-                    "影像类型"
-                  ],
-                  "allowed_values": [],
-                  "item_type": null,
-                  "minimum": null,
-                  "maximum": null,
-                  "example": null
                 },
                 {
                   "name": "cloud_cover_max",
@@ -4250,17 +5282,17 @@
           },
           {
             "name": "change_time",
-            "description": "切换历史年份、季节或水期影像",
+            "description": "在同一 bbox 或中心点上切换时间后再返回预览图。",
             "aliases": [],
             "input_schema": {
-              "description": "在同一区域切换历史年份、季节或水期影像。",
+              "description": "同一地名或几何范围换时间后返回预览图。纯地名在执行器内 geocode。",
               "fields": [
                 {
                   "name": "area",
                   "type": "location",
                   "required": true,
                   "requirement_level": "semantic",
-                  "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+                  "description": "纯地名会在执行器内先 geocode，没有点再按同一名称查 POI，再用默认半径扩成框。也可以直接给 WGS84 bbox [west,south,east,north] 或 {lat, lon, radius_m}。",
                   "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
                   "context_sources": [
                     "active_area"
@@ -4285,14 +5317,18 @@
                   "item_type": null,
                   "minimum": null,
                   "maximum": null,
-                  "example": "郑州附近黄河沿线"
+                  "example": {
+                    "lat": 34.75,
+                    "lon": 113.65,
+                    "radius_m": 2000
+                  }
                 },
                 {
                   "name": "time_range",
                   "type": "string_or_object",
                   "required": true,
                   "requirement_level": "semantic",
-                  "description": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。",
+                  "description": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。四位年份加 s 或「年代」收成该十年，如 1990s、1990年代。",
                   "acquisition_hint": "从字幕、task 或已有结果提取真实时间范围；来源没有时不得猜测。",
                   "context_sources": [],
                   "context_default": null,
@@ -4334,136 +5370,6 @@
                   "minimum": null,
                   "maximum": null,
                   "example": null
-                },
-                {
-                  "name": "provider",
-                  "type": "string",
-                  "required": false,
-                  "requirement_level": "optional",
-                  "description": "影像服务提供方。",
-                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 provider；来源没有时不得编造。",
-                  "context_sources": [],
-                  "context_default": null,
-                  "aliases": [
-                    "数据源",
-                    "服务"
-                  ],
-                  "allowed_values": [],
-                  "item_type": null,
-                  "minimum": null,
-                  "maximum": null,
-                  "example": null
-                }
-              ],
-              "required_any": [],
-              "mutually_exclusive": [],
-              "allow_extra": true,
-              "examples": []
-            }
-          },
-          {
-            "name": "oblique_view",
-            "description": "获取倾斜或三维地形视角",
-            "aliases": [],
-            "input_schema": {
-              "description": "获取指定区域的倾斜、三维或地形视角。",
-              "fields": [
-                {
-                  "name": "area",
-                  "type": "location",
-                  "required": true,
-                  "requirement_level": "semantic",
-                  "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
-                  "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
-                  "context_sources": [
-                    "active_area"
-                  ],
-                  "context_default": "$active_area",
-                  "aliases": [
-                    "区域",
-                    "地区",
-                    "地点",
-                    "候选区域",
-                    "检索范围",
-                    "搜索区域",
-                    "省域范围",
-                    "region",
-                    "target_area",
-                    "search_area",
-                    "sample_area",
-                    "location",
-                    "cities"
-                  ],
-                  "allowed_values": [],
-                  "item_type": null,
-                  "minimum": null,
-                  "maximum": null,
-                  "example": "郑州附近黄河沿线"
-                },
-                {
-                  "name": "heading",
-                  "type": "number",
-                  "required": false,
-                  "requirement_level": "optional",
-                  "description": "观察朝向角（度）。",
-                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 heading；来源没有时不得编造。",
-                  "context_sources": [],
-                  "context_default": null,
-                  "aliases": [
-                    "朝向",
-                    "方位角"
-                  ],
-                  "allowed_values": [],
-                  "item_type": null,
-                  "minimum": 0.0,
-                  "maximum": 360.0,
-                  "example": null
-                },
-                {
-                  "name": "tilt",
-                  "type": "number",
-                  "required": false,
-                  "requirement_level": "optional",
-                  "description": "倾斜角（度）。",
-                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 tilt；来源没有时不得编造。",
-                  "context_sources": [],
-                  "context_default": null,
-                  "aliases": [
-                    "倾角",
-                    "pitch"
-                  ],
-                  "allowed_values": [],
-                  "item_type": null,
-                  "minimum": 0.0,
-                  "maximum": 90.0,
-                  "example": null
-                },
-                {
-                  "name": "time_range",
-                  "type": "string_or_object",
-                  "required": false,
-                  "requirement_level": "optional",
-                  "description": "查询时间点或起止范围；允许明确年份、日期或“最早可用”等可执行服务条件。",
-                  "acquisition_hint": "从字幕、task 或已有结果提取真实时间范围；来源没有时不得猜测。",
-                  "context_sources": [],
-                  "context_default": null,
-                  "aliases": [
-                    "时期",
-                    "时间",
-                    "年份",
-                    "年代",
-                    "年代范围",
-                    "日期",
-                    "影像时期",
-                    "影像年份",
-                    "date_range",
-                    "year"
-                  ],
-                  "allowed_values": [],
-                  "item_type": null,
-                  "minimum": null,
-                  "maximum": null,
-                  "example": "1980-1995"
                 }
               ],
               "required_any": [],
@@ -4481,8 +5387,7 @@
             "description": "本次调用执行的 operation",
             "allowed_values": [
               "retrieve",
-              "change_time",
-              "oblique_view"
+              "change_time"
             ]
           },
           {
@@ -4524,26 +5429,26 @@
     {
       "canonical": {
         "name": "satellite_imagery_compare",
-        "description": "执行多时相或多候选影像比较。",
+        "description": "对 bbox 或中心点加半径的范围做多时相或候选预览比较。不接受地名。",
         "executor": "satellite_comparison_service",
         "usage": "仅在需要访问该真实执行器并获得新证据时调用；先选择 operation，再按其 input_schema 填 inputs。缺少执行级参数时按 acquisition_hint 获取，不得编造坐标、文件、会话或前置结果。",
         "operations": [
           {
             "name": "compare_candidates",
-            "description": "在多个候选区域的卫星影像中按同一视觉/空间模板进行比对",
+            "description": "按同一模板比较多个 bbox 或中心点的预览。",
             "aliases": [
               "compare",
               "match_candidates"
             ],
             "input_schema": {
-              "description": "在多个明确候选区域的卫星影像中按同一视觉或空间模板进行横向比对；不能只给候选数量而不提供候选本身。",
+              "description": "每个候选必须是 bbox 或中心点加半径。不接受地名，也不能只给数量。",
               "fields": [
                 {
                   "name": "candidates",
                   "type": "array",
                   "required": true,
                   "requirement_level": "semantic",
-                  "description": "待比较的候选地点、坐标或区域列表。",
+                  "description": "至少两个候选，每个都是 bbox 或中心点加半径。不接受地名，也不能只给数量。",
                   "acquisition_hint": "引用前一步候选生成/搜索返回的完整候选列表，不能只传候选数量。",
                   "context_sources": [
                     "previous_candidates"
@@ -4608,25 +5513,6 @@
                   "minimum": null,
                   "maximum": null,
                   "example": "1980-1995"
-                },
-                {
-                  "name": "provider",
-                  "type": "string",
-                  "required": false,
-                  "requirement_level": "optional",
-                  "description": "影像服务提供方。",
-                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 provider；来源没有时不得编造。",
-                  "context_sources": [],
-                  "context_default": null,
-                  "aliases": [
-                    "数据源",
-                    "服务"
-                  ],
-                  "allowed_values": [],
-                  "item_type": null,
-                  "minimum": null,
-                  "maximum": null,
-                  "example": null
                 }
               ],
               "required_any": [],
@@ -4637,20 +5523,20 @@
           },
           {
             "name": "compare_time",
-            "description": "调用影像服务进行多时相对比",
+            "description": "比较同一 bbox 或中心点的多个时间预览。",
             "aliases": [
               "time_compare",
               "temporal_compare"
             ],
             "input_schema": {
-              "description": "获取并比较同一区域的两个或多个时间影像。",
+              "description": "同一几何范围的多个时间预览做像素比较。不接受地名。",
               "fields": [
                 {
                   "name": "area",
                   "type": "location",
                   "required": true,
                   "requirement_level": "semantic",
-                  "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
+                  "description": "WGS84 bbox [west,south,east,north]，或 {lat, lon, radius_m}。不接受地名。",
                   "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
                   "context_sources": [
                     "active_area"
@@ -4675,7 +5561,11 @@
                   "item_type": null,
                   "minimum": null,
                   "maximum": null,
-                  "example": "郑州附近黄河沿线"
+                  "example": {
+                    "lat": 34.75,
+                    "lon": 113.65,
+                    "radius_m": 2000
+                  }
                 },
                 {
                   "name": "times",
@@ -5080,8 +5970,8 @@
                   "type": "string_or_object",
                   "required": false,
                   "requirement_level": "optional",
-                  "description": "使用的高程/地形数据引用。",
-                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 terrain；来源没有时不得编造。",
+                  "description": "本地高程栅格、内存网格或 terrain_analysis 返回的 terrain_ref；缺少时先显式获取 DEM。",
+                  "acquisition_hint": "优先引用 terrain_analysis 返回的 terrain_ref；没有本地 DEM 时先让 terrain_analysis 使用 OpenTopography 获取，禁止编造路径或在本 Tool 内隐藏下载。",
                   "context_sources": [],
                   "context_default": null,
                   "aliases": [
@@ -5168,8 +6058,8 @@
                   "type": "location",
                   "required": false,
                   "requirement_level": "optional",
-                  "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
-                  "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+                  "description": "WGS84 bbox [west,south,east,north]，或 {lat, lon, radius_m}。不接受地名；纯地名请先 geocode。",
+                  "acquisition_hint": "引用 geocode 或前一步地图结果中的 bbox、中心点加半径，或已是几何的 $active_area；来源没有坐标时不得编造。",
                   "context_sources": [
                     "active_area"
                   ],
@@ -5193,7 +6083,11 @@
                   "item_type": null,
                   "minimum": null,
                   "maximum": null,
-                  "example": "郑州附近黄河沿线"
+                  "example": {
+                    "lat": 34.75,
+                    "lon": 113.65,
+                    "radius_m": 2000
+                  }
                 },
                 {
                   "name": "path",
@@ -5457,8 +6351,8 @@
                   "type": "location",
                   "required": true,
                   "requirement_level": "semantic",
-                  "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
-                  "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+                  "description": "WGS84 bbox [west,south,east,north]，或 {lat, lon, radius_m}。不接受地名；纯地名请先 geocode。",
+                  "acquisition_hint": "引用 geocode 或前一步地图结果中的 bbox、中心点加半径，或已是几何的 $active_area；来源没有坐标时不得编造。",
                   "context_sources": [
                     "active_area"
                   ],
@@ -5482,7 +6376,11 @@
                   "item_type": null,
                   "minimum": null,
                   "maximum": null,
-                  "example": "郑州附近黄河沿线"
+                  "example": {
+                    "lat": 34.75,
+                    "lon": 113.65,
+                    "radius_m": 2000
+                  }
                 },
                 {
                   "name": "time_range",
@@ -5569,8 +6467,8 @@
                   "type": "location",
                   "required": true,
                   "requirement_level": "semantic",
-                  "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
-                  "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+                  "description": "WGS84 bbox [west,south,east,north]，或 {lat, lon, radius_m}。不接受地名；纯地名请先 geocode。",
+                  "acquisition_hint": "引用 geocode 或前一步地图结果中的 bbox、中心点加半径，或已是几何的 $active_area；来源没有坐标时不得编造。",
                   "context_sources": [
                     "active_area"
                   ],
@@ -5594,7 +6492,11 @@
                   "item_type": null,
                   "minimum": null,
                   "maximum": null,
-                  "example": "郑州附近黄河沿线"
+                  "example": {
+                    "lat": 34.75,
+                    "lon": 113.65,
+                    "radius_m": 2000
+                  }
                 },
                 {
                   "name": "time_range",
@@ -5681,8 +6583,8 @@
                   "type": "location",
                   "required": true,
                   "requirement_level": "semantic",
-                  "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
-                  "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+                  "description": "WGS84 bbox [west,south,east,north]，或 {lat, lon, radius_m}。不接受地名；纯地名请先 geocode。",
+                  "acquisition_hint": "引用 geocode 或前一步地图结果中的 bbox、中心点加半径，或已是几何的 $active_area；来源没有坐标时不得编造。",
                   "context_sources": [
                     "active_area"
                   ],
@@ -5706,7 +6608,11 @@
                   "item_type": null,
                   "minimum": null,
                   "maximum": null,
-                  "example": "郑州附近黄河沿线"
+                  "example": {
+                    "lat": 34.75,
+                    "lon": 113.65,
+                    "radius_m": 2000
+                  }
                 },
                 {
                   "name": "time_range",
@@ -5846,8 +6752,8 @@
                   "type": "location",
                   "required": false,
                   "requirement_level": "optional",
-                  "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
-                  "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+                  "description": "WGS84 bbox [west,south,east,north]，或 {lat, lon, radius_m}。不接受地名；纯地名请先 geocode。",
+                  "acquisition_hint": "引用 geocode 或前一步地图结果中的 bbox、中心点加半径，或已是几何的 $active_area；来源没有坐标时不得编造。",
                   "context_sources": [
                     "active_area"
                   ],
@@ -5871,7 +6777,11 @@
                   "item_type": null,
                   "minimum": null,
                   "maximum": null,
-                  "example": "郑州附近黄河沿线"
+                  "example": {
+                    "lat": 34.75,
+                    "lon": 113.65,
+                    "radius_m": 2000
+                  }
                 },
                 {
                   "name": "condition",
@@ -5970,8 +6880,8 @@
                   "type": "string_or_array",
                   "required": true,
                   "requirement_level": "execution",
-                  "description": "一个或多个地点或坐标。",
-                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 locations；来源没有时不得编造。",
+                  "description": "一个或多个 WGS84 坐标，可为 [lon, lat] 或 {lat, lon}。不接受地名；纯地名请先 geocode。",
+                  "acquisition_hint": "引用 geocode 或前一步返回的真实坐标；来源没有坐标时不得编造。",
                   "context_sources": [],
                   "context_default": null,
                   "aliases": [
@@ -5984,7 +6894,10 @@
                   "item_type": null,
                   "minimum": null,
                   "maximum": null,
-                  "example": null
+                  "example": [
+                    114.93,
+                    25.86
+                  ]
                 },
                 {
                   "name": "time_range",
@@ -6051,8 +6964,8 @@
                   "type": "location",
                   "required": true,
                   "requirement_level": "semantic",
-                  "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
-                  "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+                  "description": "WGS84 bbox [west,south,east,north]，或 {lat, lon, radius_m}。不接受地名；纯地名请先 geocode。",
+                  "acquisition_hint": "引用 geocode 或前一步地图结果中的 bbox、中心点加半径，或已是几何的 $active_area；来源没有坐标时不得编造。",
                   "context_sources": [
                     "active_area"
                   ],
@@ -6076,7 +6989,11 @@
                   "item_type": null,
                   "minimum": null,
                   "maximum": null,
-                  "example": "郑州附近黄河沿线"
+                  "example": {
+                    "lat": 34.75,
+                    "lon": 113.65,
+                    "radius_m": 2000
+                  }
                 },
                 {
                   "name": "datetime",
@@ -6326,8 +7243,9 @@
     {
       "canonical": {
         "name": "administrative_registry",
-        "description": "查询行政归属、标准地名和对象名录。",
+        "description": "当前不可用，不要选用。原用途：查询行政归属、标准地名和对象名录。该步骤改用 web_search，坐标改用 geocode。",
         "executor": "administrative_registry",
+        "available": false,
         "usage": "仅在需要访问该真实执行器并获得新证据时调用；先选择 operation，再按其 input_schema 填 inputs。缺少执行级参数时按 acquisition_hint 获取，不得编造坐标、文件、会话或前置结果。",
         "operations": [
           {
@@ -6663,8 +7581,9 @@
     {
       "canonical": {
         "name": "infrastructure_registry",
-        "description": "查询建设历史、许可和登记记录。",
+        "description": "当前不可用，不要选用。原用途：查询建设历史、许可和登记记录。",
         "executor": "infrastructure_registry",
+        "available": false,
         "usage": "仅在需要访问该真实执行器并获得新证据时调用；先选择 operation，再按其 input_schema 填 inputs。缺少执行级参数时按 acquisition_hint 获取，不得编造坐标、文件、会话或前置结果。",
         "operations": [
           {
@@ -7022,8 +7941,8 @@
                   "type": "location",
                   "required": false,
                   "requirement_level": "optional",
-                  "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
-                  "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+                  "description": "WGS84 bbox [west,south,east,north]，或 {lat, lon, radius_m}。不接受地名；纯地名请先 geocode。",
+                  "acquisition_hint": "引用 geocode 或前一步地图结果中的 bbox、中心点加半径，或已是几何的 $active_area；来源没有坐标时不得编造。",
                   "context_sources": [
                     "active_area"
                   ],
@@ -7047,7 +7966,11 @@
                   "item_type": null,
                   "minimum": null,
                   "maximum": null,
-                  "example": "郑州附近黄河沿线"
+                  "example": {
+                    "lat": 34.75,
+                    "lon": 113.65,
+                    "radius_m": 2000
+                  }
                 },
                 {
                   "name": "date",
@@ -7125,6 +8048,26 @@
                   "minimum": null,
                   "maximum": null,
                   "example": null
+                },
+                {
+                  "name": "icao24",
+                  "type": "string",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "飞机 24 位地址，6 位十六进制。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 icao24；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "icao",
+                    "飞机地址",
+                    "transponder"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": "3c675a"
                 }
               ],
               "required_any": [
@@ -7132,7 +8075,8 @@
                   "area",
                   "airports",
                   "route",
-                  "flight_number"
+                  "flight_number",
+                  "icao24"
                 ]
               ],
               "mutually_exclusive": [],
@@ -7154,8 +8098,8 @@
                   "type": "location",
                   "required": false,
                   "requirement_level": "optional",
-                  "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
-                  "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+                  "description": "WGS84 bbox [west,south,east,north]，或 {lat, lon, radius_m}。不接受地名；纯地名请先 geocode。",
+                  "acquisition_hint": "引用 geocode 或前一步地图结果中的 bbox、中心点加半径，或已是几何的 $active_area；来源没有坐标时不得编造。",
                   "context_sources": [
                     "active_area"
                   ],
@@ -7179,7 +8123,11 @@
                   "item_type": null,
                   "minimum": null,
                   "maximum": null,
-                  "example": "郑州附近黄河沿线"
+                  "example": {
+                    "lat": 34.75,
+                    "lon": 113.65,
+                    "radius_m": 2000
+                  }
                 },
                 {
                   "name": "date",
@@ -7238,13 +8186,34 @@
                   "minimum": null,
                   "maximum": null,
                   "example": null
+                },
+                {
+                  "name": "icao24",
+                  "type": "string",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "飞机 24 位地址，6 位十六进制。",
+                  "acquisition_hint": "从当前 Thought、task 或前置工具真实结果中取得 icao24；来源没有时不得编造。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "icao",
+                    "飞机地址",
+                    "transponder"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": "3c675a"
                 }
               ],
               "required_any": [
                 [
                   "area",
                   "flight_number",
-                  "airports"
+                  "airports",
+                  "icao24"
                 ]
               ],
               "mutually_exclusive": [],
@@ -7267,8 +8236,8 @@
                   "type": "location",
                   "required": true,
                   "requirement_level": "semantic",
-                  "description": "地理查询范围，可为标准地名、行政区、bbox 或中心点加半径；应保留原始范围精度。",
-                  "acquisition_hint": "从 working_scope、当前候选或前一步地图结果提取真实区域；来源没有时不得补写。",
+                  "description": "WGS84 bbox [west,south,east,north]，或 {lat, lon, radius_m}。不接受地名；纯地名请先 geocode。",
+                  "acquisition_hint": "引用 geocode 或前一步地图结果中的 bbox、中心点加半径，或已是几何的 $active_area；来源没有坐标时不得编造。",
                   "context_sources": [
                     "active_area"
                   ],
@@ -7292,7 +8261,11 @@
                   "item_type": null,
                   "minimum": null,
                   "maximum": null,
-                  "example": "郑州附近黄河沿线"
+                  "example": {
+                    "lat": 34.75,
+                    "lon": 113.65,
+                    "radius_m": 2000
+                  }
                 },
                 {
                   "name": "time_range",

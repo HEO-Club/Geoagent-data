@@ -1,46 +1,48 @@
 """按 canonical_tool_catalog_v2.json 落地的真实 Tool 执行器包。
 
 每个子目录对应一个 canonical tool；每个 operation 一个模块，暴露 `execute`。
-`image_edit`、`image_measure`、`image_compare`、`ocr_read`、`reverse_image_search` 与 `media_metadata_read` 已接入执行器；其余 tool 仍为占位，不调用外部付费 API。
+`image_edit`、`image_measure`、`image_compare`、`ocr_read`、`reverse_image_search`、`media_metadata_read`、`web_search`、`web_page_read`、`media_search`、`video_frame_extract`、`poi_search`、`geocode`、`route_query`、`map_layer_query`、`osm_query`、`osm_result_process`、`streetview_query`、`satellite_imagery_query`、`satellite_imagery_compare`、`distance_bearing_calculator`、`visibility_analysis`、`terrain_analysis`、`spatial_filter`、`weather_archive_query`、`solar_ephemeris`、`shadow_analysis`、`administrative_registry`、`infrastructure_registry`、`flight_data_query`、`llm_query` 与 `final_answer` 已接入执行器；其余 tool 仍为占位，不调用外部付费 API。
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from tool import (
+    administrative_registry,
+    distance_bearing_calculator,
+    final_answer,
+    flight_data_query,
+    geocode,
+    image_compare,
+    image_edit,
+    image_measure,
+    infrastructure_registry,
+    llm_query,
+    map_layer_query,
+    media_metadata_read,
+    media_search,
+    ocr_read,
+    osm_query,
+    osm_result_process,
+    poi_search,
+    reverse_image_search,
+    route_query,
+    satellite_imagery_compare,
+    satellite_imagery_query,
+    shadow_analysis,
+    solar_ephemeris,
+    spatial_filter,
+    streetview_query,
+    terrain_analysis,
+    video_frame_extract,
+    visibility_analysis,
+    weather_archive_query,
+    web_page_read,
+    web_search,
+)
+from tool._catalog import undeclared_input_extensions
 from tool.contract import Observation, RuntimeContext
-
-from tool import image_edit
-from tool import image_measure
-from tool import image_compare
-from tool import ocr_read
-from tool import reverse_image_search
-from tool import media_metadata_read
-from tool import web_search
-from tool import web_page_read
-from tool import media_search
-from tool import video_frame_extract
-from tool import poi_search
-from tool import geocode
-from tool import route_query
-from tool import map_layer_query
-from tool import osm_query
-from tool import osm_result_process
-from tool import streetview_query
-from tool import satellite_imagery_query
-from tool import satellite_imagery_compare
-from tool import distance_bearing_calculator
-from tool import visibility_analysis
-from tool import terrain_analysis
-from tool import spatial_filter
-from tool import weather_archive_query
-from tool import solar_ephemeris
-from tool import shadow_analysis
-from tool import administrative_registry
-from tool import infrastructure_registry
-from tool import flight_data_query
-from tool import llm_query
-from tool import final_answer
 
 TOOLS = {
     'image_edit': image_edit,
@@ -101,7 +103,30 @@ def execute(
             error=f"未知 operation: {tool}.{operation}",
             error_code="unknown_operation",
         )
-    return handler(purpose=purpose, inputs=inputs, ctx=ctx)
+    observation = handler(purpose=purpose, inputs=inputs, ctx=ctx)
+    extra = undeclared_input_extensions(tool, operation, inputs)
+    if extra:
+        observation.extensions = extra
+    return observation
 
 
-__all__ = ["TOOLS", "Observation", "RuntimeContext", "execute"]
+def restore_runtime_context(
+    tool_name: str,
+    result: dict[str, Any],
+    ctx: RuntimeContext,
+) -> None:
+    """Rehydrate tool-specific session state from a durable Harness observation."""
+
+    package = TOOLS.get(tool_name)
+    restore = getattr(package, "restore_runtime_context", None) if package is not None else None
+    if callable(restore):
+        restore(result, ctx)
+
+
+__all__ = [
+    "TOOLS",
+    "Observation",
+    "RuntimeContext",
+    "execute",
+    "restore_runtime_context",
+]

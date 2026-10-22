@@ -2,7 +2,7 @@
   "schema_version": "geoagent_tool_implementation_spec_v1",
   "ordinal": 30,
   "research_date": "2026-08-31",
-  "research_status": "design_researched_not_runtime_verified",
+  "research_status": "design_researched_not_runtime_implemented",
   "catalog_source": "canonical_tool_catalog_v2.json",
   "canonical_tool": {
     "canonical": {
@@ -391,7 +391,8 @@
     "limitations": [
       "LLM 建议不是搜索或数据库回执",
       "中转别名不自动证明上游真实模型身份",
-      "普通内部思考不应为凑 Tool 而调用"
+      "普通内部思考不应为凑 Tool 而调用",
+      "密钥按 LLM_PROVIDER 对应的供应商选取，不把另一家的密钥发给当前端点"
     ],
     "mcp_strategy": "复用现有 pipeline.llm；密钥仅保存在本地配置，不进入样本。"
   },

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from tool.contract import Observation, RuntimeContext, not_implemented
+from tool.contract import Observation, RuntimeContext
+from tool.satellite_imagery_compare._compare import execute_compare_candidates
 
 
 def execute(
@@ -13,12 +14,6 @@ def execute(
     inputs: dict[str, Any],
     ctx: RuntimeContext | None = None,
 ) -> Observation:
-    """执行 satellite_imagery_compare.compare_candidates。尚未接入真实执行器。"""
+    """执行 satellite_imagery_compare.compare_candidates：逐候选取景后按模板打分。"""
 
-    return not_implemented(
-        'satellite_imagery_compare',
-        'compare_candidates',
-        purpose=purpose,
-        inputs=inputs,
-        ctx=ctx,
-    )
+    return execute_compare_candidates(purpose=purpose, inputs=inputs, ctx=ctx)

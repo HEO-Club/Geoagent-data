@@ -14,6 +14,7 @@ from PIL.TiffImagePlugin import IFDRational
 
 from tool import execute
 from tool.contract import Observation, RuntimeContext
+from tool.media_metadata_read._metadata import _parse_ffmpeg_stderr
 from tool.runtime import FilesystemImageStore
 
 
@@ -234,6 +235,18 @@ def test_file_video_duration_and_missing_encoded_date(tmp_path: Path) -> None:
     assert duration == pytest.approx(1.0)
     joined = "".join(result["assumptions"])
     assert "视频编码" in joined
+
+
+def test_ffmpeg_dimensions_are_read_only_from_video_stream() -> None:
+    stderr = """Input #0, mov, from 'clip.mp4':
+  metadata note: display matrix 852x1
+  Duration: 00:00:05.00
+  Stream #0:0: Video: h264, yuv420p, 852x480, 30 fps
+"""
+    payload = _parse_ffmpeg_stderr(stderr)
+    assert payload["video_codec"] == "h264"
+    assert payload["width"] == 852
+    assert payload["height"] == 480
 
 
 def test_injected_probe_encoded_date_not_used_as_shooting_time(tmp_path: Path) -> None:

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from tool.ocr_read.recognize import execute as recognize
 from tool.ocr_read.decode import execute as decode
+from tool.ocr_read.recognize import execute as recognize
 
 OPERATIONS = {
     'recognize': recognize,
@@ -12,6 +12,6 @@ OPERATIONS = {
 
 __all__ = [
     "OPERATIONS",
-    'recognize',
     'decode',
+    'recognize',
 ]

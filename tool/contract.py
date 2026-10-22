@@ -6,10 +6,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from tool.runtime.image_store import ImageStore
+    from tool.runtime.result_store import ResultStore
 
 
 @dataclass
@@ -23,6 +25,9 @@ class RuntimeContext:
     active_session: str | None = None
     extras: dict[str, Any] = field(default_factory=dict)
     image_store: ImageStore | None = None
+    result_store: ResultStore | None = None
+    # None 保持本地 CLI 兼容；MCP/服务端应传明确目录列表，空列表表示禁止直接路径。
+    allowed_file_roots: list[Path] | None = None
 
 
 @dataclass
@@ -35,6 +40,24 @@ class Observation:
     session: str | None = None
     error: str | None = None
     error_code: str | None = None
+    extensions: dict[str, Any] = field(default_factory=dict)
+
+
+def declared_inputs(inputs: dict[str, Any], *names: str) -> dict[str, Any]:
+    """按当前 operation 的声明字段截取 inputs；未声明键放入 extensions。"""
+
+    declared = {name: inputs[name] for name in names if name in inputs}
+    extra: dict[str, Any] = {}
+    existing = inputs.get("extensions")
+    if isinstance(existing, dict):
+        extra.update(existing)
+    for key, value in inputs.items():
+        if key in names or key == "extensions":
+            continue
+        extra[key] = value
+    if extra:
+        declared["extensions"] = extra
+    return declared
 
 
 def not_implemented(

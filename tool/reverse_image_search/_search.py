@@ -1,21 +1,26 @@
-"""reverse_image_search 共享执行器：本地裁剪后提交 SerpAPI Lens 或 Vision Web Detection。"""
+"""reverse_image_search 共享执行器：本地裁剪后只提交 SerpAPI Google Lens。"""
 
 from __future__ import annotations
 
-import base64
 import json
 import os
-import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from io import BytesIO
 from typing import Any, Protocol, runtime_checkable
 
 from PIL import Image
 
-from tool.contract import Observation, RuntimeContext
-from tool.image_edit._transform import RegionError, _parse_region, _try_json
+from tool._gate import load_tool_dotenv as _load_dotenv
+from tool.contract import Observation, RuntimeContext, declared_inputs
+from tool.image_edit._transform import (
+    RegionError,
+    _check_pixel_count,
+    _parse_region,
+    _try_json,
+)
 from tool.runtime.image_store import ImageResolveError, put_image, resolve_image_ref
 
 _DEFAULT_TOP_K = 10
@@ -23,18 +28,13 @@ _TOP_K_MIN = 1
 _TOP_K_MAX = 100
 _JPEG_QUALITY = 95
 _ENGINE_SERPAPI = "serpapi"
-_ENGINE_VISION = "google_cloud_vision"
 _DEFAULT_ENGINE = _ENGINE_SERPAPI
 _ENGINE_ALIASES = {
     "serpapi": _ENGINE_SERPAPI,
     "serpai": _ENGINE_SERPAPI,
     "google_lens": _ENGINE_SERPAPI,
     "lens": _ENGINE_SERPAPI,
-    "google_cloud_vision": _ENGINE_VISION,
-    "vision": _ENGINE_VISION,
-    "web_detection": _ENGINE_VISION,
 }
-_DEFAULT_VISION_ENDPOINT = "https://vision.googleapis.com/v1/images:annotate"
 _DEFAULT_SERPAPI_SEARCH_ENDPOINT = "https://serpapi.com/search.json"
 _DEFAULT_SERPAPI_IMAGE_ENDPOINT = "https://serpapi.com/image"
 _DEFAULT_TIMEOUT_SEC = 30.0
@@ -56,14 +56,12 @@ _ASSUMPTIONS = [
     "局部搜索先在本地裁剪再提交，未对全网自行建索引",
 ]
 
-
 class SearchInputError(Exception):
     """image / engines / top_k 无法按合同解析。"""
 
     def __init__(self, message: str, error_code: str) -> None:
         super().__init__(message)
         self.error_code = error_code
-
 
 class EngineUnavailableError(Exception):
     """真实搜图引擎未配置、被闸门拒绝或调用失败。"""
@@ -72,72 +70,12 @@ class EngineUnavailableError(Exception):
         super().__init__(message)
         self.error_code = error_code
 
-
 @runtime_checkable
 class ReverseImageSearchEngine(Protocol):
     """可注入的反向搜图引擎；测试用 extras['reverse_image_search_engine'] 替换。"""
 
     def search(self, image_bytes: bytes, *, top_k: int) -> dict[str, Any]:
         """提交图片字节，返回 Web Detection 风格载荷。"""
-
-
-class GoogleVisionWebDetectionEngine:
-    """Google Cloud Vision WEB_DETECTION 适配器；密钥与端点只读环境变量。"""
-
-    name = "google_cloud_vision"
-
-    def __init__(
-        self,
-        *,
-        api_key: str,
-        endpoint: str,
-        timeout_sec: float,
-    ) -> None:
-        self._api_key = api_key
-        self._endpoint = endpoint
-        self._timeout_sec = timeout_sec
-
-    def search(self, image_bytes: bytes, *, top_k: int) -> dict[str, Any]:
-        payload = {
-            "requests": [
-                {
-                    "image": {
-                        "content": base64.b64encode(image_bytes).decode("ascii"),
-                    },
-                    "features": [
-                        {
-                            "type": "WEB_DETECTION",
-                            "maxResults": top_k,
-                        }
-                    ],
-                }
-            ]
-        }
-        body = json.dumps(payload).encode("utf-8")
-        request = urllib.request.Request(
-            _endpoint_with_key(self._endpoint, self._api_key),
-            data=body,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=self._timeout_sec) as response:
-                raw = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace") if exc.fp else str(exc)
-            raise EngineUnavailableError(
-                f"Vision Web Detection HTTP {exc.code}: {detail[:200]}",
-            ) from exc
-        except urllib.error.URLError as exc:
-            raise EngineUnavailableError(
-                f"Vision Web Detection 网络失败: {exc.reason}",
-            ) from exc
-        except (json.JSONDecodeError, TimeoutError, OSError) as exc:
-            raise EngineUnavailableError(
-                f"Vision Web Detection 调用失败: {exc}",
-            ) from exc
-        return _extract_web_detection(raw)
-
 
 class SerpapiGoogleLensEngine:
     """SerpAPI Google Lens 适配器：先上传本地图拿 image_id，再搜视觉匹配。"""
@@ -205,7 +143,6 @@ class SerpapiGoogleLensEngine:
             raise EngineUnavailableError("SerpAPI Google Lens 回执不是 JSON 对象")
         return raw
 
-
 def execute_search(
     *,
     purpose: str,
@@ -216,7 +153,6 @@ def execute_search(
 
     del purpose
     return _run_search("search", inputs, ctx)
-
 
 def execute_search_crop(
     *,
@@ -229,16 +165,19 @@ def execute_search_crop(
     del purpose
     return _run_search("search_crop", inputs, ctx)
 
-
 def _run_search(
     operation: str,
     inputs: dict[str, Any],
     ctx: RuntimeContext | None,
 ) -> Observation:
+    if operation == "search_crop":
+        inputs = declared_inputs(inputs, "image", "region", "top_k")
+    else:
+        inputs = declared_inputs(inputs, "image", "top_k")
     try:
         source_id, source = _load_image(inputs, ctx)
         region = _parse_optional_region(operation, inputs, source.size, ctx)
-        engines, ignored_engines = _parse_engines(inputs.get("engines"))
+        engines, ignored_engines = _parse_engines(_engines_input(inputs))
         top_k = _parse_top_k(inputs.get("top_k"))
         engine, engine_name = _resolve_engine(ctx, requested=engines)
         query, query_id, query_path = _query_image(
@@ -293,7 +232,6 @@ def _run_search(
         }
     return Observation(ok=True, result=_strip_forbidden(result), artifacts=artifacts)
 
-
 def _load_image(
     inputs: dict[str, Any],
     ctx: RuntimeContext | None,
@@ -304,11 +242,11 @@ def _load_image(
     source_id, source_path = resolve_image_ref(image_ref, ctx)
     try:
         with Image.open(source_path) as opened:
+            _check_pixel_count(opened.size, ctx, "max_input_image_pixels")
             source = opened.convert("RGB")
     except OSError as exc:
         raise ImageResolveError(f"无法读取图片: {exc}", "image_not_found") from exc
     return source_id, source
-
 
 def _parse_optional_region(
     operation: str,
@@ -323,7 +261,6 @@ def _parse_optional_region(
         raise SearchInputError("缺少必填输入 region", "missing_input")
     return _parse_region(raw_region, size[0], size[1], ctx)
 
-
 def _query_image(
     source: Image.Image,
     *,
@@ -337,29 +274,34 @@ def _query_image(
     image_id, path = put_image(cropped, source_id=source_id, suffix="jpeg", ctx=ctx)
     return cropped, image_id, path
 
+def _engines_input(inputs: dict[str, Any]) -> Any:
+    """目录已不再提供引擎选项；旧调用若仍写入 engines，从 extensions 读出并拒绝非 SerpAPI。"""
+
+    if "engines" in inputs:
+        return inputs.get("engines")
+    extensions = inputs.get("extensions")
+    if isinstance(extensions, dict) and "engines" in extensions:
+        return extensions.get("engines")
+    return None
+
 
 def _parse_engines(raw: Any) -> tuple[list[str], list[str]]:
     values = _parse_string_list(raw, field="engines", error_code="invalid_engines")
     if not values:
         return [_DEFAULT_ENGINE], []
     mapped: list[str] = []
-    ignored: list[str] = []
     seen: set[str] = set()
     for item in values:
         key = _ENGINE_ALIASES.get(item.strip().lower())
         if key is None:
-            ignored.append(item)
-            continue
+            raise SearchInputError(
+                f"反向搜图只使用 SerpAPI，不支持的 engines: {values}",
+                "unsupported_engine",
+            )
         if key not in seen:
             mapped.append(key)
             seen.add(key)
-    if not mapped:
-        raise SearchInputError(
-            f"不支持的 engines: {values}",
-            "unsupported_engine",
-        )
-    return mapped, ignored
-
+    return mapped, []
 
 def _parse_top_k(raw: Any) -> int:
     if raw is None or (isinstance(raw, str) and not raw.strip()):
@@ -369,7 +311,6 @@ def _parse_top_k(raw: Any) -> int:
     except (TypeError, ValueError) as exc:
         raise SearchInputError("top_k 必须是整数", "invalid_top_k") from exc
     return max(_TOP_K_MIN, min(_TOP_K_MAX, value))
-
 
 def _parse_string_list(raw: Any, *, field: str, error_code: str) -> list[str]:
     value: Any = raw
@@ -391,7 +332,6 @@ def _parse_string_list(raw: Any, *, field: str, error_code: str) -> list[str]:
             items.append(item.strip())
     return items
 
-
 def _resolve_engine(
     ctx: RuntimeContext | None,
     *,
@@ -407,52 +347,76 @@ def _resolve_engine(
         name = str(getattr(injected, "name", "injected"))
         return injected, name
     _load_dotenv()
-    if not _allow_real_api():
+    if not _allow_real_tool_api():
         raise EngineUnavailableError(
-            "ALLOW_REAL_API=false，禁止调用真实反向搜图 API",
+            "ALLOW_REAL_TOOL_API=false，禁止调用真实反向搜图 API",
         )
     last_error: EngineUnavailableError | None = None
+    extras_for_build = extras if isinstance(extras, dict) else {}
     names = requested or [_DEFAULT_ENGINE]
     for name in names:
         try:
-            engine = _build_engine(name)
+            engine = _build_engine(name, extras=extras_for_build)
         except EngineUnavailableError as exc:
             last_error = exc
             continue
         return engine, engine.name
     raise last_error or EngineUnavailableError("未配置可用的反向搜图引擎")
 
-
-def _build_engine(name: str) -> ReverseImageSearchEngine:
+def _build_engine(
+    name: str,
+    extras: dict[str, Any] | None = None,
+) -> ReverseImageSearchEngine:
     timeout_sec = _env_timeout()
+    extras = extras or {}
     if name == _ENGINE_SERPAPI:
         api_key = _serpapi_api_key()
         if not api_key:
             raise EngineUnavailableError("未配置 SERPAPI_API_KEY 或 SERPAPI_KEY")
         return SerpapiGoogleLensEngine(
             api_key=api_key,
-            search_endpoint=_env_value("SERPAPI_ENDPOINT", _DEFAULT_SERPAPI_SEARCH_ENDPOINT),
-            image_endpoint=_env_value(
+            search_endpoint=_validated_endpoint(
+                "SERPAPI_ENDPOINT",
+                _DEFAULT_SERPAPI_SEARCH_ENDPOINT,
+                allowed_hosts={"serpapi.com"},
+            ),
+            image_endpoint=_validated_endpoint(
                 "SERPAPI_IMAGE_ENDPOINT",
                 _DEFAULT_SERPAPI_IMAGE_ENDPOINT,
+                allowed_hosts={"serpapi.com"},
             ),
             timeout_sec=timeout_sec,
         )
-    if name == _ENGINE_VISION:
-        api_key = os.environ.get("GOOGLE_VISION_API_KEY", "").strip()
-        if not api_key:
-            raise EngineUnavailableError("未配置 GOOGLE_VISION_API_KEY")
-        return GoogleVisionWebDetectionEngine(
-            api_key=api_key,
-            endpoint=_env_value("GOOGLE_VISION_ENDPOINT", _DEFAULT_VISION_ENDPOINT),
-            timeout_sec=timeout_sec,
-        )
-    raise EngineUnavailableError(f"不支持的 engines: {name}")
+    raise EngineUnavailableError("反向搜图只使用 SerpAPI")
 
-
-def _allow_real_api() -> bool:
-    raw = os.environ.get("ALLOW_REAL_API", "false").strip().lower()
+def _allow_real_tool_api() -> bool:
+    raw = os.environ.get("ALLOW_REAL_TOOL_API", "false").strip().lower()
     return raw in {"1", "true", "yes", "on"}
+
+
+def _validated_endpoint(
+    name: str,
+    default: str,
+    *,
+    allowed_hosts: set[str],
+) -> str:
+    endpoint = _env_value(name, default)
+    parsed = urllib.parse.urlparse(endpoint)
+    if parsed.scheme.lower() != "https" or not parsed.hostname:
+        raise EngineUnavailableError(f"{name} 必须是有效 HTTPS 地址")
+    allow_custom = os.environ.get("ALLOW_CUSTOM_TOOL_ENDPOINTS", "false").strip().lower()
+    if parsed.hostname.lower() not in allowed_hosts and allow_custom not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        hosts = ", ".join(sorted(allowed_hosts))
+        raise EngineUnavailableError(
+            f"{name} 主机不在白名单（{hosts}）；自定义 HTTPS 端点需显式开启 ALLOW_CUSTOM_TOOL_ENDPOINTS",
+        )
+    return endpoint
+
 
 
 def _serpapi_api_key() -> str:
@@ -461,14 +425,12 @@ def _serpapi_api_key() -> str:
         or os.environ.get("SERPAPI_KEY", "").strip()
     )
 
-
 def _env_value(name: str, default: str) -> str:
     raw = os.environ.get(name, "").strip()
     return raw or default
 
-
 def _env_timeout() -> float:
-    for name in ("SERPAPI_TIMEOUT_SEC", "GOOGLE_VISION_TIMEOUT_SEC"):
+    for name in ("SERPAPI_TIMEOUT_SEC",):
         raw = os.environ.get(name, "").strip()
         if not raw:
             continue
@@ -480,22 +442,12 @@ def _env_timeout() -> float:
             return value
     return _DEFAULT_TIMEOUT_SEC
 
-
-def _load_dotenv() -> None:
-    try:
-        from dotenv import load_dotenv
-    except ImportError:
-        return
-    load_dotenv(override=False)
-
-
 class _MultipartPayload:
     """multipart/form-data 请求体。"""
 
     def __init__(self, body: bytes, content_type: str) -> None:
         self.body = body
         self.content_type = content_type
-
 
 def _multipart_body(
     *,
@@ -505,29 +457,28 @@ def _multipart_body(
     boundary = f"----GeoagentSerpapi{uuid.uuid4().hex}"
     chunks: list[bytes] = []
     for name, value in fields.items():
-        chunks.append(f"--{boundary}\r\n".encode("utf-8"))
+        chunks.append(f"--{boundary}\r\n".encode())
         chunks.append(
-            f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("utf-8")
+            f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode()
         )
         chunks.append(value.encode("utf-8"))
         chunks.append(b"\r\n")
     for name, (filename, data, content_type) in files.items():
-        chunks.append(f"--{boundary}\r\n".encode("utf-8"))
+        chunks.append(f"--{boundary}\r\n".encode())
         chunks.append(
             (
                 f'Content-Disposition: form-data; name="{name}"; '
                 f'filename="{filename}"\r\n'
                 f"Content-Type: {content_type}\r\n\r\n"
-            ).encode("utf-8")
+            ).encode()
         )
         chunks.append(data)
         chunks.append(b"\r\n")
-    chunks.append(f"--{boundary}--\r\n".encode("utf-8"))
+    chunks.append(f"--{boundary}--\r\n".encode())
     return _MultipartPayload(
         body=b"".join(chunks),
         content_type=f"multipart/form-data; boundary={boundary}",
     )
-
 
 def _http_json(
     url: str,
@@ -558,11 +509,9 @@ def _http_json(
         raise EngineUnavailableError(f"{error_prefix} 失败: {raw['error']}")
     return raw
 
-
 def _append_query(endpoint: str, query: str) -> str:
     separator = "&" if urllib.parse.urlparse(endpoint).query else "?"
     return f"{endpoint}{separator}{query}"
-
 
 def _cap_jpeg_bytes(image_bytes: bytes, max_bytes: int) -> bytes:
     if len(image_bytes) <= max_bytes:
@@ -584,7 +533,6 @@ def _cap_jpeg_bytes(image_bytes: bytes, max_bytes: int) -> bytes:
             width = max(32, width // 2)
             height = max(32, height // 2)
             rgb = rgb.resize((width, height), Image.Resampling.LANCZOS)
-
 
 def _lens_to_web_detection(raw: dict[str, Any]) -> dict[str, Any]:
     """把 Google Lens JSON 收成现有 Web Detection 形状，供统一归一。"""
@@ -642,7 +590,6 @@ def _lens_to_web_detection(raw: dict[str, Any]) -> dict[str, Any]:
         "bestGuessLabels": labels,
     }
 
-
 def _append_lens_page(
     pages: list[dict[str, Any]],
     seen: set[str],
@@ -665,16 +612,6 @@ def _append_lens_page(
         page[key] = [{"url": image_url}]
     pages.append(page)
 
-
-def _endpoint_with_key(endpoint: str, api_key: str) -> str:
-    parsed = urllib.parse.urlparse(endpoint)
-    query = dict(urllib.parse.parse_qsl(parsed.query, keep_blank_values=True))
-    query["key"] = api_key
-    return urllib.parse.urlunparse(
-        parsed._replace(query=urllib.parse.urlencode(query)),
-    )
-
-
 def _extract_web_detection(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise EngineUnavailableError("Vision 回执不是 JSON 对象")
@@ -694,7 +631,6 @@ def _extract_web_detection(raw: Any) -> dict[str, Any]:
     if not isinstance(detection, dict):
         raise EngineUnavailableError("webDetection 不是对象")
     return detection
-
 
 def _normalize_payload(
     payload: Any,
@@ -749,10 +685,8 @@ def _normalize_payload(
     ][:top_k]
     return matches, pages, entities, labels
 
-
 def _as_list(raw: Any) -> list[Any]:
     return raw if isinstance(raw, list) else []
-
 
 def _image_match(item: Any, match_type: str, source: str) -> dict[str, Any] | None:
     if not isinstance(item, dict):
@@ -771,7 +705,6 @@ def _image_match(item: Any, match_type: str, source: str) -> dict[str, Any] | No
     _copy_score(item, row)
     return _keep_match_keys(row)
 
-
 def _page_match(item: Any, source: str) -> dict[str, Any] | None:
     page = _page_item(item)
     if page is None:
@@ -789,7 +722,6 @@ def _page_match(item: Any, source: str) -> dict[str, Any] | None:
         "source": source,
     }
     return _keep_match_keys(row)
-
 
 def _page_item(item: Any) -> dict[str, Any] | None:
     if not isinstance(item, dict):
@@ -815,7 +747,6 @@ def _page_item(item: Any) -> dict[str, Any] | None:
         page["image_urls"] = image_urls
     return page
 
-
 def _entity_item(item: Any) -> dict[str, Any] | None:
     if not isinstance(item, dict):
         return None
@@ -831,7 +762,6 @@ def _entity_item(item: Any) -> dict[str, Any] | None:
     _copy_score(item, row)
     return row
 
-
 def _label_item(item: Any) -> dict[str, Any] | None:
     if not isinstance(item, dict):
         return None
@@ -844,28 +774,23 @@ def _label_item(item: Any) -> dict[str, Any] | None:
         row["language"] = str(language)
     return row
 
-
 def _copy_score(src: dict[str, Any], dest: dict[str, Any]) -> None:
     score = src.get("score")
     if isinstance(score, (int, float)) and not isinstance(score, bool):
         dest["score"] = float(score)
-
 
 def _clean_url(raw: Any) -> str:
     if not isinstance(raw, str):
         return ""
     return raw.strip()
 
-
 def _keep_match_keys(row: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in row.items() if key in _MATCH_KEYS}
-
 
 def _jpeg_bytes(image: Image.Image) -> bytes:
     buffer = BytesIO()
     image.convert("RGB").save(buffer, format="JPEG", quality=_JPEG_QUALITY)
     return buffer.getvalue()
-
 
 def _strip_forbidden(value: Any) -> Any:
     if isinstance(value, dict):
@@ -877,7 +802,6 @@ def _strip_forbidden(value: Any) -> Any:
     if isinstance(value, list):
         return [_strip_forbidden(item) for item in value]
     return value
-
 
 def _fail(error: str, error_code: str) -> Observation:
     return Observation(ok=False, result=None, error=error, error_code=error_code)

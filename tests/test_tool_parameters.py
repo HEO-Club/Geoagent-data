@@ -80,13 +80,14 @@ def test_satellite_compare_alias_means_candidate_comparison_not_time_comparison(
         },
         step_index=6,
     )
-    assert audit.valid is True
     assert audit.operation == "compare_candidates"
-    assert audit.normalized_inputs["candidates"] == [
-        "兰州近水广场",
-        "兰州水车园",
-    ]
+    assert audit.readiness == "repairable"
+    assert "candidates" not in audit.normalized_inputs
     assert audit.normalized_inputs["template"] == "台阶-植被-台阶结构"
+    assert any(
+        issue.field == "candidates" and "不接受地名" in issue.message
+        for issue in audit.issues
+    )
 
 
 def test_missing_candidate_values_is_reported_without_discarding_extra_context() -> None:
@@ -174,6 +175,50 @@ def test_instance_specific_field_names_stay_in_extensions() -> None:
         "参照物1": "塔基",
         "参照物2": "山顶",
     }
+
+
+def test_geometry_only_tools_reject_place_names_and_keep_coordinates() -> None:
+    forest = attach_operation_input_schemas(
+        load_forest(Path("canonical_tool_catalog_v2.json"))
+    )
+    satellite = normalize_and_validate_tool_inputs(
+        forest,
+        tool="satellite_imagery_query",
+        operation="retrieve",
+        inputs={"area": "赣江及上游河流", "resolution_m": 5},
+        step_index=1,
+    )
+    assert satellite.readiness == "ready"
+    assert satellite.normalized_inputs["area"] == "赣江及上游河流"
+
+    ready = normalize_and_validate_tool_inputs(
+        forest,
+        tool="satellite_imagery_query",
+        operation="retrieve",
+        inputs={"area": {"lat": 25.86, "lon": 114.93, "radius_m": 2000}},
+        step_index=2,
+    )
+    assert ready.readiness == "ready"
+    assert ready.normalized_inputs["area"]["lat"] == 25.86
+
+    street = normalize_and_validate_tool_inputs(
+        forest,
+        tool="streetview_query",
+        operation="open",
+        inputs={"area": "江西赣州市赣县区梅林大桥附近"},
+        step_index=3,
+    )
+    assert street.readiness == "ready"
+    assert street.normalized_inputs["area"] == "江西赣州市赣县区梅林大桥附近"
+
+    named = normalize_and_validate_tool_inputs(
+        forest,
+        tool="poi_search",
+        operation="poi_search",
+        inputs={"query": "正贤楼", "area": "台山市"},
+        step_index=4,
+    )
+    assert named.normalized_inputs["area"] == "台山市"
 
 
 def test_unknown_extra_inputs_are_preserved_as_extensions() -> None:

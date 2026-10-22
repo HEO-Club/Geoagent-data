@@ -234,3 +234,70 @@ def test_same_raw_tool_is_reclassified_per_step_index(
     assert freeform.steps[0].params["operation"] == "keyword_search"
     assert freeform.steps[1].tool == "satellite_imagery_query"
     assert freeform.steps[1].params["operation"] == "change_time"
+
+
+def test_reclassify_does_not_map_to_unavailable_tool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("STAGE3_COMPILE_PARAMS", "false")
+    monkeypatch.setenv("TOOL_CATALOG_PATH", "canonical_tool_catalog_v2.json")
+    clear_settings_cache()
+    path = tmp_path / "tool_trees.json"
+    trees.save_forest(build_tool_forest_v2(), path)
+    freeform = FreeFormTrajectory(
+        source_video="demo",
+        steps=[
+            FreeFormStep(
+                event_type="tool_call",
+                thought="搜这座桥的建设档案",
+                tool="web_search",
+                params={
+                    "operation": "keyword_search",
+                    "purpose": "查建设记录",
+                    "inputs": {"query": ["铁路桥 建设年代"]},
+                },
+                observation={"result": "网页提到1987年通车"},
+            ),
+            FreeFormStep(
+                event_type="final",
+                thought="提交",
+                tool="final_answer",
+                params={"location": "某桥"},
+                observation=None,
+            ),
+        ],
+    )
+
+    def matcher(name: str, forest: object) -> MatchDecision | None:
+        del forest
+        if name == "web_search":
+            return MatchDecision(
+                raw_tool="web_search",
+                action="map",
+                canonical_name="infrastructure_registry",
+                operation="construction",
+                confidence=0.99,
+                reason="建设档案",
+            )
+        return None
+
+    map_tools.ensure_tool_trees(freeform, path, matcher=matcher)
+    assert freeform.steps[0].tool == "web_search"
+
+
+def test_feature_query_positive_example_is_osm_near() -> None:
+    """地理特征的相对位置正例指向 osm_query 的 near。"""
+    import inspect
+
+    from pipeline.stage2_freeform_tao.run import DEFAULT_SYSTEM_HINT
+
+    example = "有桥、有河且相距若干米"
+    assert example in DEFAULT_SYSTEM_HINT
+    assert "osm_query" in DEFAULT_SYSTEM_HINT
+    reclassify = inspect.getsource(map_tools.llm_reclassify_tool_calls)
+    match_batch = inspect.getsource(map_tools.llm_semantic_match_batch)
+    assert example in reclassify
+    assert "osm_query" in reclassify
+    assert "在底图上查看水系" not in reclassify
+    assert example in match_batch
+    assert "osm_query" in match_batch

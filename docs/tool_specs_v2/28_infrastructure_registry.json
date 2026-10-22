@@ -2,13 +2,14 @@
   "schema_version": "geoagent_tool_implementation_spec_v1",
   "ordinal": 28,
   "research_date": "2026-08-31",
-  "research_status": "design_researched_not_runtime_verified",
+  "research_status": "design_researched_not_runtime_implemented",
   "catalog_source": "canonical_tool_catalog_v2.json",
   "canonical_tool": {
     "canonical": {
       "name": "infrastructure_registry",
-      "description": "查询建设历史、许可和登记记录。",
+      "description": "当前不可用，不要选用。原用途：查询建设历史、许可和登记记录。",
       "executor": "infrastructure_registry",
+      "available": false,
       "usage": "仅在需要访问该真实执行器并获得新证据时调用；先选择 operation，再按其 input_schema 填 inputs。缺少执行级参数时按 acquisition_hint 获取，不得编造坐标、文件、会话或前置结果。",
       "operations": [
         {

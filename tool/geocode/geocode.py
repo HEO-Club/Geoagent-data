@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from tool.contract import Observation, RuntimeContext, not_implemented
+from tool.contract import Observation, RuntimeContext
 
 
 def execute(
@@ -13,12 +13,13 @@ def execute(
     inputs: dict[str, Any],
     ctx: RuntimeContext | None = None,
 ) -> Observation:
-    """执行 geocode.geocode。尚未接入真实执行器。"""
+    """执行地名/地址与 WGS84 坐标之间的候选映射。"""
 
-    return not_implemented(
-        'geocode',
-        'geocode',
-        purpose=purpose,
-        inputs=inputs,
-        ctx=ctx,
-    )
+    extras = ctx.extras if ctx is not None else {}
+    if extras.get("geocode_client") is not None:
+        from tool.geocode._nominatim import execute_geocode
+
+        return execute_geocode(purpose=purpose, inputs=inputs, ctx=ctx)
+    from tool.geocode._geocode import execute_geocode
+
+    return execute_geocode(purpose=purpose, inputs=inputs, ctx=ctx)

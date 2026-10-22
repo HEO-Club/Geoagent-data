@@ -1,4 +1,4 @@
-"""web_search：执行开放网页或指定站点搜索。"""
+"""web_search：执行开放网页或指定站点搜索。地名的行政归属和标准名称也用本工具检索，坐标再交给 geocode。"""
 
 from __future__ import annotations
 

@@ -94,7 +94,9 @@ def test_stage2_prompt_contains_map_boundary_and_tool_hint(
     assert prompts
     assert "satellite_imagery_query" in prompts[0]
     assert "streetview_query" in prompts[0]
-    assert "禁止把后三类默认写成 web_search" in prompts[0]
+    assert "有桥、有河且相距若干米" in prompts[0]
+    assert "osm_query" in prompts[0]
+    assert "网页搜索使用 web_search" in prompts[0]
     assert "[30.0, 50.0)" in prompts[0]
     assert "[80.0, 95.0)" not in prompts[0]
 
