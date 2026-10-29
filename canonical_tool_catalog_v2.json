@@ -8641,6 +8641,201 @@
       },
       "variants": [],
       "variant_operations": {}
+    },
+    {
+      "canonical": {
+        "name": "location_verify",
+        "description": "用街景比对与文字一致性验证最终定位答案是否可信。",
+        "executor": "local_verification",
+        "usage": "仅在需要验证 final_answer 地点是否可信时调用；本工具内部编排 geocode / streetview_query / image_compare / ocr_read，输出 verdict。",
+        "operations": [
+          {
+            "name": "verify",
+            "description": "对最终答案地点做街景图像比对与 OCR 文字一致性验证",
+            "aliases": [
+              "check",
+              "validate"
+            ],
+            "input_schema": {
+              "description": "把答案地点解析到坐标、搜索相似朝向街景并截图比对，再比对文字一致性，输出 matched / no_positive_match / inconclusive。",
+              "fields": [
+                {
+                  "name": "location",
+                  "type": "location",
+                  "required": true,
+                  "requirement_level": "execution",
+                  "description": "待验证的最终地点，可为地名、[lon,lat] 或 {lon,lat}。",
+                  "acquisition_hint": "从 final_answer.params.location 或轨迹末步取得真实答案地点。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "地点",
+                    "答案",
+                    "answer",
+                    "place"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": "云南省丽江市永胜县涛源镇"
+                },
+                {
+                  "name": "reference_image",
+                  "type": "string",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "待定位原图（要被定位的那张图），缺省为当前输入图。",
+                  "acquisition_hint": "从当前输入图或 task 选图取真实图片 ID。",
+                  "context_sources": [
+                    "current_image"
+                  ],
+                  "context_default": "$current_image",
+                  "aliases": [
+                    "原图",
+                    "待定位图",
+                    "query_image",
+                    "image"
+                  ],
+                  "allowed_values": [],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": null
+                },
+                {
+                  "name": "headings",
+                  "type": "array",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "要扫描的街景朝向角（度）；缺省为 0/45/90/.../315 八个朝向。",
+                  "acquisition_hint": "未知朝向时保持默认八朝向扫描；已知大致方向可收窄。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "朝向",
+                    "方位"
+                  ],
+                  "allowed_values": [],
+                  "item_type": "number",
+                  "minimum": null,
+                  "maximum": null,
+                  "example": [
+                    0,
+                    90,
+                    180,
+                    270
+                  ]
+                },
+                {
+                  "name": "provider",
+                  "type": "string",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "街景服务提供方；缺省按运行环境选择。",
+                  "acquisition_hint": "有明确来源且需要时填写，否则留空。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "街景源"
+                  ],
+                  "allowed_values": [
+                    "mapillary",
+                    "baidu",
+                    "google"
+                  ],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": "mapillary"
+                },
+                {
+                  "name": "compare_method",
+                  "type": "string",
+                  "required": false,
+                  "requirement_level": "optional",
+                  "description": "image_compare 的比对方法。",
+                  "acquisition_hint": "缺省 auto；已知同视角可指定 feature。",
+                  "context_sources": [],
+                  "context_default": null,
+                  "aliases": [
+                    "比对方式"
+                  ],
+                  "allowed_values": [
+                    "feature",
+                    "pixel",
+                    "histogram",
+                    "geometry",
+                    "auto"
+                  ],
+                  "item_type": null,
+                  "minimum": null,
+                  "maximum": null,
+                  "example": "auto"
+                }
+              ],
+              "required_any": [],
+              "mutually_exclusive": [],
+              "allow_extra": true,
+              "examples": []
+            }
+          }
+        ],
+        "params": [
+          {
+            "name": "operation",
+            "type": "string",
+            "required": true,
+            "description": "本次调用执行的 operation",
+            "allowed_values": [
+              "verify"
+            ]
+          },
+          {
+            "name": "purpose",
+            "type": "string",
+            "required": true,
+            "description": "本次调用要补齐的证据缺口，不得伪装成工具返回",
+            "allowed_values": []
+          },
+          {
+            "name": "inputs",
+            "type": "object",
+            "required": true,
+            "description": "严格按 operation.input_schema 传给执行器的真实输入",
+            "allowed_values": []
+          }
+        ],
+        "observation_fields": [
+          {
+            "name": "verdict",
+            "type": "string",
+            "nullable": false,
+            "description": "matched / no_positive_match / inconclusive"
+          },
+          {
+            "name": "confidence",
+            "type": "number",
+            "nullable": false,
+            "description": "0..1 置信度"
+          },
+          {
+            "name": "coverage",
+            "type": "boolean",
+            "nullable": false,
+            "description": "答案点是否有街景覆盖"
+          },
+          {
+            "name": "signals",
+            "type": "object",
+            "nullable": false,
+            "description": "image 与 ocr 两类证据"
+          }
+        ],
+        "is_terminal": false
+      },
+      "variants": [],
+      "variant_operations": {}
     }
   ]
 }

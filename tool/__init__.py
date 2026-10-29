@@ -1,7 +1,7 @@
 """按 canonical_tool_catalog_v2.json 落地的真实 Tool 执行器包。
 
 每个子目录对应一个 canonical tool；每个 operation 一个模块，暴露 `execute`。
-`image_edit`、`image_measure`、`image_compare`、`ocr_read`、`reverse_image_search`、`media_metadata_read`、`web_search`、`web_page_read`、`media_search`、`video_frame_extract`、`poi_search`、`geocode`、`route_query`、`map_layer_query`、`osm_query`、`osm_result_process`、`streetview_query`、`satellite_imagery_query`、`satellite_imagery_compare`、`distance_bearing_calculator`、`visibility_analysis`、`terrain_analysis`、`spatial_filter`、`weather_archive_query`、`solar_ephemeris`、`shadow_analysis`、`administrative_registry`、`infrastructure_registry`、`flight_data_query`、`llm_query` 与 `final_answer` 已接入执行器；其余 tool 仍为占位，不调用外部付费 API。
+`image_edit`、`image_measure`、`image_compare`、`ocr_read`、`reverse_image_search`、`media_metadata_read`、`web_search`、`web_page_read`、`media_search`、`video_frame_extract`、`poi_search`、`geocode`、`route_query`、`map_layer_query`、`osm_query`、`osm_result_process`、`streetview_query`、`satellite_imagery_query`、`satellite_imagery_compare`、`distance_bearing_calculator`、`visibility_analysis`、`terrain_analysis`、`spatial_filter`、`weather_archive_query`、`solar_ephemeris`、`shadow_analysis`、`administrative_registry`、`infrastructure_registry`、`flight_data_query`、`llm_query`、`location_verify` 与 `final_answer` 已接入执行器；其余 tool 仍为占位，不调用外部付费 API。
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from tool import (
     image_measure,
     infrastructure_registry,
     llm_query,
+    location_verify,
     map_layer_query,
     media_metadata_read,
     media_search,
@@ -75,6 +76,7 @@ TOOLS = {
     'infrastructure_registry': infrastructure_registry,
     'flight_data_query': flight_data_query,
     'llm_query': llm_query,
+    'location_verify': location_verify,
     'final_answer': final_answer,
 }
 
